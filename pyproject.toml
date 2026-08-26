@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "goodix-5503-linux"
+version = "0.1.0"
+description = "Safety-oriented Linux tooling for the Goodix 27c6:5503 fingerprint sensor"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "LGPL-2.1-or-later" }
+dependencies = ["pyusb>=1.2.1,<2"]
+
+[project.scripts]
+goodix-5503-probe = "goodix5503.probe:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
