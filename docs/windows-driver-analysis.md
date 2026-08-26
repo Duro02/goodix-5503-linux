@@ -85,11 +85,23 @@ images exist transiently in host memory even if Windows does not persist them.
 - source paths naming `FpMcuCmd.c`, `MilanFSerMcu.c`, `UpdateFirmware.c`,
   `Usb.c`, `Image.c`, `PskUnify.c` and `TlsModuleUnify.c`.
 
-No standalone Goodix firmware file appears in this Lenovo package. Firmware
-images/configuration may be embedded in `Wbdi.dll`, selected only for some
-sensor interfaces, or omitted because this model ships with a suitable version.
-Static strings list multiple GF32xx firmware families, so any embedded blob must
-be associated with the exact `5503` device path before use.
+No standalone Goodix firmware file appears in this Lenovo package. Static
+inspection confirms that 8051 firmware images are embedded in `Wbdi.dll`'s
+read-only data section. The exact `5503` family strings include:
+
+- `GF3208_RTSEC_APP_10063`
+- `GF3208_HT_APP_10035`
+- `MILAN_RTSEC_IAP_10027`
+
+The bytes surrounding the `GF3208_RTSEC_APP_10063` marker are executable 8051
+code rather than ordinary logging strings, and the IAP image contains its own
+USB descriptor and firmware version marker. These blobs must remain proprietary
+analysis artifacts and must not be copied into the Linux project.
+
+This is also a critical safety finding: the community `driver_5503.py` targets
+`GF3208_RTSEC_APP_10062`, while Lenovo's newer official driver contains
+`10063`. Running the community firmware path could therefore downgrade an
+up-to-date device. The Linux project must not erase or flash firmware.
 
 ## Comparison with the community implementation
 
