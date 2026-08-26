@@ -56,3 +56,9 @@ sudo .venv/bin/goodix-5503-probe --check-psk-state
 - `5503` 初始实现提交：`718ee3c1c06fe88e93ab7694d299cb5ad9d185c4`
 
 本项目采用 `LGPL-2.1-or-later`。在能够无刷写地稳定采集图像以前，不会接入 `fprintd/PAM`。
+
+## Windows 官方驱动分析
+
+已下载并校验与机型 `21A2`、设备 `27c6:5503` 精确匹配的 Lenovo 官方 Windows 10/11 驱动。专有二进制保存在 Git 忽略的 `artifacts/windows-driver/`，不会提交或分发。
+
+静态分析结论见 [`docs/windows-driver-analysis.md`](docs/windows-driver-analysis.md)。分析确认该设备会把 TLS 加密的指纹图像传给主机，并由主机侧算法完成特征提取和匹配。
