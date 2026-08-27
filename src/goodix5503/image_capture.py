@@ -21,6 +21,14 @@ from .chip_config import (
     RUNTIME_CONFIG_PATH,
     _validate_config_checksum,
 )
+from .hu_runtime import (
+    build_hu_image_request,
+    build_hu_manual_fdt_request,
+    build_hu_nav_base,
+    derive_hu_dac_field,
+    hu_fdt_bases_within_delta,
+    parse_hu_manual_fdt_response,
+)
 from .pairing import (
     PSK_PATH,
     VERIFICATION_PATH,
@@ -57,10 +65,9 @@ from .tls_check import (
 )
 
 COMMAND_UPLOAD_CONFIG: Final = 0x90
-COMMAND_SET_DRIVER_STATE: Final = 0xC4
-COMMAND_GET_POV_IMAGE: Final = 0xD2
-COMMAND_POV_IMAGE_CHECK: Final = 0xD6
 COMMAND_SWITCH_FDT_MODE: Final = 0x36
+COMMAND_SWITCH_IDLE: Final = 0x70
+COMMAND_READ_REGISTER: Final = 0x82
 COMMAND_GET_IMAGE: Final = 0x20
 FLAGS_TLS_IMAGE: Final = 0xB2
 
@@ -70,6 +77,7 @@ PLAINTEXT_IMAGE_LENGTH: Final = 7684
 PIXEL_COUNT: Final = 5120
 IMAGE_WIDTH: Final = 80
 IMAGE_HEIGHT: Final = 64
+MAX_FRESH_BASE_ATTEMPTS: Final = 3
 EXPECTED_RUNTIME_CONFIG_SHA256: Final = LOCAL_RUNTIME_CONFIG_SHA256
 CLEAR_CAPTURE_CONFIRMATION: Final = (
     "I AUTHORIZE ONE RUNTIME-ONLY MEMORY CLEAR FRAME"
@@ -78,35 +86,58 @@ CLEAR_CAPTURE_CONFIRMATION: Final = (
 # former community-derived candidate unreachable even with confirmation.
 OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE: Final = False
 
-# Historical community candidate. The official GF3258 request has this length,
-# but both its DAC words and base high bytes are runtime-derived. This constant
-# is deliberately unreachable while OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE
-# is false and must be removed when the official state machine replaces it.
-FDT_CLEAR_MODE: Final = bytes.fromhex(
-    "0d018b0084008c0088008096809180928085808c8086"
-)
-# Official 10063 _FpMcuGetImage (0x180058610) constructs exactly two bytes:
-# image type 1 followed by zero. The longer community payload targets 10062.
-GET_IMAGE_CLEAR: Final = b"\x01\x00"
-
-
 class ImageCaptureError(RuntimeError):
     """The fixed clear-frame path failed or returned malformed data."""
 
 
-def _ack_only(session: ReadOnlyUsbSession, command: int, payload: bytes) -> None:
+def _remaining_timeout_ms(operation_deadline: float | None) -> int | None:
+    if operation_deadline is None:
+        return None
+    remaining = int((operation_deadline - time.monotonic()) * 1000)
+    if remaining <= 0:
+        raise ImageCaptureError("capture operation deadline expired")
+    return remaining
+
+
+def _read_frame_bounded(
+    session: ReadOnlyUsbSession, operation_deadline: float | None
+) -> bytes:
+    timeout_ms = _remaining_timeout_ms(operation_deadline)
+    if timeout_ms is None:
+        return session._read_frame()
+    return session._read_frame(timeout_ms=timeout_ms)
+
+
+def _ack_only(
+    session: ReadOnlyUsbSession,
+    command: int,
+    payload: bytes,
+    operation_deadline: float | None = None,
+) -> None:
     session._ReadOnlyUsbSession__write_packet(  # type: ignore[attr-defined]
         _encode_packet(command, payload)
     )
-    ack = _decode_packet(session._read_frame(), COMMAND_ACK)
+    ack = _decode_packet(
+        _read_frame_bounded(session, operation_deadline), COMMAND_ACK
+    )
     _check_ack(ack, command)
 
 
 def _fixed_exchange(
-    session: ReadOnlyUsbSession, command: int, payload: bytes
+    session: ReadOnlyUsbSession,
+    command: int,
+    payload: bytes,
+    operation_deadline: float | None = None,
 ) -> bytes:
-    return session._ReadOnlyUsbSession__exchange(  # type: ignore[attr-defined]
-        command, payload
+    session._ReadOnlyUsbSession__write_packet(  # type: ignore[attr-defined]
+        _encode_packet(command, payload)
+    )
+    ack = _decode_packet(
+        _read_frame_bounded(session, operation_deadline), COMMAND_ACK
+    )
+    _check_ack(ack, command)
+    return _decode_packet(
+        _read_frame_bounded(session, operation_deadline), command
     )
 
 
@@ -133,13 +164,19 @@ def _validate_tls_records(ciphertext: bytes | bytearray) -> None:
 
 def _request_encrypted_clear_image(
     session: ReadOnlyUsbSession,
+    request_payload: bytes,
+    operation_deadline: float | None = None,
 ) -> tuple[bytearray, bytearray]:
+    if len(request_payload) != 10:
+        raise ImageCaptureError("GF3258 HU image request must be exactly 10 bytes")
     session._ReadOnlyUsbSession__write_packet(  # type: ignore[attr-defined]
-        _encode_packet(COMMAND_GET_IMAGE, GET_IMAGE_CLEAR)
+        _encode_packet(COMMAND_GET_IMAGE, request_payload)
     )
-    ack = _decode_packet(session._read_frame(), COMMAND_ACK)
+    ack = _decode_packet(
+        _read_frame_bounded(session, operation_deadline), COMMAND_ACK
+    )
     _check_ack(ack, COMMAND_GET_IMAGE)
-    frame = session._read_frame()
+    frame = _read_frame_bounded(session, operation_deadline)
     seen_tls_completion = False
     seen_image_prelude = False
     for _index in range(2):
@@ -167,7 +204,7 @@ def _request_encrypted_clear_image(
                 raise ImageCaptureError("image prelude did not report success")
         else:
             raise ImageCaptureError("unexpected or duplicate image prelude command")
-        frame = session._read_frame()
+        frame = _read_frame_bounded(session, operation_deadline)
     payload = _decode_outer(frame, FLAGS_TLS_IMAGE)
     if len(payload) <= 9:
         raise ImageCaptureError("encrypted image envelope is too short")
@@ -250,11 +287,11 @@ class _TlsImageServer:
         self.bridge: socket.socket | None = None
         self.thread: threading.Thread | None = None
         self.handshake_done = threading.Event()
-        self.image_requested = threading.Event()
-        self.image_done = threading.Event()
         self.release = threading.Event()
+        self.image_condition = threading.Condition()
+        self.image_requests = 0
         self.handshake_result: list[str | BaseException] = []
-        self.image_result: list[bytearray | BaseException] = []
+        self.image_results: list[bytearray | BaseException] = []
 
     def _run(self) -> None:
         try:
@@ -267,64 +304,120 @@ class _TlsImageServer:
                     raise TlsTestError("TLS server negotiated no cipher")
                 self.handshake_result.append(cipher[0])
                 self.handshake_done.set()
-                image_wait = max(0.0, self.operation_deadline - time.monotonic())
-                if not self.image_requested.wait(image_wait):
-                    return
-                plaintext = bytearray(PLAINTEXT_IMAGE_LENGTH)
-                surplus = bytearray(1)
-                received = 0
-                try:
-                    view = memoryview(plaintext)
-                    while received < len(plaintext):
-                        count = tls_socket.recv_into(view[received:])
-                        if not count:
-                            raise ImageCaptureError(
-                                "TLS server closed during image transfer"
-                            )
-                        received += count
-                    # The caller has sent the complete validated ciphertext
-                    # envelope. A nonblocking read therefore establishes the
-                    # application-data boundary without waiting for more USB.
-                    tls_socket.setblocking(False)
+                image_index = 0
+                while not self.release.is_set():
+                    with self.image_condition:
+                        image_wait = max(
+                            0.0, self.operation_deadline - time.monotonic()
+                        )
+                        ready = self.image_condition.wait_for(
+                            lambda: self.release.is_set()
+                            or self.image_requests > image_index,
+                            image_wait,
+                        )
+                        if not ready or self.release.is_set():
+                            return
+                    plaintext = bytearray(PLAINTEXT_IMAGE_LENGTH)
+                    surplus = bytearray(1)
+                    received = 0
+                    result: bytearray | BaseException
                     try:
-                        extra = tls_socket.recv_into(surplus)
-                    except (ssl.SSLWantReadError, BlockingIOError):
-                        extra = 0
-                    if extra:
-                        raise ImageCaptureError("TLS image plaintext has surplus data")
-                    self.image_result.append(plaintext)
-                    plaintext = bytearray()
-                finally:
-                    surplus[:] = b"\x00" * len(surplus)
-                    plaintext[:] = b"\x00" * len(plaintext)
-                    self.image_done.set()
-                self.release.wait(
-                    min(5.0, max(0.0, self.operation_deadline - time.monotonic()))
-                )
+                        view = memoryview(plaintext)
+                        while received < len(plaintext):
+                            remaining = self.operation_deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise ImageCaptureError(
+                                    "TLS image operation deadline expired"
+                                )
+                            tls_socket.settimeout(remaining)
+                            count = tls_socket.recv_into(view[received:])
+                            if not count:
+                                raise ImageCaptureError(
+                                    "TLS server closed during image transfer"
+                                )
+                            received += count
+                        tls_socket.setblocking(False)
+                        try:
+                            extra = tls_socket.recv_into(surplus)
+                        except (ssl.SSLWantReadError, BlockingIOError):
+                            extra = 0
+                        if extra:
+                            raise ImageCaptureError(
+                                "TLS image plaintext has surplus data"
+                            )
+                        result = plaintext
+                        plaintext = bytearray()
+                    except BaseException as error:
+                        result = error
+                    finally:
+                        surplus[:] = b"\x00" * len(surplus)
+                        plaintext[:] = b"\x00" * len(plaintext)
+                    with self.image_condition:
+                        if self.release.is_set():
+                            if isinstance(result, bytearray):
+                                result[:] = b"\x00" * len(result)
+                            self.image_condition.notify_all()
+                            return
+                        self.image_results.append(result)
+                        image_index += 1
+                        self.image_condition.notify_all()
+                    if isinstance(result, BaseException):
+                        return
         except BaseException as error:
             if not self.handshake_done.is_set():
                 self.handshake_result.append(error)
                 self.handshake_done.set()
             else:
-                self.image_result.append(error)
-                self.image_done.set()
+                with self.image_condition:
+                    self.image_results.append(error)
+                    self.image_condition.notify_all()
+
+    def _set_bridge_deadline(self) -> None:
+        if self.bridge is None:
+            raise ImageCaptureError("TLS bridge is not established")
+        remaining = self.operation_deadline - time.monotonic()
+        if remaining <= 0:
+            raise ImageCaptureError("TLS bridge operation deadline expired")
+        self.bridge.settimeout(remaining)
 
     def establish(self, session: ReadOnlyUsbSession) -> str:
         self.server_transport, self.bridge = socket.socketpair()
-        self.server_transport.settimeout(5)
-        self.bridge.settimeout(5)
+        remaining = self.operation_deadline - time.monotonic()
+        if remaining <= 0:
+            raise ImageCaptureError("TLS handshake operation deadline expired")
+        self.server_transport.settimeout(remaining)
+        self.bridge.settimeout(remaining)
         self.thread = threading.Thread(
             target=self._run, name="goodix-clear-frame-tls", daemon=True
         )
         self.thread.start()
-        self.bridge.sendall(_request_tls_client_hello(session))
+        self._set_bridge_deadline()
+        self.bridge.sendall(
+            _request_tls_client_hello(session, self.operation_deadline)
+        )
         from .tls_check import _recv_server_flight
 
-        _send_tls(session, _recv_server_flight(self.bridge, final=False))
+        _send_tls(
+            session,
+            _recv_server_flight(
+                self.bridge,
+                final=False,
+                operation_deadline=self.operation_deadline,
+            ),
+        )
         for _index in range(3):
-            self.bridge.sendall(_receive_tls(session))
-        _send_tls(session, _recv_server_flight(self.bridge, final=True))
-        if not self.handshake_done.wait(5) or not self.handshake_result:
+            self._set_bridge_deadline()
+            self.bridge.sendall(_receive_tls(session, self.operation_deadline))
+        _send_tls(
+            session,
+            _recv_server_flight(
+                self.bridge,
+                final=True,
+                operation_deadline=self.operation_deadline,
+            ),
+        )
+        handshake_wait = max(0.0, self.operation_deadline - time.monotonic())
+        if not self.handshake_done.wait(handshake_wait) or not self.handshake_result:
             raise ImageCaptureError("TLS image server handshake timed out")
         result = self.handshake_result[0]
         if isinstance(result, BaseException):
@@ -334,31 +427,178 @@ class _TlsImageServer:
     def decrypt(self, ciphertext: bytearray) -> bytearray:
         if self.bridge is None:
             raise ImageCaptureError("TLS image server is not established")
-        self.image_requested.set()
+        with self.image_condition:
+            image_index = self.image_requests
+            self.image_requests += 1
+            self.image_condition.notify_all()
+        self._set_bridge_deadline()
         self.bridge.sendall(ciphertext)
-        image_wait = max(0.0, self.operation_deadline - time.monotonic())
-        if not self.image_done.wait(image_wait) or not self.image_result:
-            raise ImageCaptureError("TLS image plaintext timed out")
-        result = self.image_result[0]
+        with self.image_condition:
+            image_wait = max(0.0, self.operation_deadline - time.monotonic())
+            ready = self.image_condition.wait_for(
+                lambda: len(self.image_results) > image_index,
+                image_wait,
+            )
+            if not ready:
+                raise ImageCaptureError("TLS image plaintext timed out")
+            result = self.image_results[image_index]
         if isinstance(result, BaseException):
             raise ImageCaptureError("TLS image decryption failed") from result
         return result
 
     def close(self) -> None:
         self.release.set()
-        # Wake a server that completed TLS but whose caller failed before the
-        # image request; closing the bridge then makes its bounded recv exit.
-        self.image_requested.set()
+        with self.image_condition:
+            self.image_condition.notify_all()
         if self.bridge is not None:
             self.bridge.close()
-        if self.server_transport is not None and (
-            self.thread is None or not self.thread.is_alive()
-        ):
+        if self.server_transport is not None:
             self.server_transport.close()
         if self.thread is not None and self.thread.ident is not None:
-            self.thread.join(6)
+            # Socket closure interrupts any in-flight TLS read. Keep cleanup
+            # bounded even when the operation deadline has already expired.
+            self.thread.join(1.0)
+        with self.image_condition:
+            for result in self.image_results:
+                if isinstance(result, bytearray):
+                    result[:] = b"\x00" * len(result)
+            self.image_results.clear()
         if self.thread is not None and self.thread.is_alive():
             raise ImageCaptureError("TLS image server thread did not stop")
+
+
+def _receive_hu_plaintext_image(
+    session: ReadOnlyUsbSession,
+    tls_server: _TlsImageServer,
+    image_request: bytes,
+    operation_deadline: float,
+) -> tuple[bytearray, bytearray]:
+    prefix = bytearray()
+    ciphertext = bytearray()
+    plaintext = bytearray()
+    try:
+        prefix, ciphertext = _request_encrypted_clear_image(
+            session, image_request, operation_deadline
+        )
+        plaintext = tls_server.decrypt(ciphertext)
+        if len(plaintext) != PLAINTEXT_IMAGE_LENGTH:
+            raise ImageCaptureError("decrypted HU image has an invalid length")
+        result_prefix, result_plaintext = prefix, plaintext
+        prefix = bytearray()
+        plaintext = bytearray()
+        return result_prefix, result_plaintext
+    finally:
+        prefix[:] = b"\x00" * len(prefix)
+        ciphertext[:] = b"\x00" * len(ciphertext)
+        plaintext[:] = b"\x00" * len(plaintext)
+
+
+def _parse_hu_fdt_body(response: bytes) -> tuple[bytearray, bytearray]:
+    try:
+        return parse_hu_manual_fdt_response(response)
+    except ValueError as error:
+        raise ImageCaptureError(str(error)) from error
+
+
+def _acquire_hu_fresh_base_frame(
+    session: ReadOnlyUsbSession,
+    tls_server: _TlsImageServer,
+    dac_field: bytearray,
+    image_request: bytes,
+    operation_deadline: float,
+) -> tuple[bytearray, bytearray]:
+    zero_base = bytearray(12)
+    try:
+        fdt_request = build_hu_manual_fdt_request(dac_field, zero_base)
+        for _attempt in range(MAX_FRESH_BASE_ATTEMPTS):
+            _remaining_timeout_ms(operation_deadline)
+            raw0 = transformed0 = raw1 = transformed1 = bytearray()
+            raw2 = transformed2 = bytearray()
+            nav_prefix = nav_plaintext = bytearray()
+            nav_decoded = nav_base = bytearray()
+            candidate_prefix = candidate_plaintext = bytearray()
+            keep_candidate = False
+            try:
+                raw0, transformed0 = _parse_hu_fdt_body(
+                    _fixed_exchange(
+                        session,
+                        COMMAND_SWITCH_FDT_MODE,
+                        fdt_request,
+                        operation_deadline,
+                    )
+                )
+                nav_prefix, nav_plaintext = _receive_hu_plaintext_image(
+                    session, tls_server, image_request, operation_deadline
+                )
+                nav_decoded = decode_packed_image(
+                    memoryview(nav_plaintext)[:PACKED_IMAGE_LENGTH]
+                )
+                nav_base = build_hu_nav_base(nav_decoded)
+                raw1, transformed1 = _parse_hu_fdt_body(
+                    _fixed_exchange(
+                        session,
+                        COMMAND_SWITCH_FDT_MODE,
+                        fdt_request,
+                        operation_deadline,
+                    )
+                )
+                _ack_only(
+                    session,
+                    COMMAND_SWITCH_IDLE,
+                    b"\x14\x00",
+                    operation_deadline,
+                )
+                delta_body = _fixed_exchange(
+                    session,
+                    COMMAND_READ_REGISTER,
+                    b"\x00\x82\x00\x02\x00",
+                    operation_deadline,
+                )
+                if len(delta_body) != 2:
+                    raise ImageCaptureError(
+                        "FDT delta register response must be exactly 2 bytes"
+                    )
+                delta = struct.unpack("<H", delta_body)[0] >> 8
+                if not hu_fdt_bases_within_delta(raw0, raw1, delta):
+                    continue
+
+                candidate_prefix, candidate_plaintext = (
+                    _receive_hu_plaintext_image(
+                        session, tls_server, image_request, operation_deadline
+                    )
+                )
+                raw2, transformed2 = _parse_hu_fdt_body(
+                    _fixed_exchange(
+                        session,
+                        COMMAND_SWITCH_FDT_MODE,
+                        fdt_request,
+                        operation_deadline,
+                    )
+                )
+                if not hu_fdt_bases_within_delta(raw1, raw2, delta):
+                    continue
+                keep_candidate = True
+                return candidate_prefix, candidate_plaintext
+            finally:
+                for buffer in (
+                    raw0,
+                    transformed0,
+                    raw1,
+                    transformed1,
+                    raw2,
+                    transformed2,
+                    nav_prefix,
+                    nav_plaintext,
+                    nav_decoded,
+                    nav_base,
+                ):
+                    buffer[:] = b"\x00" * len(buffer)
+                if not keep_candidate:
+                    candidate_prefix[:] = b"\x00" * len(candidate_prefix)
+                    candidate_plaintext[:] = b"\x00" * len(candidate_plaintext)
+        raise ImageCaptureError("fresh FDT base did not stabilize")
+    finally:
+        zero_base[:] = b"\x00" * len(zero_base)
 
 
 def run_prepared_clear_frame_capture(
@@ -379,8 +619,10 @@ def run_prepared_clear_frame_capture(
     derived = bytearray()
     psk = bytearray()
     config = bytearray()
+    otp = bytearray()
+    dac_field = bytearray()
+    image_request = b""
     opaque_prefix = bytearray()
-    ciphertext = bytearray()
     plaintext = bytearray()
     opaque_trailer = bytearray()
     pixels = bytearray()
@@ -394,6 +636,10 @@ def run_prepared_clear_frame_capture(
         if firmware != EXPECTED_FIRMWARE or iap != EXPECTED_IAP:
             raise ImageCaptureError("unexpected firmware or IAP")
         live = _read_live_verification(session)
+        otp = session.read_otp()
+        dac_field = derive_hu_dac_field(otp)
+        image_request = build_hu_image_request(dac_field)
+        otp[:] = b"\x00" * len(otp)
 
         _drop_sudo_privileges()
         _disable_core_dumps()
@@ -414,26 +660,24 @@ def run_prepared_clear_frame_capture(
         )
 
         reset_guard.start()
-        pov = _fixed_exchange(session, COMMAND_POV_IMAGE_CHECK, b"\x00\x00")
-        if not pov:
-            raise ImageCaptureError("POV check returned an empty response")
-
         tls_server = _TlsImageServer(context, operation_deadline)
         cipher = tls_server.establish(session)
-        uploaded = _fixed_exchange(session, COMMAND_UPLOAD_CONFIG, bytes(config))
+        uploaded = _fixed_exchange(
+            session,
+            COMMAND_UPLOAD_CONFIG,
+            bytes(config),
+            operation_deadline,
+        )
         if not uploaded or uploaded[0] != 1:
             raise ImageCaptureError("runtime configuration upload was rejected")
-        _ack_only(session, COMMAND_SET_DRIVER_STATE, b"\x01\x00")
-        _ack_only(session, COMMAND_SET_DRIVER_STATE, b"\x01\x00")
-        pov_image = _fixed_exchange(session, COMMAND_GET_POV_IMAGE, b"\x00\x00")
-        if not pov_image:
-            raise ImageCaptureError("MCU POV-image initialization returned empty data")
-        _fixed_exchange(session, COMMAND_SWITCH_FDT_MODE, FDT_CLEAR_MODE)
 
-        opaque_prefix, ciphertext = _request_encrypted_clear_image(session)
-        plaintext = tls_server.decrypt(ciphertext)
-        if len(plaintext) != PLAINTEXT_IMAGE_LENGTH:
-            raise ImageCaptureError("decrypted clear image has an invalid length")
+        opaque_prefix, plaintext = _acquire_hu_fresh_base_frame(
+            session,
+            tls_server,
+            dac_field,
+            image_request,
+            operation_deadline,
+        )
         opaque_trailer = bytearray(memoryview(plaintext)[PACKED_IMAGE_LENGTH:])
         if len(opaque_prefix) != 9 or len(opaque_trailer) != 4:
             raise ImageCaptureError("image opaque metadata has an invalid length")
@@ -478,8 +722,9 @@ def run_prepared_clear_frame_capture(
             derived,
             psk,
             config,
+            otp,
+            dac_field,
             opaque_prefix,
-            ciphertext,
             plaintext,
             opaque_trailer,
             pixels,

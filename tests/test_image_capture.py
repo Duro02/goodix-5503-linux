@@ -1,19 +1,19 @@
 import struct
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from goodix5503.image_capture import (
     CLEAR_CAPTURE_CONFIRMATION,
     COMMAND_GET_IMAGE,
-    GET_IMAGE_CLEAR,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
     PACKED_IMAGE_LENGTH,
     PIXEL_COUNT,
-    FDT_CLEAR_MODE,
     ImageCaptureError,
     _ResetGuard,
     _TlsImageServer,
+    _acquire_hu_fresh_base_frame,
     _request_encrypted_clear_image,
     _validate_prepared_config,
     _validate_tls_records,
@@ -22,15 +22,21 @@ from goodix5503.image_capture import (
 )
 from goodix5503.chip_config import EXPECTED_ZERO_OTP_CONFIG, RUNTIME_CONFIG_PATH
 from goodix5503.image_capture import (
-    COMMAND_GET_POV_IMAGE,
-    COMMAND_POV_IMAGE_CHECK,
-    COMMAND_SET_DRIVER_STATE,
+    COMMAND_READ_REGISTER,
     COMMAND_SWITCH_FDT_MODE,
+    COMMAND_SWITCH_IDLE,
     COMMAND_UPLOAD_CONFIG,
 )
 from goodix5503.pairing import PSK_PATH, VERIFICATION_PATH
 from goodix5503.probe import COMMAND_ACK, ProtocolError, ReadOnlyUsbSession, _encode_packet
 from goodix5503.tls_check import COMMAND_REQUEST_TLS, _encode_outer
+
+TEST_DEADLINE = 1_000_000_000.0
+HU_DAC_FIELD = bytes.fromhex("8b0084008c008800")
+HU_IMAGE_REQUEST = b"\x01\x00" + HU_DAC_FIELD
+HU_FRESH_FDT_REQUEST = bytes.fromhex(
+    "0d018b0084008c008800800080008000800080008000"
+)
 
 
 class ImageDecodeTests(unittest.TestCase):
@@ -90,7 +96,6 @@ class ImageEnvelopeTests(unittest.TestCase):
                     _validate_tls_records(value)
 
     def test_image_request_has_fixed_command_payload_and_nine_byte_envelope(self):
-        self.assertEqual(GET_IMAGE_CLEAR, b"\x01\x00")
         session = object.__new__(ReadOnlyUsbSession)
         writes = []
         ciphertext = self.tls_record(b"ciphertext")
@@ -103,14 +108,22 @@ class ImageEnvelopeTests(unittest.TestCase):
         session._ReadOnlyUsbSession__write_packet = writes.append
         session._read_frame = lambda: next(frames)
 
-        prefix, result = _request_encrypted_clear_image(session)
+        prefix, result = _request_encrypted_clear_image(session, HU_IMAGE_REQUEST)
         try:
             self.assertEqual(prefix, bytearray(b"123456789"))
             self.assertEqual(result, bytearray(ciphertext))
-            self.assertEqual(writes, [_encode_packet(COMMAND_GET_IMAGE, GET_IMAGE_CLEAR)])
+            self.assertEqual(writes, [_encode_packet(COMMAND_GET_IMAGE, HU_IMAGE_REQUEST)])
         finally:
             prefix[:] = b"\x00" * len(prefix)
             result[:] = b"\x00" * len(result)
+
+    def test_image_request_rejects_non_hu_payload_before_writing(self):
+        session = object.__new__(ReadOnlyUsbSession)
+        session._ReadOnlyUsbSession__write_packet = lambda _packet: self.fail(
+            "invalid payload was written"
+        )
+        with self.assertRaisesRegex(ImageCaptureError, "exactly 10"):
+            _request_encrypted_clear_image(session, b"\x01\x00")
 
     def test_image_request_accepts_only_exact_success_prelude_before_b2(self):
         session = object.__new__(ReadOnlyUsbSession)
@@ -124,7 +137,7 @@ class ImageEnvelopeTests(unittest.TestCase):
         )
         session._ReadOnlyUsbSession__write_packet = lambda _packet: None
         session._read_frame = lambda: next(frames)
-        prefix, result = _request_encrypted_clear_image(session)
+        prefix, result = _request_encrypted_clear_image(session, HU_IMAGE_REQUEST)
         try:
             self.assertEqual(prefix, bytearray(b"123456789"))
             self.assertEqual(result, bytearray(ciphertext))
@@ -144,7 +157,7 @@ class ImageEnvelopeTests(unittest.TestCase):
                 bad_session._ReadOnlyUsbSession__write_packet = lambda _packet: None
                 bad_session._read_frame = lambda: next(bad_frames)
                 with self.assertRaises((ImageCaptureError, ProtocolError)):
-                    _request_encrypted_clear_image(bad_session)
+                    _request_encrypted_clear_image(bad_session, HU_IMAGE_REQUEST)
 
     def test_image_request_accepts_delayed_tls_completion_before_b2(self):
         ciphertext = self.tls_record(b"ciphertext")
@@ -163,7 +176,7 @@ class ImageEnvelopeTests(unittest.TestCase):
                 iterator = iter(frames)
                 session._ReadOnlyUsbSession__write_packet = lambda _packet: None
                 session._read_frame = lambda: next(iterator)
-                prefix, result = _request_encrypted_clear_image(session)
+                prefix, result = _request_encrypted_clear_image(session, HU_IMAGE_REQUEST)
                 try:
                     self.assertEqual(prefix, bytearray(b"123456789"))
                     self.assertEqual(result, bytearray(ciphertext))
@@ -181,7 +194,7 @@ class ImageEnvelopeTests(unittest.TestCase):
         oversized._ReadOnlyUsbSession__write_packet = lambda _packet: None
         oversized._read_frame = lambda: next(oversized_frames)
         with self.assertRaisesRegex(ImageCaptureError, "too large"):
-            _request_encrypted_clear_image(oversized)
+            _request_encrypted_clear_image(oversized, HU_IMAGE_REQUEST)
 
         session = object.__new__(ReadOnlyUsbSession)
         bad_order = iter(
@@ -194,7 +207,7 @@ class ImageEnvelopeTests(unittest.TestCase):
         session._ReadOnlyUsbSession__write_packet = lambda _packet: None
         session._read_frame = lambda: next(bad_order)
         with self.assertRaisesRegex(ImageCaptureError, "unexpected or duplicate"):
-            _request_encrypted_clear_image(session)
+            _request_encrypted_clear_image(session, HU_IMAGE_REQUEST)
 
         for command in (COMMAND_REQUEST_TLS, COMMAND_GET_IMAGE):
             with self.subTest(duplicate=command):
@@ -209,7 +222,7 @@ class ImageEnvelopeTests(unittest.TestCase):
                 duplicate._ReadOnlyUsbSession__write_packet = lambda _packet: None
                 duplicate._read_frame = lambda: next(duplicate_frames)
                 with self.assertRaisesRegex(ImageCaptureError, "unexpected or duplicate"):
-                    _request_encrypted_clear_image(duplicate)
+                    _request_encrypted_clear_image(duplicate, HU_IMAGE_REQUEST)
 
     def test_image_request_rejects_short_or_malformed_envelope(self):
         for payload in (b"123456789", b"123456789not-tls"):
@@ -224,7 +237,7 @@ class ImageEnvelopeTests(unittest.TestCase):
                 session._ReadOnlyUsbSession__write_packet = lambda _packet: None
                 session._read_frame = lambda: next(frames)
                 with self.assertRaises(ImageCaptureError):
-                    _request_encrypted_clear_image(session)
+                    _request_encrypted_clear_image(session, HU_IMAGE_REQUEST)
 
 
 class ResetGuardTests(unittest.TestCase):
@@ -264,6 +277,9 @@ class TlsPlaintextBoundaryTests(unittest.TestCase):
             def setblocking(self, value):
                 self.blocking = value
 
+            def settimeout(self, _value):
+                self.blocking = True
+
         fake_socket = FakeTlsSocket()
 
         class FakeContext:
@@ -271,13 +287,278 @@ class TlsPlaintextBoundaryTests(unittest.TestCase):
                 self.server_side = server_side
                 return fake_socket
 
-        server = _TlsImageServer(FakeContext(), float("inf"))
+        server = _TlsImageServer(FakeContext(), TEST_DEADLINE)
         server.server_transport = object()
-        server.image_requested.set()
+        server.image_requests = 1
         server._run()
-        self.assertTrue(server.image_done.is_set())
-        self.assertIsInstance(server.image_result[0], ImageCaptureError)
-        self.assertIn("surplus", str(server.image_result[0]))
+        self.assertIsInstance(server.image_results[0], ImageCaptureError)
+        self.assertIn("surplus", str(server.image_results[0]))
+
+
+class FreshBaseCoordinatorTests(unittest.TestCase):
+    @staticmethod
+    def base(value):
+        return struct.pack("<6H", *(value for _index in range(6)))
+
+    def test_runs_proven_fresh_base_sequence_and_returns_image_base(self):
+        responses = iter((self.base(1000), self.base(1002), self.base(1004)))
+        commands = []
+        image_count = 0
+
+        def exchange(_session, command, payload, _deadline):
+            commands.append((command, payload))
+            if command == COMMAND_SWITCH_FDT_MODE:
+                return next(responses)
+            self.assertEqual(command, COMMAND_READ_REGISTER)
+            self.assertEqual(payload, b"\x00\x82\x00\x02\x00")
+            return b"\x00\x05"
+
+        def receive(_session, _tls, payload, _deadline):
+            nonlocal image_count
+            self.assertEqual(payload, HU_IMAGE_REQUEST)
+            image_count += 1
+            return bytearray(9), bytearray([image_count]) * 7684
+
+        with (
+            patch("goodix5503.image_capture._fixed_exchange", side_effect=exchange),
+            patch("goodix5503.image_capture._ack_only") as ack,
+            patch(
+                "goodix5503.image_capture._receive_hu_plaintext_image",
+                side_effect=receive,
+            ),
+        ):
+            prefix, plaintext = _acquire_hu_fresh_base_frame(
+                object(), object(), bytearray(HU_DAC_FIELD), HU_IMAGE_REQUEST, TEST_DEADLINE
+            )
+        try:
+            self.assertEqual(prefix, bytearray(9))
+            self.assertEqual(plaintext, bytearray([2]) * 7684)
+            self.assertEqual(image_count, 2)
+            self.assertEqual(
+                [command for command, _payload in commands],
+                [
+                    COMMAND_SWITCH_FDT_MODE,
+                    COMMAND_SWITCH_FDT_MODE,
+                    COMMAND_READ_REGISTER,
+                    COMMAND_SWITCH_FDT_MODE,
+                ],
+            )
+            ack.assert_called_once_with(
+                ANY,
+                COMMAND_SWITCH_IDLE,
+                b"\x14\x00",
+                TEST_DEADLINE,
+            )
+        finally:
+            prefix[:] = b"\x00" * len(prefix)
+            plaintext[:] = b"\x00" * len(plaintext)
+
+    def test_rejects_short_empty_and_oversized_command36_bodies(self):
+        for length in (0, 11, 13):
+            with self.subTest(length=length):
+                with (
+                    patch(
+                        "goodix5503.image_capture._fixed_exchange",
+                        return_value=bytes(length),
+                    ),
+                    patch(
+                        "goodix5503.image_capture._receive_hu_plaintext_image"
+                    ) as receive,
+                ):
+                    with self.assertRaisesRegex(ImageCaptureError, "exactly 12"):
+                        _acquire_hu_fresh_base_frame(
+                            object(),
+                            object(),
+                            bytearray(HU_DAC_FIELD),
+                            HU_IMAGE_REQUEST,
+                            TEST_DEADLINE,
+                        )
+                receive.assert_not_called()
+
+    def test_retries_an_inconsistent_first_pair_then_succeeds(self):
+        responses = iter(
+            (
+                self.base(1000),
+                self.base(2000),
+                b"\x00\x05",
+                self.base(1000),
+                self.base(1001),
+                b"\x00\x05",
+                self.base(1002),
+            )
+        )
+        image_count = 0
+
+        def exchange(_session, _command, _payload, _deadline):
+            return next(responses)
+
+        def receive(_session, _tls, _payload, _deadline):
+            nonlocal image_count
+            image_count += 1
+            return bytearray(9), bytearray(7684)
+
+        with (
+            patch("goodix5503.image_capture._fixed_exchange", side_effect=exchange),
+            patch("goodix5503.image_capture._ack_only"),
+            patch(
+                "goodix5503.image_capture._receive_hu_plaintext_image",
+                side_effect=receive,
+            ),
+        ):
+            prefix, plaintext = _acquire_hu_fresh_base_frame(
+                object(), object(), bytearray(HU_DAC_FIELD), HU_IMAGE_REQUEST, TEST_DEADLINE
+            )
+        try:
+            self.assertEqual(image_count, 3)
+        finally:
+            prefix[:] = b"\x00" * len(prefix)
+            plaintext[:] = b"\x00" * len(plaintext)
+
+
+    def test_stops_after_three_inconsistent_fresh_base_attempts(self):
+        exchange_count = 0
+        image_count = 0
+
+        def exchange(_session, command, _payload, _deadline):
+            nonlocal exchange_count
+            exchange_count += 1
+            if command == COMMAND_READ_REGISTER:
+                return b"\x00\x01"
+            # Alternate far-apart base0/base1 values on every attempt.
+            return self.base(1000 if exchange_count % 3 == 1 else 2000)
+
+        def receive(_session, _tls, _payload, _deadline):
+            nonlocal image_count
+            image_count += 1
+            return bytearray(9), bytearray(7684)
+
+        with (
+            patch("goodix5503.image_capture._fixed_exchange", side_effect=exchange),
+            patch("goodix5503.image_capture._ack_only"),
+            patch(
+                "goodix5503.image_capture._receive_hu_plaintext_image",
+                side_effect=receive,
+            ),
+        ):
+            with self.assertRaisesRegex(ImageCaptureError, "did not stabilize"):
+                _acquire_hu_fresh_base_frame(
+                    object(),
+                    object(),
+                    bytearray(HU_DAC_FIELD),
+                    HU_IMAGE_REQUEST,
+                    TEST_DEADLINE,
+                )
+        self.assertEqual(image_count, 3)
+        self.assertEqual(exchange_count, 9)
+
+    def test_timeout_cleanup_wipes_an_unclaimed_late_plaintext_result(self):
+        class FakeBridge:
+            def settimeout(self, _value):
+                pass
+
+            def sendall(self, _data):
+                pass
+
+            def close(self):
+                pass
+
+        class FakeTransport:
+            def close(self):
+                pass
+
+        server = _TlsImageServer(object(), time.monotonic() + 0.02)
+        server.bridge = FakeBridge()
+        server.server_transport = FakeTransport()
+        with self.assertRaisesRegex(ImageCaptureError, "timed out"):
+            server.decrypt(bytearray(b"ciphertext"))
+        late = bytearray(b"biometric plaintext")
+        server.image_results.append(late)
+        server.close()
+        self.assertEqual(late, bytearray(len(late)))
+        self.assertEqual(server.image_results, [])
+
+    def test_server_decrypts_two_sequential_hu_images_on_one_tls_session(self):
+        class FakeTlsSocket:
+            def __init__(self):
+                self.image = 1
+                self.remaining = 7684
+                self.blocking = True
+                self.timeouts = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def cipher(self):
+                return ("PSK-AES128-CBC-SHA256", "TLSv1.2", 128)
+
+            def setblocking(self, value):
+                self.blocking = value
+
+            def settimeout(self, value):
+                self.blocking = True
+                self.timeouts.append(value)
+
+            def recv_into(self, target):
+                if not self.blocking:
+                    raise BlockingIOError
+                count = min(len(target), self.remaining, 1024)
+                target[:count] = bytes((self.image,)) * count
+                self.remaining -= count
+                if self.remaining == 0:
+                    self.image += 1
+                    self.remaining = 7684
+                return count
+
+        class FakeContext:
+            def __init__(self):
+                self.socket = FakeTlsSocket()
+
+            def wrap_socket(self, _transport, *, server_side):
+                self.server_side = server_side
+                return self.socket
+
+        class FakeBridge:
+            def sendall(self, _data):
+                pass
+
+            def settimeout(self, _value):
+                pass
+
+            def close(self):
+                pass
+
+        class FakeTransport:
+            def close(self):
+                pass
+
+        context = FakeContext()
+        server = _TlsImageServer(context, TEST_DEADLINE)
+        server.server_transport = FakeTransport()
+        server.bridge = FakeBridge()
+        server.thread = __import__("threading").Thread(target=server._run)
+        server.thread.start()
+        self.assertTrue(server.handshake_done.wait(1))
+        first = server.decrypt(bytearray(b"one"))
+        second = server.decrypt(bytearray(b"two"))
+        try:
+            self.assertEqual(first, bytearray(b"\x01" * 7684))
+            self.assertEqual(second, bytearray(b"\x02" * 7684))
+            self.assertGreaterEqual(len(context.socket.timeouts), 16)
+            self.assertTrue(
+                all(
+                    later <= earlier
+                    for earlier, later in zip(
+                        context.socket.timeouts, context.socket.timeouts[1:]
+                    )
+                )
+            )
+        finally:
+            first[:] = b"\x00" * len(first)
+            second[:] = b"\x00" * len(second)
+            server.close()
 
 
 class CaptureOrchestratorTests(unittest.TestCase):
@@ -295,8 +576,50 @@ class CaptureOrchestratorTests(unittest.TestCase):
                 run_prepared_clear_frame_capture(CLEAR_CAPTURE_CONFIRMATION)
         session.assert_not_called()
 
+    def test_otp_is_wiped_when_runtime_derivation_fails(self):
+        issued = bytearray(b"S" * 64)
+
+        class FakeSession:
+            def __init__(self, _timeout):
+                pass
+
+            def request(self, command, payload=b"", *, checksum=True):
+                if command == 0xA8:
+                    return b"GF3258_RTSEC_APP_10063\x00"
+                if command == 0xF6:
+                    return b"MILAN_RTSEC_IAP_10027\x00"
+                return b""
+
+            def read_otp(self):
+                return issued
+
+            def close(self):
+                pass
+
+        with (
+            patch(
+                "goodix5503.image_capture.OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE",
+                True,
+            ),
+            patch("goodix5503.image_capture.ReadOnlyUsbSession", FakeSession),
+            patch("goodix5503.image_capture._disable_core_dumps"),
+            patch("goodix5503.image_capture._preflight_tls_runtime"),
+            patch(
+                "goodix5503.image_capture._read_live_verification",
+                return_value=bytearray(32),
+            ),
+            patch(
+                "goodix5503.image_capture.derive_hu_dac_field",
+                side_effect=ValueError("derivation stopped"),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "derivation stopped"):
+                run_prepared_clear_frame_capture(CLEAR_CAPTURE_CONFIRMATION)
+        self.assertEqual(issued, bytearray(64))
+
     def test_orchestrator_uses_only_fixed_runtime_sequence_and_resets_cleanup(self):
         events = []
+        issued_otps = []
 
         class FakeSession:
             def __init__(self, timeout):
@@ -309,6 +632,15 @@ class CaptureOrchestratorTests(unittest.TestCase):
                 if command == 0xF6:
                     return b"MILAN_RTSEC_IAP_10027\x00"
                 return b""
+
+            def read_otp(self):
+                events.append(("read-otp",))
+                otp = bytearray(64)
+                otp[0x32:0x36] = bytes.fromhex("8b848c88")
+                otp[0x3D] = 0xA1
+                otp[0x3E] = 0x1F
+                issued_otps.append(otp)
+                return otp
 
             def close(self):
                 events.append(("close",))
@@ -328,22 +660,27 @@ class CaptureOrchestratorTests(unittest.TestCase):
             def close(self):
                 events.append(("tls-close",))
 
+        def drop_privileges():
+            self.assertTrue(issued_otps)
+            self.assertTrue(all(not any(otp) for otp in issued_otps))
+            events.append(("drop-privileges",))
+
         def read_secret(path, length):
             self.assertEqual(length, 256 if path == RUNTIME_CONFIG_PATH else 32)
             if path == RUNTIME_CONFIG_PATH:
                 return bytearray(EXPECTED_ZERO_OTP_CONFIG)
             return bytearray(b"K" * 32)
 
-        def fixed_exchange(_session, command, payload):
+        def fixed_exchange(_session, command, payload, _deadline=None):
             events.append(("exchange", command, payload))
-            if command in (COMMAND_POV_IMAGE_CHECK, COMMAND_UPLOAD_CONFIG):
+            if command == COMMAND_UPLOAD_CONFIG:
                 return b"\x01"
-            if command == COMMAND_GET_POV_IMAGE:
-                return b"\x00"
             return b""
 
-        def ack_only(_session, command, payload):
-            events.append(("ack-only", command, payload))
+        def acquire_fresh(_session, _tls, dac, payload, _deadline):
+            self.assertEqual(dac, HU_DAC_FIELD)
+            self.assertEqual(payload, HU_IMAGE_REQUEST)
+            return bytearray(9), bytearray(7684)
 
         with (
             patch(
@@ -354,7 +691,10 @@ class CaptureOrchestratorTests(unittest.TestCase):
             patch("goodix5503.image_capture._disable_core_dumps"),
             patch("goodix5503.image_capture._preflight_tls_runtime"),
             patch("goodix5503.image_capture._read_live_verification", return_value=bytearray(b"K" * 32)),
-            patch("goodix5503.image_capture._drop_sudo_privileges"),
+            patch(
+                "goodix5503.image_capture._drop_sudo_privileges",
+                side_effect=drop_privileges,
+            ),
             patch("goodix5503.image_capture.os.geteuid", return_value=1000),
             patch("goodix5503.image_capture._read_secure_secret", side_effect=read_secret),
             patch("goodix5503.image_capture._validate_prepared_config"),
@@ -362,11 +702,10 @@ class CaptureOrchestratorTests(unittest.TestCase):
             patch("goodix5503.image_capture._build_tls_context", return_value=object()),
             patch("goodix5503.image_capture._reset_sensor", side_effect=lambda _s: events.append(("reset",))),
             patch("goodix5503.image_capture._fixed_exchange", side_effect=fixed_exchange),
-            patch("goodix5503.image_capture._ack_only", side_effect=ack_only),
             patch("goodix5503.image_capture._TlsImageServer", FakeTlsServer),
             patch(
-                "goodix5503.image_capture._request_encrypted_clear_image",
-                return_value=(bytearray(9), bytearray(b"cipher")),
+                "goodix5503.image_capture._acquire_hu_fresh_base_frame",
+                side_effect=acquire_fresh,
             ),
         ):
             result = run_prepared_clear_frame_capture(CLEAR_CAPTURE_CONFIRMATION)
@@ -375,21 +714,13 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertEqual(result["pixel_max"], 0)
         self.assertEqual(result["pixel_sum"], 0)
         self.assertEqual(events.count(("reset",)), 2)
-        runtime = [event for event in events if event[0] in ("exchange", "ack-only")]
-        self.assertEqual(runtime[0], ("exchange", COMMAND_POV_IMAGE_CHECK, b"\x00\x00"))
-        self.assertEqual(runtime[1][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
-        self.assertEqual(len(runtime[1][2]), 256)
-        self.assertEqual(
-            runtime[2:4],
-            [
-                ("ack-only", COMMAND_SET_DRIVER_STATE, b"\x01\x00"),
-                ("ack-only", COMMAND_SET_DRIVER_STATE, b"\x01\x00"),
-            ],
-        )
-        self.assertEqual(runtime[4], ("exchange", COMMAND_GET_POV_IMAGE, b"\x00\x00"))
-        self.assertEqual(runtime[5], ("exchange", COMMAND_SWITCH_FDT_MODE, FDT_CLEAR_MODE))
+        runtime = [event for event in events if event[0] == "exchange"]
+        self.assertEqual(runtime[0][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
+        self.assertEqual(len(runtime[0][2]), 256)
+        self.assertEqual(len(runtime), 1)
         self.assertIn(("tls-close",), events)
         self.assertEqual(events[-1], ("close",))
+        self.assertTrue(all(not any(otp) for otp in issued_otps))
 
 
 if __name__ == "__main__":

@@ -26,9 +26,10 @@ It exists to prevent further step-at-a-time substitution of community commands.
 | TLS request | D0 through `McuReqTlsConnection` at `0x1800ac0b0`; caller supplies null output pointer/length, so later A0/D0 data is opaque | pinned DLL call at `0x1800ac14f` |
 | TLS status | Milan operation table selects wire `92` with a dynamic one-byte request and two-byte output; no immediate D4 constructor exists in pinned Milan code | table `0x180259ce0`, `McuGetTlsStatus` `0x1800af210` |
 | Image wrapper | `MilanFSerMcuGetImage` at `0x180065c90`; validates output size and dispatches to generic or discriminator-10 path | pinned DLL |
-| Generic image request | command 20, payload exactly `01 00`, length 2 | `_FpMcuGetImage` `0x180058610`, IoHub call `0x18005871a` |
-| FDT constructor | selector-derived commands 30/32/34/36; payload is two-byte header plus optional dynamic bytes | `_FpMcuSwitchToFdtMode` `0x1800589b0` |
-| Manual-base wrapper | selector 3 calls command 36 using a caller-provided dynamic word array | `MilanFSerMcuGetFdtManualBase`, call `0x180065b77` |
+| Local HU image request | discriminator 10 selects `_HUGetImage`; command 20 payload is `01 00` plus four live LE16 DAC words, length 10 | `_HUGetImage` `0x180065ef0`, IoHub call `0x180066127` |
+| Generic image request | non-discriminator-10 profiles use command 20 payload `01 00`, length 2; this is not the local GF3258 branch | `_FpMcuGetImage` `0x180058610` |
+| Local FDT constructor | command 36 payload is a two-byte header, the same 8-byte live DAC field, and 12 transformed base bytes | `HUFpMcuSwitchToFdtMode` `0x18006dcc0` |
+| Local manual-base wrapper | selector 3 calls command 36 and returns raw and transformed forms of a bounded 12-byte response | `HUMilanFSerMcuGetFdtManualBase` `0x18006cdb0` |
 | Transport | ACK and later data use separate IoHub paths; B2 is encrypted TLS image data, not A0 command completion | IoHub functions/strings plus local observations |
 | Image layout | profile 80x64; 7,680 packed 12-bit bytes decode to 5,120 pixels; TLS plaintext boundary currently 7,684 with four opaque bytes | profile/community/local parser evidence; opaque semantics unknown |
 
@@ -36,48 +37,41 @@ It exists to prevent further step-at-a-time substitution of community commands.
 
 The following must not be copied from the 5110 log or community 10062 script:
 
-- complete cold-init command ordering;
-- exact chip-ID register request and any required register writes;
-- power-down scan-frequency command/payload;
-- whether config 90 precedes or follows TLS on Milan;
-- the exact post-D4 MCU-state query payload/parser for Milan;
-- C4 twice and its official caller/count;
-- D6 and D2 response success semantics;
-- the 21 dynamic bytes supplied to command 36 for this unit;
-- clear/base acquisition order and whether a stored base is required;
+- optional resume/sensor-check branches outside the normal fresh-base path;
+- the callback semantics preceding the register-82 FDT-delta read;
+- power-down scan-frequency command/payload, if any;
+- D6 and wire-92 response-body semantics beyond transport completion;
+- runtime high-nibble state used in command 36;
+- exact transport capacities/timeouts for every command-20 branch;
 - field meanings of the B2 nine-byte prefix and plaintext four-byte trailer;
 - full official failure cleanup and sensor restoration sequence.
 
-The current command-36 literal is the community 10062 value. Corrected GF3258
-analysis proves the official local payload is also 22 bytes, but its fields are
-dynamic and the literal is not the official zero-base first request. Another
-hardware run is blocked until those local values and the surrounding call chain
-are implemented. The prior D4/`0000` step has also been removed: it came from
-the 5110 log, while pinned Milan uses a dynamic wire-92 TLS-status operation and
-exposes no immediate D4.
+The fixed community command-36 literal has been removed from the runtime path.
+Both command 20 and command 36 are now built from the unit's freshly read OTP;
+the first command-36 base suffix is the proven zero-base value. The prior
+D4/`0000` step has also been removed: it came from the 5110 log, while pinned
+Milan exposes no immediate D4.
 
 ## Current narrow candidate versus proof
 
-The former prototype candidate performed identity/PSK checks, reset, D6, TLS D0
-flights, config 90, C4 twice, D2, command 36, image 20 and cleanup reset. Only
-reset, TLS, config identity, image `20/0100`, packet/TLS validation and cleanup
-are well supported. D6/C4/D2/36 and their ordering remain a community-derived
-block. The hardware entry point is now explicitly disabled before USB even with
-confirmation; it cannot be mistaken for an attested official sequence.
+The dormant runtime implementation now performs identity/PSK checks, reset,
+TLS D0 flights, config 90, and the bounded official fresh-base coordinator. It
+uses dynamic HU command-20/36 payloads, exact command-36 bodies, command
+`70/1400`, register-82 delta reads, two consistency comparisons and at most
+three complete attempts. Unsupported unconditional D6, D2 and C4 calls are
+absent. The TLS bridge supports both command-20 images on one TLS session.
+The hardware entry point remains explicitly disabled before USB even with
+confirmation until this new coordinator passes independent review.
 
 ## Offline work gate
 
 Before another capture attempt:
 
-1. close the Milan call graph above `MilanFSerMcuGetFdtManualBase` and
-   `MilanFSerMcuGetImage`;
-2. recover the source and derivation of command-36 optional words for a first
-   clear/base frame;
-3. recover Milan post-D4 state confirmation or prove it is unnecessary;
-4. recover D6/D2/C4 caller semantics or remove them;
-5. use a single operation deadline for USB/TLS/cancellation and test every
-   partial-frame/failure edge;
-6. independently review the resulting complete sequence.
+1. independently review the bounded coordinator and multi-image TLS bridge;
+2. verify all short/oversized command-36, delta, retry and cleanup tests;
+3. retain a single operation deadline across USB and TLS;
+4. confirm no optional resume-only command was accidentally made mandatory;
+5. only then consider one runtime-only, memory-only validation.
 
 No firmware, PSK or persistent operation is required for this work.
 
@@ -134,3 +128,63 @@ request is:
 The community literal has the right 22-byte length, but embeds unverified DAC
 values and nonzero saved/acquired-base high bytes. It is neither derivable from
 the 256-byte config nor valid as the proven fresh zero-base request.
+
+## OTP-to-DAC derivation
+
+The original 64-byte OTP is sufficient. `0x18006ef30` selects offsets
+`0x32..0x35` when either its 23-byte CRC predicate or the four-byte CRC at
+`otp[0x3e]` passes; otherwise it selects `0x2e..0x31` using the corresponding
+right-side predicates. The CRC is complemented CRC-8/poly-0x07 with initial
+zero. If neither family passes, at least three of the four paired bytes must
+match; one mismatch is repaired to the floor-average of the other three left
+bytes. Fewer than three matches fails closed in the free implementation.
+
+`0x18006f1c0` zero-extends the four selected bytes to four LE16 words and writes
+them to context `+0x70` and snapshot `+0x78`. The free implementation is in
+`src/goodix5503/hu_runtime.py`; it requires a mutable exact 64-byte buffer. The
+capture path retains only the derived eight-byte field and wipes OTP immediately.
+
+The same live DAC field is consumed by two local commands:
+
+```text
+command 20: 01 00 || DAC_LE16[4]                         # 10 bytes
+command 36: 0d 01 || DAC_LE16[4] || transformed_base[6] # 22 bytes
+```
+
+## Fresh-base coordinator and command-36 response
+
+For no valid saved base, `UpdateAllBase` `0x18008bdc0` performs:
+
+1. command 36 manual base0;
+2. command 20 image followed by host-only nav-base conversion: decode the
+   7,680 packed bytes to an 80x64 LE16 image, then retain complete rows
+   8,12,...,52 as an 80x12 (1,920-byte) nav base;
+3. command 36 manual base1;
+4. command 70 payload `14 00`, then command 82 register-read payload
+   `00 82 00 02 00`; interpret the returned LE16 value shifted right by eight
+   as delta and compare base0/base1;
+5. command 20 image base;
+6. command 36 manual base2;
+7. host comparison of base1/base2 and commit of transformed base2.
+
+The host fallback nav conversion at `0x1800456d0`/`0x180059120` has no
+content-dependent failure: it is a fixed row copy. The free coordinator performs
+the same decode and crop and retains the result through the later acquisitions
+before wiping it; no proprietary enclave implementation is required.
+
+Each command-36 call requests a bounded 12-byte data body after its separate
+ACK. The official transport accepts 0..12 and zero-pads, but the free path must
+require exactly 12. Output1 is the raw six-word response. Output2 transforms each
+raw LE16 word `x` to `((x >> 1) << 8) | 0x80`; accepted output2 becomes the base
+for later requests. The DLL retries inconsistent pairs without a numeric bound;
+the free implementation must instead use the existing operation deadline and a
+small explicit retry cap.
+
+The register-82 delta decode is unsigned high-byte extraction. The DLL executes
+`movzx eax,word` before `sar eax,8`, so raw `00 ff` produces threshold 255;
+base comparisons are `abs(u16_a-u16_b) <= zero_extended_delta`.
+
+There is no C4, D6, D2, AE or wire-92 preparation between these acquisitions.
+D6 is conditional resume/POV logic; post-config C4 state 1 is conditional and
+occurs at most once in this path. The former unconditional D6, duplicate C4 and
+D2 candidate steps must be removed rather than reproduced.

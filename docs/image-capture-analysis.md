@@ -74,12 +74,13 @@ fatal. Further hardware use remains separately review- and user-gated.
 
 The separately authorized fourth attempt successfully consumed the bounded D0
 completion, then timed out waiting for B2. It saved no image and attempted
-cleanup reset. This exposed a second 10062/10063 mismatch: the request still used
-the community ten-byte image payload, while official `_FpMcuGetImage` constructs
-exactly `01 00`. The offline path now uses only the official two-byte payload.
+cleanup reset. An intermediate audit incorrectly replaced the ten-byte request
+with generic `_FpMcuGetImage` payload `01 00`; the next attempt timed out after
+D0. Corrected profile dispatch now proves local GF3258 discriminator 10 uses
+`_HUGetImage` and requires `01 00` plus four OTP-derived LE16 DAC words. No
+further hardware attempt was made.
 
-The next standing-authorized attempt still timed out after D0 with the corrected
-two-byte request. A D4/`0000` hypothesis was derived from the 5110 Chicago log,
+A D4/`0000` hypothesis was then derived from the 5110 Chicago log,
 but the complete profile audit invalidated its use for Milan: pinned Milan code
 contains no immediate D4 constructor and selects a dynamic wire-92 TLS-status
 operation instead. D4 has been removed, and hardware capture is disabled while
@@ -104,10 +105,12 @@ calloc-zero branch ends in `(80 00) * 6`. The community literal is length-correc
 but contains unverified DAC values and nonzero base high bytes, so it is not the
 official first request and remains unreachable behind the capture safety gate.
 
-Official 10063 `_FpMcuGetImage` at `0x180058610` constructs the exact two-byte
-request `01 00` and submits command `0x20` through `IoHubMcuSendCmd2`
-(`0x18007b930`). The community 10062 script instead sends ten bytes
-`01008b0084008c008800`; that longer payload is not the official 10063 request.
+Generic `_FpMcuGetImage` at `0x180058610` constructs two-byte request `01 00`,
+but local `MilanFSerMcuGetImage` dispatches discriminator 10 to `_HUGetImage`
+`0x180065ef0`. The local command-20 request is exactly 10 bytes:
+`01 00 || <four live LE16 DAC words>`. The community payload has this shape, but
+its numeric DAC values were not attested for this unit. The free path now derives
+the field from the same 64-byte OTP read and wipes the OTP afterward.
 Official IoHub strings distinguish ACK, data-in and data-processed callbacks,
 supporting separate routing for A0 completions and B2 encrypted data. Clear and
 finger images are 80 by 64 pixels; their packed 12-bit decoder consumes exactly

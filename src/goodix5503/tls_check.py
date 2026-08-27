@@ -71,13 +71,37 @@ def _reset_sensor(session: ReadOnlyUsbSession) -> None:
         raise ProtocolError("sensor reset was not acknowledged")
 
 
-def _request_tls_client_hello(session: ReadOnlyUsbSession) -> bytes:
+def _deadline_timeout_ms(operation_deadline: float | None) -> int | None:
+    if operation_deadline is None:
+        return None
+    remaining = int((operation_deadline - time.monotonic()) * 1000)
+    if remaining <= 0:
+        raise TlsTestError("TLS operation deadline expired")
+    return remaining
+
+
+def _read_frame_deadline(
+    session: ReadOnlyUsbSession, operation_deadline: float | None
+) -> bytes:
+    timeout_ms = _deadline_timeout_ms(operation_deadline)
+    if timeout_ms is None:
+        return session._read_frame()
+    return session._read_frame(timeout_ms=timeout_ms)
+
+
+def _request_tls_client_hello(
+    session: ReadOnlyUsbSession, operation_deadline: float | None = None
+) -> bytes:
     session._ReadOnlyUsbSession__write_packet(  # type: ignore[attr-defined]
         _encode_packet(COMMAND_REQUEST_TLS, b"\x00\x00")
     )
-    ack = _decode_packet(session._read_frame(), COMMAND_ACK)
+    ack = _decode_packet(
+        _read_frame_deadline(session, operation_deadline), COMMAND_ACK
+    )
     _check_ack(ack, COMMAND_REQUEST_TLS)
-    return _decode_outer(session._read_frame(), FLAGS_TLS)
+    return _decode_outer(
+        _read_frame_deadline(session, operation_deadline), FLAGS_TLS
+    )
 
 
 def _send_tls(session: ReadOnlyUsbSession, record: bytes) -> None:
@@ -86,8 +110,12 @@ def _send_tls(session: ReadOnlyUsbSession, record: bytes) -> None:
     )
 
 
-def _receive_tls(session: ReadOnlyUsbSession) -> bytes:
-    return _decode_outer(session._read_frame(), FLAGS_TLS)
+def _receive_tls(
+    session: ReadOnlyUsbSession, operation_deadline: float | None = None
+) -> bytes:
+    return _decode_outer(
+        _read_frame_deadline(session, operation_deadline), FLAGS_TLS
+    )
 
 
 def _recv_exact(sock: socket.socket, length: int, deadline: float) -> bytes:
@@ -106,9 +134,14 @@ def _recv_exact(sock: socket.socket, length: int, deadline: float) -> bytes:
     return bytes(result)
 
 
-def _recv_server_flight(sock: socket.socket, *, final: bool) -> bytes:
+def _recv_server_flight(
+    sock: socket.socket,
+    *,
+    final: bool,
+    operation_deadline: float | None = None,
+) -> bytes:
     """Collect records until a protocol-defined TLS 1.2 flight boundary."""
-    deadline = time.monotonic() + 5
+    deadline = operation_deadline or (time.monotonic() + 5)
     records = bytearray()
     handshake = bytearray()
     saw_change_cipher_spec = False

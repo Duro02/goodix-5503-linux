@@ -36,8 +36,10 @@ Runtime clear-frame attempts: all reached image command after TLS/config/init
   prelude as delayed command `0xd0`; the separately authorized third proved its
   opaque data body is not status `1`, matching the official null-output D0 path.
   The fourth consumed bounded D0 then timed out before B2, revealing that the
-  community 10062 ten-byte image request differs from official 10063 `01 00`.
-  A standing-authorized run with `01 00` still timed out after D0. A subsequent
+  An intermediate audit incorrectly selected generic two-byte image request
+  `01 00`; local GF3258 discriminator 10 actually uses a ten-byte HU request
+  whose final eight bytes are OTP-derived DAC words. The `01 00` run timed out
+  after D0. A subsequent
   full profile audit showed that the proposed D4 step belonged to a 5110 log,
   not pinned Milan code; it was removed without another run. No attempt has
   decoded/saved an image; each attempted cleanup reset. Hardware capture is now
