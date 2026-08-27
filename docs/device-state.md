@@ -21,6 +21,10 @@ Verification record 0xbb020007: 32 bytes, backed up as
   artifacts/device-backup/psk-record-bb020007.bin
 Verification backup SHA-256:
   8722cc96d28ae20251c81a853c33dd1f5097c7ddd2e7505b19f38ef33fbbc74d
+Offline new-pairing material: generated and idempotently reverified; no USB used
+  artifacts/device-backup/new-pairing-psk.bin                  32 bytes, 0600
+  artifacts/device-backup/new-pairing-whitebox-bb010003.bin    96 bytes, 0600
+  artifacts/device-backup/new-pairing-verification-bb020007.bin 32 bytes, 0600
 ```
 
 ## Interpretation
@@ -55,5 +59,8 @@ TLS image capture now depends on recovering the lost per-user DPAPI state or,
 after preserving all readable evidence and an explicit risk decision,
 reprovisioning PSK state without changing firmware. Exact restoration of the old
 pairing is impossible because `0xbb010003` is not readable; failure recovery must
-retry provisioning with a known new PSK. Until that path is reviewed, this
-project will not write a new PSK.
+retry provisioning with a known new PSK. Fresh random pairing material has now
+been prepared locally with the independently reviewed offline-only tool. This
+does not authorize device provisioning: the exact write implementation,
+post-write readback and TLS recovery sequence must still be tested and reviewed
+before requesting explicit hardware-write approval.
