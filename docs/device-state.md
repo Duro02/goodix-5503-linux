@@ -54,7 +54,11 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   their signature and length remain unknown and no safe filter is yet proven.
   A separate source-gated diagnostic now exists to perform only `e5`, settle,
   and a 500 ms transfer-boundary observation; it drops root permanently after
-  claiming USB and remains disabled pending independent review/authorization.
+  claiming USB. The separately reviewed one-shot completed with zero bulk-IN
+  transfers during that window. This disproves an independently queued wake
+  response as the cause of the earlier stale-frame hypothesis. It does not
+  reveal the bytes returned only after the subsequent A8 request; no retry or
+  additional command was issued and the diagnostic source gate remains false.
 ```
 
 ## Interpretation
