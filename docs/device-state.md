@@ -40,8 +40,13 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   which exceeds the official DN2 12-byte output capacity and remains fatal.
   The latest full diff found two still-missing mandatory prerequisites: raw
   loader wake `e5` plus 50 ms settle, and CheckSensor A6 OTP acquisition after
-  reset/chip selection and command 00. Hardware capture remains disabled while
-  those corrections are reviewed.
+  reset/chip selection and command 00. A separately reviewed one-shot at commit
+  `cb0d0c4` then wrote raw `e5`, waited 50 ms, and failed on the first A8 ACK
+  read with `invalid outer frame length`. It did not reach firmware decoding,
+  reset, OTP, TLS, config, command 36, or image acquisition. Because reset had
+  not started, cleanup closed USB without issuing reset. The result is final
+  under that one-shot authorization; there was no retry. Hardware capture
+  remains disabled pending static reconstruction of the wake response/transport.
 ```
 
 ## Interpretation
