@@ -71,7 +71,13 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   ms for ACK and then separately 1,500 ms for data; all three observation
   windows were too short. The queued diagnostic has been corrected to a 3,250
   ms absolute envelope with post-wake/post-settle deadline checks and timing
-  output. All diagnostic source gates remain false.
+  output. The reviewed 3,250 ms one-shot then captured two complete IN
+  transfers at 531/533 ms: first exactly ten zero bytes, then a valid 31-byte
+  A8 frame containing `GF3258_RTSEC_APP_10063`. Wake completed at 26 ms and A8
+  OUT ran from 76 to 528 ms. This finally reproduces the prior invalid-outer-
+  length cause: the synchronous parser treated the leading zero transfer as an
+  A0 outer header. Its exact official role/handling is under static review;
+  nothing was retried and all diagnostic source gates remain false.
 ```
 
 ## Interpretation

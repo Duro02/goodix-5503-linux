@@ -107,7 +107,13 @@ sequentially, so a legal A8 completion can approach 3,000 ms after submission.
 The earlier 500/600 ms windows were therefore insufficient. The queued
 diagnostic now uses a 3,250 ms absolute envelope, rechecks the deadline and live
 reader after wake and settle, caps the A8 OUT timeout to remaining time, and
-records write/completion timing. This remains diagnostic only and source-gated.
+records write/completion timing. The reviewed one-shot observed A8 OUT complete
+at 528 ms, an exact ten-zero-byte IN completion at 531 ms, and the valid
+31-byte A8 firmware frame at 533 ms. The old `invalid outer frame length` is
+therefore explained mechanically by feeding the leading zero completion to the
+A0 parser. Whether it is an official lower-layer status/ACK or a malformed
+callback that Geneva discards is still being traced; no generic drain/filter is
+inferred from it. This remains diagnostic only and source-gated.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
