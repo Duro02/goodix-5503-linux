@@ -144,13 +144,19 @@ def _request_encrypted_clear_image(
             and not seen_image_prelude
         ):
             seen_tls_completion = True
+            completion = _decode_packet(frame, command)
+            # Official McuReqTlsConnection supplies no output buffer and waits
+            # only for ACK. Its later A0 data is therefore an opaque completion,
+            # not a command status byte. Bound and discard it after validation.
+            if len(completion) > 16:
+                raise ImageCaptureError("delayed TLS completion is too large")
         elif command == COMMAND_GET_IMAGE and not seen_image_prelude:
             seen_image_prelude = True
+            prelude = _decode_packet(frame, command)
+            if not prelude or prelude[0] != 1:
+                raise ImageCaptureError("image prelude did not report success")
         else:
             raise ImageCaptureError("unexpected or duplicate image prelude command")
-        prelude = _decode_packet(frame, command)
-        if not prelude or prelude[0] != 1:
-            raise ImageCaptureError("image prelude did not report success")
         frame = session._read_frame()
     payload = _decode_outer(frame, FLAGS_TLS_IMAGE)
     if len(payload) <= 9:

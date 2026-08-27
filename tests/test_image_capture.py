@@ -148,14 +148,15 @@ class ImageEnvelopeTests(unittest.TestCase):
     def test_image_request_accepts_delayed_tls_completion_before_b2(self):
         ciphertext = self.tls_record(b"ciphertext")
         for preludes in (
-            ((COMMAND_REQUEST_TLS, 1),),
-            ((COMMAND_REQUEST_TLS, 1), (COMMAND_GET_IMAGE, 1)),
+            ((COMMAND_REQUEST_TLS, b""),),
+            ((COMMAND_REQUEST_TLS, b"\x00"),),
+            ((COMMAND_REQUEST_TLS, b"opaque"), (COMMAND_GET_IMAGE, b"\x01")),
         ):
             with self.subTest(preludes=preludes):
                 session = object.__new__(ReadOnlyUsbSession)
                 frames = [
                     _encode_packet(COMMAND_ACK, bytes((COMMAND_GET_IMAGE, 1))),
-                    *(_encode_packet(command, bytes((status,))) for command, status in preludes),
+                    *(_encode_packet(command, body) for command, body in preludes),
                     _encode_outer(0xB2, b"123456789" + ciphertext),
                 ]
                 iterator = iter(frames)
@@ -169,6 +170,18 @@ class ImageEnvelopeTests(unittest.TestCase):
                     prefix[:] = b"\x00" * len(prefix)
                     result[:] = b"\x00" * len(result)
 
+        oversized = object.__new__(ReadOnlyUsbSession)
+        oversized_frames = iter(
+            (
+                _encode_packet(COMMAND_ACK, bytes((COMMAND_GET_IMAGE, 1))),
+                _encode_packet(COMMAND_REQUEST_TLS, b"x" * 17),
+            )
+        )
+        oversized._ReadOnlyUsbSession__write_packet = lambda _packet: None
+        oversized._read_frame = lambda: next(oversized_frames)
+        with self.assertRaisesRegex(ImageCaptureError, "too large"):
+            _request_encrypted_clear_image(oversized)
+
         session = object.__new__(ReadOnlyUsbSession)
         bad_order = iter(
             (
@@ -181,6 +194,21 @@ class ImageEnvelopeTests(unittest.TestCase):
         session._read_frame = lambda: next(bad_order)
         with self.assertRaisesRegex(ImageCaptureError, "unexpected or duplicate"):
             _request_encrypted_clear_image(session)
+
+        for command in (COMMAND_REQUEST_TLS, COMMAND_GET_IMAGE):
+            with self.subTest(duplicate=command):
+                duplicate = object.__new__(ReadOnlyUsbSession)
+                duplicate_frames = iter(
+                    (
+                        _encode_packet(COMMAND_ACK, bytes((COMMAND_GET_IMAGE, 1))),
+                        _encode_packet(command, b"\x01"),
+                        _encode_packet(command, b"\x01"),
+                    )
+                )
+                duplicate._ReadOnlyUsbSession__write_packet = lambda _packet: None
+                duplicate._read_frame = lambda: next(duplicate_frames)
+                with self.assertRaisesRegex(ImageCaptureError, "unexpected or duplicate"):
+                    _request_encrypted_clear_image(duplicate)
 
     def test_image_request_rejects_short_or_malformed_envelope(self):
         for payload in (b"123456789", b"123456789not-tls"):

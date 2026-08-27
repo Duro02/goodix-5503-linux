@@ -56,10 +56,19 @@ request. Static official-driver evidence agrees: `McuReqTlsConnection` at
 notifications are separate. The retry again stopped fail-closed, decoded/saved
 no image, and attempted cleanup reset. No third attempt is authorized.
 
-The offline state-machine revision permits at most one successful, fully
-validated delayed `0xd0` completion before an optional successful `0x20`
-prelude; `0xd0` must precede `0x20`. The following frame must still be a
-structurally valid `0xb2` TLS image envelope. Unknown commands, failure status,
+The separately authorized third attempt proved that treating byte zero of the
+validated delayed `0xd0` data packet as a status was incorrect: it was not `1`,
+so the parser again stopped before B2, saved no image and attempted cleanup.
+Official evidence explains this result. `McuReqTlsConnection` passes null output
+pointer/length to `IoHubMcuSendCmd2` and considers the ACK sufficient; its later
+A0 data body is opaque and officially ignored. The official log separately says
+`tls connection ack: 1`, referring to the ACK rather than this A0 body.
+
+The offline state-machine revision now permits at most one fully validated,
+bounded (0..16 byte) delayed `0xd0` completion body without assigning status
+semantics, before an optional successful `0x20` prelude; `0xd0` must precede
+`0x20`. The following frame must still be a structurally valid `0xb2` TLS image
+envelope. Unknown commands, an oversized D0 body, failed image status,
 duplicates, reversed order, malformed packets, or more than two preludes remain
 fatal. Further hardware use remains separately review- and user-gated.
 

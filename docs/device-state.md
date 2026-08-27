@@ -31,10 +31,12 @@ Read-only OTP/config derivation:
   artifacts/device-backup/runtime-config-5503.bin              256 bytes, 0600
   config SHA-256: 54e6cd4c0d18b4472e7ec066a11aabcc55389779e426562a9c2bcfd2e188eba6
   official checksum: valid; FDT delta: 21 (0x15); image tcode: 224 (0x00e0)
-Runtime clear-frame attempts: both reached image command after TLS/config/init
-  and stopped fail-closed before image data. The authorized retry identified the
-  `0xa0` prelude as delayed command `0xd0` TLS completion. Neither attempt decoded
-  or saved an image; both attempted cleanup reset. No third attempt is authorized.
+Runtime clear-frame attempts: all reached image command after TLS/config/init
+  and stopped fail-closed before image data. The second identified the `0xa0`
+  prelude as delayed command `0xd0`; the separately authorized third proved its
+  opaque data body is not status `1`, matching the official null-output D0 path.
+  No attempt decoded/saved an image; each attempted cleanup reset. No further
+  attempt is authorized.
 ```
 
 ## Interpretation
