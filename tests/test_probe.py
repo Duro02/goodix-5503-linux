@@ -77,6 +77,39 @@ class PacketTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "not fully"):
             session.wake_up()
 
+    def test_initial_drain_wipes_buffers_and_is_capacity_bounded(self):
+        class Endpoint:
+            def __init__(self, count):
+                self.buffers = [array.array("B", bytes((value,))) for value in range(1, count + 1)]
+                self.returned = []
+
+            def read(self, _size, timeout):
+                self.assert_timeout = timeout
+                if not self.buffers:
+                    import usb.core
+
+                    raise usb.core.USBTimeoutError("quiet")
+                result = self.buffers.pop(0)
+                self.returned.append(result)
+                return result
+
+        session = object.__new__(ReadOnlyUsbSession)
+        session._max_packet_size = 64
+        session._rx_buffer = bytearray(b"stale")
+        endpoint = Endpoint(2)
+        session.endpoint_in = endpoint
+        session._drain_input()
+        self.assertEqual(session._rx_buffer, bytearray())
+        self.assertEqual(endpoint.assert_timeout, 100)
+        self.assertTrue(all(not any(buffer) for buffer in endpoint.returned))
+
+        overflow = Endpoint(5)
+        session.endpoint_in = overflow
+        with self.assertRaisesRegex(ProtocolError, "capacity"):
+            session._drain_input()
+        self.assertEqual(len(overflow.returned), 5)
+        self.assertTrue(all(not any(buffer) for buffer in overflow.returned))
+
     def test_framed_writer_rejects_short_usb_chunk(self):
         class Endpoint:
             def __init__(self, written):

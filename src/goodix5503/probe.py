@@ -222,12 +222,15 @@ class ReadOnlyUsbSession:
             raise ProtocolError("raw wake byte was not fully written")
 
     def _drain_input(self) -> None:
-        while True:
+        self._rx_buffer.clear()
+        for completed in range(5):
             try:
-                self.endpoint_in.read(self._max_packet_size, timeout=100)
+                usb_buffer = self.endpoint_in.read(self._max_packet_size, timeout=100)
             except usb.core.USBTimeoutError:
-                self._rx_buffer.clear()
                 return
+            memoryview(usb_buffer).cast("B")[:] = b"\x00" * len(usb_buffer)
+            if completed == 4:
+                raise ProtocolError("initial USB drain transfer capacity reached")
 
     def __write_packet(self, packet: bytes) -> None:
         padded = packet + b"\x00" * ((-len(packet)) % 0x40)
