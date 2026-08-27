@@ -17,6 +17,10 @@ Protected record backup: artifacts/device-backup/psk-record-bb010002.bin
 Backup validation: owner duro:duro, directory 0700, file 0600, 324 bytes,
                    SHA-256 matches the live metadata read
 White-box record 0xbb010003: MCU status 0x01; not readable/backed up
+Verification record 0xbb020007: 32 bytes, backed up as
+  artifacts/device-backup/psk-record-bb020007.bin
+Verification backup SHA-256:
+  8722cc96d28ae20251c81a853c33dd1f5097c7ddd2e7505b19f38ef33fbbc74d
 ```
 
 ## Interpretation
