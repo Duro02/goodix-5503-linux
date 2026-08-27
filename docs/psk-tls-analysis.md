@@ -113,6 +113,28 @@ a caller-wipeable `bytearray`, avoids `bytes(psk)`, and clears/unmaps its entire
 32 MiB guest heap and 2 MiB guest stack on both success and failure. The caller
 must still wipe the returned mutable 96-byte record and its input PSK.
 
+The R-family `0xbb020007` calculation is also mapped. `CalculatePmk` hashes the
+68-byte value `BE16(32) || zero[32] || BE16(32) || PSK`, then pads that 32-byte
+digest with 32 zero bytes to form a 64-byte HMAC key. The verification record is
+`HMAC-SHA256(key, bytes(64, 63, ..., 1))`. Emulating the official
+`CalculatePmk` with the incrementing PSK `00..1f` produced the same intermediate
+PMK as this formula; the resulting verification record is pinned in tests. This
+nonzero behavior differs from the community expression `(BE16(length) || PSK) *
+2`, whose published test PSK is all zero and therefore cannot reveal the
+difference.
+
+An offline-only preparation command now generates a random key directly into a
+mutable buffer from `/dev/urandom`, runs the pinned white-box known-answer test,
+encodes the key, computes the expected R verification record, and stores all
+three values in Git-ignored files. It refuses root, disables dumps before key
+generation, requires owner-only directory/file modes, never overwrites existing
+material, supports idempotent recovery after a partial file commit, and wipes
+mutable buffers. Python's digest APIs still create short-lived immutable objects
+for the derived PMK digest and the readable verification record; no immutable
+plaintext-PSK copy is created, and non-dumpable/core-limit hardening contains
+this allocator-residue limitation. This command contains no USB transport. It
+must pass a separate review before first use with a real random key.
+
 ## Ranked options
 
 1. **Complete the readable evidence set:** back up `0xbb020007` and retain the

@@ -16,6 +16,7 @@ whitebox = ["unicorn>=2.1,<3"]
 
 [project.scripts]
 goodix-5503-probe = "goodix5503.probe:main"
+goodix-5503-prepare-pairing = "goodix5503.pairing:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
