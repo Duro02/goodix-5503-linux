@@ -46,7 +46,12 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   reset, OTP, TLS, config, command 36, or image acquisition. Because reset had
   not started, cleanup closed USB without issuing reset. The result is final
   under that one-shot authorization; there was no retry. Hardware capture
-  remains disabled pending static reconstruction of the wake response/transport.
+  remains disabled. Static follow-up proved the one-byte write and 50 ms settle
+  are exact and that official WakeUp performs no read/drain/flush. The missing
+  parity is the Windows IoHub asynchronous pending-command filter, which ignores
+  no-pending and mismatched notifications; the synchronous free reader assumes
+  the next IN bytes are the A8 ACK. Because the failed bytes were not recorded,
+  their signature and length remain unknown and no safe filter is yet proven.
 ```
 
 ## Interpretation

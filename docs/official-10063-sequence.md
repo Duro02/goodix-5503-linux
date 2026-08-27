@@ -79,6 +79,18 @@ Before another capture attempt:
 
 No firmware, PSK or persistent operation is required for this work.
 
+Pinned `Geneva::WakeUp @ 0x180099fe0` proves an exact one-byte synchronous raw
+bulk-OUT write, a successful-transfer count check, and a 50 ms sleep while the
+IoHub lock remains held. It performs no paired IN read, drain, flush, reset, or
+parser call. Therefore the observed post-wake invalid outer frame does not
+justify adding any of those operations. The Windows IoHub instead has a
+persistent asynchronous receive dispatcher: `IoHubNotifyDataIn2 @ 0x18007be40`,
+`IoHubNotifyDataProcessed @ 0x18007c0c0`, and `IoHubNotifyAck @ 0x18007bc30`
+ignore notifications when no matching command is pending. The free synchronous
+reader does not yet reproduce that transport-level filtering. The failed run
+did not record the offending bytes, so their signature and length remain
+unknown; blind draining or A8 retry is prohibited.
+
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
 APP identity read and the R verification read `E4/bb020007`, then compares the
