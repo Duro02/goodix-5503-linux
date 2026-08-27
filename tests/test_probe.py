@@ -10,6 +10,7 @@ from goodix5503.probe import (
     COMMAND_ACK,
     COMMAND_FIRMWARE_VERSION,
     COMMAND_PRESET_PSK_READ,
+    COMMAND_READ_OTP,
     OFFICIAL_PROTECTED_PSK_SELECTOR,
     OFFICIAL_R_PSK_HASH_SELECTOR,
     OFFICIAL_WHITEBOX_PSK_SELECTOR,
@@ -125,6 +126,28 @@ class PacketTests(unittest.TestCase):
             _decode_r_read_response(
                 b"\x01" + reply[1:], OFFICIAL_R_PSK_HASH_SELECTOR
             )
+
+    def test_otp_read_uses_only_fixed_request_and_exact_length(self):
+        session = object.__new__(ReadOnlyUsbSession)
+        calls = []
+
+        def exchange(command, payload, *, checksum=True):
+            calls.append((command, payload, checksum))
+            return bytes(range(64))
+
+        session._ReadOnlyUsbSession__exchange = exchange
+        with patch("goodix5503.probe._disable_core_dumps") as disable_dumps:
+            otp = session.read_otp()
+        disable_dumps.assert_called_once_with()
+        try:
+            self.assertEqual(otp, bytearray(range(64)))
+            self.assertEqual(calls, [(COMMAND_READ_OTP, b"\x00\x00", True)])
+        finally:
+            otp[:] = b"\x00" * len(otp)
+
+        session._ReadOnlyUsbSession__exchange = lambda *_args, **_kwargs: b"short"
+        with self.assertRaisesRegex(ProtocolError, "exactly 64"):
+            session.read_otp()
 
     def test_protected_record_metadata_reports_only_length_and_digest(self):
         value = b"opaque-protected-record"

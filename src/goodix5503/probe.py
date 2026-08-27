@@ -35,6 +35,7 @@ FLAGS_MESSAGE_PROTOCOL: Final = 0xA0
 COMMAND_NOP: Final = 0x00
 COMMAND_FIRMWARE_VERSION: Final = 0xA8
 COMMAND_ACK: Final = 0xB0
+COMMAND_READ_OTP: Final = 0xA6
 COMMAND_PRESET_PSK_READ: Final = 0xE4
 COMMAND_GET_IAP_VERSION: Final = 0xF6
 
@@ -278,6 +279,15 @@ class ReadOnlyUsbSession:
     ) -> bytes:
         self._validate_request(command, payload, checksum)
         return self.__exchange(command, payload, checksum=checksum)
+
+    def read_otp(self) -> bytearray:
+        """Read fixed calibration data; the caller must wipe the result."""
+        _disable_core_dumps()
+        otp = bytearray(self.__exchange(COMMAND_READ_OTP, b"\x00\x00"))
+        if len(otp) != 64:
+            otp[:] = b"\x00" * len(otp)
+            raise ProtocolError("5503 OTP response is not exactly 64 bytes")
+        return otp
 
     def __read_record(
         self, selector: int, *, exact_length: int | None = None
