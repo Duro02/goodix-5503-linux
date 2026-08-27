@@ -259,8 +259,12 @@ def _decode_c_string(payload: bytes) -> str:
 
 def _decode_g_read_chunk(reply: bytes, requested_length: int) -> bytes:
     """Decode the G-read response without assigning meaning to its opaque header."""
-    if not reply or reply[0] != 0:
-        raise ProtocolError("device rejected PSK metadata read")
+    if not reply:
+        raise ProtocolError("device returned an empty PSK metadata response")
+    if reply[0] != 0:
+        raise ProtocolError(
+            f"device rejected PSK metadata read with status 0x{reply[0]:02x}"
+        )
     if len(reply) < 9:
         raise ProtocolError("truncated PSK metadata response")
 

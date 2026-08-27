@@ -96,7 +96,7 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(_decode_g_read_chunk(reply, 32), value)
         with self.assertRaises(ProtocolError):
             _decode_g_read_chunk(reply + b"trailing", 32)
-        with self.assertRaises(ProtocolError):
+        with self.assertRaisesRegex(ProtocolError, "status 0x01"):
             _decode_g_read_chunk(b"\x01" + b"opaque12" + value, 32)
 
     def test_padded_64_byte_response_returns_one_frame(self):
