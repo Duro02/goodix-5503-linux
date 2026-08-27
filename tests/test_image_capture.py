@@ -90,6 +90,7 @@ class ImageEnvelopeTests(unittest.TestCase):
                     _validate_tls_records(value)
 
     def test_image_request_has_fixed_command_payload_and_nine_byte_envelope(self):
+        self.assertEqual(GET_IMAGE_CLEAR, b"\x01\x00")
         session = object.__new__(ReadOnlyUsbSession)
         writes = []
         ciphertext = self.tls_record(b"ciphertext")

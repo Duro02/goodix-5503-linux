@@ -77,7 +77,9 @@ CLEAR_CAPTURE_CONFIRMATION: Final = (
 FDT_CLEAR_MODE: Final = bytes.fromhex(
     "0d018b0084008c0088008096809180928085808c8086"
 )
-GET_IMAGE_CLEAR: Final = bytes.fromhex("01008b0084008c008800")
+# Official 10063 _FpMcuGetImage (0x180058610) constructs exactly two bytes:
+# image type 1 followed by zero. The longer community payload targets 10062.
+GET_IMAGE_CLEAR: Final = b"\x01\x00"
 
 
 class ImageCaptureError(RuntimeError):

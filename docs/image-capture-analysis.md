@@ -72,6 +72,12 @@ envelope. Unknown commands, an oversized D0 body, failed image status,
 duplicates, reversed order, malformed packets, or more than two preludes remain
 fatal. Further hardware use remains separately review- and user-gated.
 
+The separately authorized fourth attempt successfully consumed the bounded D0
+completion, then timed out waiting for B2. It saved no image and attempted
+cleanup reset. This exposed a second 10062/10063 mismatch: the request still used
+the community ten-byte image payload, while official `_FpMcuGetImage` constructs
+exactly `01 00`. The offline path now uses only the official two-byte payload.
+
 ## Community post-TLS sequence under review
 
 The reference sequence performs runtime reset, chip-ID/OTP/POV reads, TLS,
@@ -84,8 +90,10 @@ so they must not be labelled as status, length or checksum. The parser retains
 both in mutable buffers, enforces exact 9/4-byte boundaries, and wipes them
 without printing or saving their content.
 
-Official `_FpMcuGetImage` at `0x180058610` constructs a two-byte request beginning
-with `1` and submits command `0x20` through `IoHubMcuSendCmd2` (`0x18007b930`).
+Official 10063 `_FpMcuGetImage` at `0x180058610` constructs the exact two-byte
+request `01 00` and submits command `0x20` through `IoHubMcuSendCmd2`
+(`0x18007b930`). The community 10062 script instead sends ten bytes
+`01008b0084008c008800`; that longer payload is not the official 10063 request.
 Official IoHub strings distinguish ACK, data-in and data-processed callbacks,
 supporting separate routing for A0 completions and B2 encrypted data. Clear and
 finger images are 80 by 64 pixels; their packed 12-bit decoder consumes exactly

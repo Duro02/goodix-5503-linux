@@ -35,6 +35,8 @@ Runtime clear-frame attempts: all reached image command after TLS/config/init
   and stopped fail-closed before image data. The second identified the `0xa0`
   prelude as delayed command `0xd0`; the separately authorized third proved its
   opaque data body is not status `1`, matching the official null-output D0 path.
+  The fourth consumed bounded D0 then timed out before B2, revealing that the
+  community 10062 ten-byte image request differs from official 10063 `01 00`.
   No attempt decoded/saved an image; each attempted cleanup reset. No further
   attempt is authorized.
 ```
