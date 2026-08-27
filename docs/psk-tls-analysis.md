@@ -7,19 +7,20 @@ Windows 11 driver (`Wbdi.dll` 3.1.581.610) reads an opaque protected record,
 recovers a 32-byte plaintext PSK through one of two conditional host paths,
 verifies a separate 32-byte MCU hash, and caches the plaintext for TLS.
 
-One fallback path calls Windows DPAPI (`CryptUnprotectData`). A second path is
-selected when the driver's enclave-library handle is present and invokes enclave
-proxy calls instead. Static analysis has not proved which path was active on the
-former Windows installation, so it is too strong to conclude that recovery
-strictly requires the lost DPAPI context.
+The driver supports two conditional host mechanisms: Windows DPAPI and an
+enclave proxy. A reviewed read-only backup of this device's 324-byte R-family
+record proves that the stored object uses the standard Windows DPAPI provider
+format (blob version 1 and master-key version 1), not the enclave-sealed format.
+Static analysis of `GfSealData` shows `CryptProtectData` called with no optional
+entropy, no prompt structure and `dwFlags=0`, making it per-user rather than
+machine scope.
 
-The original Windows installation has nevertheless been replaced by an Omarchy
-installation covering the full internal disk. No NTFS partition, `Windows.old`,
-registry hive backup or DPAPI master-key directory was found. The MCU hash itself
-cannot be inverted or brute-forced. Reuse may still be possible only if the
-official signed enclave can unseal the MCU record independently in an isolated
-Windows environment; this remains unproven and must be tested with USB writes
-blocked.
+The original Windows installation has been replaced by an Omarchy installation
+covering the full internal disk. No NTFS partition, `Windows.old`, registry hive
+backup or DPAPI master-key directory was found. The MCU hash cannot be inverted
+or brute-forced, and the signed enclave cannot independently unseal a standard
+per-user DPAPI blob. Therefore the existing random PSK cannot currently be
+recovered from the available state.
 
 ## Confirmed Windows-driver path
 
@@ -62,9 +63,10 @@ That value is later passed to `PresetPskIsVaildG` at `0x18009aaef` (and the
 parallel call at `0x18009afb8`). Static analysis therefore cannot justify a
 single fixed backup length across both paths.
 
-The exact DPAPI scope, optional entropy and master-key prerequisites still need
-mapping. The enclave path is real, but whether its sealing identity is tied to
-the CPU, Windows installation, TPM/VBS state, or signer remains unresolved.
+For this device, the DPAPI scope and inputs are now mapped: per-user scope,
+no optional entropy, no prompt structure and flags zero. The generic enclave
+path remains present in the driver but is not the format of the backed-up local
+record.
 
 ## Persistent provisioning path
 
@@ -80,17 +82,13 @@ That changes persistent MCU state.
 
 ## Ranked options
 
-1. **Map and back up all opaque MCU records read-only:** useful for rollback and
-   format research, but does not reveal plaintext by itself.
-2. **Run the official unseal path in an isolated Windows environment with USB
-   writes blocked:** may determine whether the signed enclave can reuse the
-   existing record without the former OS. Instrumentation can capture the
-   transient plaintext only after successful unseal.
-3. **Recover original DPAPI state:** valid in theory but unavailable on this
-   machine.
-4. **Complete a no-firmware PSK reprovisioning tool with verified backup and
-   rollback:** technically practical, but intentionally persistent and requires
-   a separate risk decision.
+1. **Complete the read-only rollback set:** back up the R-family verification
+   record and map every selector modified by official provisioning.
+2. **Recover original per-user DPAPI state:** valid in theory but unavailable on
+   this machine.
+3. **Complete a no-firmware PSK reprovisioning tool with verified rollback:**
+   technically practical, but intentionally persistent and requires a separate
+   risk decision.
 
 Not feasible:
 

@@ -13,6 +13,9 @@ G selector: 0xbb020001 returned MCU status 0x01 (unavailable)
 R recheck: succeeded through the reviewed official R-family parser
 Protected record 0xbb010002: 324 bytes
 Protected record SHA-256: 062cb94a5805bf27bc05d519eaaaaa5fdc20ac17063d352cda9a5a6b92d78b1c
+Protected record backup: artifacts/device-backup/psk-record-bb010002.bin
+Backup validation: owner duro:duro, directory 0700, file 0600, 324 bytes,
+                   SHA-256 matches the live metadata read
 ```
 
 ## Interpretation
@@ -34,6 +37,16 @@ its persistent `preset_psk_write` path. Running that script would overwrite a
 presumably valid Windows-provisioned key even though this device already has
 compatible firmware. It must not be run unchanged.
 
-TLS image capture now depends on finding a non-destructive way to use or recover
-the existing key state. Until that is solved, this project will not write a new
+The 324-byte protected record has the standard Windows DPAPI provider header:
+blob version 1, master-key version 1, flags 0, and a 64-byte description field.
+No GUID, description text, encrypted payload or authentication value is printed
+or committed. Driver disassembly also shows `CryptProtectData` called with no
+optional entropy, no prompt structure and `dwFlags=0`, so this is the per-user
+DPAPI path rather than machine scope. The former Windows user's DPAPI master key
+is therefore required to decrypt it; the enclave alternative is not the format
+stored on this device.
+
+TLS image capture now depends on recovering the lost per-user DPAPI state or,
+after a complete rollback set and explicit risk decision, reprovisioning PSK
+state without changing firmware. Until then, this project will not write a new
 PSK.
