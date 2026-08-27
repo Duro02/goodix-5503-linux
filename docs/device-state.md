@@ -52,6 +52,9 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   no-pending and mismatched notifications; the synchronous free reader assumes
   the next IN bytes are the A8 ACK. Because the failed bytes were not recorded,
   their signature and length remain unknown and no safe filter is yet proven.
+  A separate source-gated diagnostic now exists to perform only `e5`, settle,
+  and a 500 ms transfer-boundary observation; it drops root permanently after
+  claiming USB and remains disabled pending independent review/authorization.
 ```
 
 ## Interpretation
