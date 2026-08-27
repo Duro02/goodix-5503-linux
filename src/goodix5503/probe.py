@@ -297,7 +297,10 @@ class ReadOnlyUsbSession:
         body = self.request(COMMAND_READ_REGISTER, b"\x00\x00\x00\x04\x00")
         if len(body) != 4:
             raise ProtocolError("chip-ID register response is not exactly 4 bytes")
-        return struct.unpack("<I", body)[0] >> 8
+        # The pinned _McuReadRegister path swaps each returned 16-bit word before
+        # DeviceLoader shifts the resulting DWORD by eight for profile lookup.
+        normalized = bytes((body[1], body[0], body[3], body[2]))
+        return struct.unpack("<I", normalized)[0] >> 8
 
     def read_otp(self) -> bytearray:
         """Read fixed calibration data; the caller must wipe the result."""

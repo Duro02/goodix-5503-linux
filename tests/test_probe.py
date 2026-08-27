@@ -105,7 +105,7 @@ class PacketTests(unittest.TestCase):
 
         def request(command, payload):
             calls.append((command, payload))
-            return struct.pack("<I", 0x220F00)
+            return bytes.fromhex("0f000022")
 
         session.request = request
         self.assertEqual(session.read_chip_id(), 0x220F)

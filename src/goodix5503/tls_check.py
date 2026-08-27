@@ -67,8 +67,10 @@ def _reset_sensor(session: ReadOnlyUsbSession) -> None:
     response = session._ReadOnlyUsbSession__exchange(  # type: ignore[attr-defined]
         COMMAND_RESET, b"\x05\x14"
     )
-    if not response or response[0] != 1:
-        raise ProtocolError("sensor reset was not acknowledged")
+    # The pinned reset wrapper treats transport/parser success as completion and
+    # only bounds the opaque IRQ payload to its four-byte destination.
+    if len(response) > 4:
+        raise ProtocolError("sensor reset response exceeds four bytes")
 
 
 def _deadline_timeout_ms(operation_deadline: float | None) -> int | None:

@@ -9,6 +9,7 @@ from unittest.mock import patch
 from goodix5503 import tls_check
 from goodix5503.probe import (
     COMMAND_ACK,
+    ProtocolError,
     ReadOnlyUsbSession,
     _decode_packet,
     _encode_packet,
@@ -61,11 +62,15 @@ class TlsTests(unittest.TestCase):
 
         def exchange(command, payload):
             captured.append((command, payload))
-            return b"\x01"
+            return b"\x08\x00\x01\x00"
 
         session._ReadOnlyUsbSession__exchange = exchange
         tls_check._reset_sensor(session)
         self.assertEqual(captured, [(tls_check.COMMAND_RESET, b"\x05\x14")])
+
+        session._ReadOnlyUsbSession__exchange = lambda *_args: b"\x00" * 5
+        with self.assertRaisesRegex(ProtocolError, "exceeds four"):
+            tls_check._reset_sensor(session)
 
     def test_tls_request_uses_fixed_command_and_decodes_tls_outer_frame(self):
         session = object.__new__(ReadOnlyUsbSession)
