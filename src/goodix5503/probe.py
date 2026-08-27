@@ -36,6 +36,7 @@ FLAGS_MESSAGE_PROTOCOL: Final = 0xA0
 COMMAND_NOP: Final = 0x00
 COMMAND_FIRMWARE_VERSION: Final = 0xA8
 COMMAND_ACK: Final = 0xB0
+COMMAND_READ_REGISTER: Final = 0x82
 COMMAND_READ_OTP: Final = 0xA6
 COMMAND_PRESET_PSK_READ: Final = 0xE4
 COMMAND_GET_IAP_VERSION: Final = 0xF6
@@ -45,6 +46,7 @@ ALLOWED_COMMANDS: Final = frozenset(
     {
         COMMAND_NOP,
         COMMAND_FIRMWARE_VERSION,
+        COMMAND_READ_REGISTER,
         COMMAND_PRESET_PSK_READ,
         COMMAND_GET_IAP_VERSION,
     }
@@ -257,6 +259,7 @@ class ReadOnlyUsbSession:
             COMMAND_NOP: {(b"", False)},
             COMMAND_FIRMWARE_VERSION: {(b"", True)},
             COMMAND_GET_IAP_VERSION: {(b"\x19\x00", True)},
+            COMMAND_READ_REGISTER: {(b"\x00\x00\x00\x04\x00", True)},
             COMMAND_PRESET_PSK_READ: {
                 (struct.pack("<II", OFFICIAL_R_PSK_HASH_SELECTOR, 0), True),
             },
@@ -288,6 +291,13 @@ class ReadOnlyUsbSession:
     ) -> bytes:
         self._validate_request(command, payload, checksum)
         return self.__exchange(command, payload, checksum=checksum)
+
+    def read_chip_id(self) -> int:
+        """Read the fixed four-byte MCU chip-ID register used for profile selection."""
+        body = self.request(COMMAND_READ_REGISTER, b"\x00\x00\x00\x04\x00")
+        if len(body) != 4:
+            raise ProtocolError("chip-ID register response is not exactly 4 bytes")
+        return struct.unpack("<I", body)[0] >> 8
 
     def read_otp(self) -> bytearray:
         """Read fixed calibration data; the caller must wipe the result."""

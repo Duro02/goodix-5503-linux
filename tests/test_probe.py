@@ -10,6 +10,7 @@ from goodix5503.probe import (
     COMMAND_ACK,
     COMMAND_FIRMWARE_VERSION,
     COMMAND_PRESET_PSK_READ,
+    COMMAND_READ_REGISTER,
     COMMAND_READ_OTP,
     OFFICIAL_PROTECTED_PSK_SELECTOR,
     OFFICIAL_R_PSK_HASH_SELECTOR,
@@ -88,6 +89,33 @@ class PacketTests(unittest.TestCase):
         )
         with self.assertRaises(UnsafeCommandError):
             session.request(COMMAND_FIRMWARE_VERSION, b"unexpected")
+
+    def test_only_exact_chip_id_register_read_is_allowed(self):
+        payload = b"\x00\x00\x00\x04\x00"
+        ReadOnlyUsbSession._validate_request(COMMAND_READ_REGISTER, payload, True)
+        for rejected in (b"", b"\x01\x00\x00\x04\x00", b"\x00\x00\x00\x02\x00"):
+            with self.subTest(payload=rejected), self.assertRaises(UnsafeCommandError):
+                ReadOnlyUsbSession._validate_request(
+                    COMMAND_READ_REGISTER, rejected, True
+                )
+
+    def test_chip_id_read_uses_fixed_register_and_shift(self):
+        session = object.__new__(ReadOnlyUsbSession)
+        calls = []
+
+        def request(command, payload):
+            calls.append((command, payload))
+            return struct.pack("<I", 0x220F00)
+
+        session.request = request
+        self.assertEqual(session.read_chip_id(), 0x220F)
+        self.assertEqual(
+            calls,
+            [(COMMAND_READ_REGISTER, b"\x00\x00\x00\x04\x00")],
+        )
+        session.request = lambda *_args: b"short"
+        with self.assertRaisesRegex(ProtocolError, "exactly 4"):
+            session.read_chip_id()
 
     def test_only_exact_official_r_hash_read_is_allowed(self):
         allowed = struct.pack("<II", OFFICIAL_R_PSK_HASH_SELECTOR, 0)

@@ -58,7 +58,7 @@ class ImageDecodeTests(unittest.TestCase):
                 with self.assertRaises(ImageCaptureError):
                     _validate_cold_pov_result(result)
 
-    def test_config_completion_requires_status_one_after_result_prefix(self):
+    def test_config_completion_requires_status_one_in_decoded_payload(self):
         _validate_config_result(b"\x01")
         _validate_config_result(b"\x01\x00")
         for result in (b"", b"\x00", b"\x02", b"\x01\x00\x00"):
@@ -101,46 +101,28 @@ class ImageDecodeTests(unittest.TestCase):
 
 
 class ImageEnvelopeTests(unittest.TestCase):
-    def test_fixed_exchange_decodes_ack_then_applies_milan_parse_other(self):
+    def test_fixed_exchange_preserves_checksum_free_milan_payload(self):
         for command, result in (
             (COMMAND_POV_IMAGE_CHECK, b"\x00"),
             (COMMAND_SWITCH_FDT_MODE, bytes(range(12))),
+            (COMMAND_SWITCH_FDT_MODE, b""),
         ):
-            with self.subTest(command=command):
+            with self.subTest(command=command, result=result):
                 session = object.__new__(ReadOnlyUsbSession)
                 writes = []
                 frames = iter(
                     (
                         _encode_packet(COMMAND_ACK, bytes((command, 1))),
-                        _encode_packet(command, b"\x7f" + result),
+                        _encode_packet(command, result),
                     )
                 )
                 session._ReadOnlyUsbSession__write_packet = writes.append
                 session._read_frame = lambda: next(frames)
                 self.assertEqual(_fixed_exchange(session, command, b"request"), result)
-                self.assertEqual(
-                    writes,
-                    [_encode_packet(command, b"request")],
-                )
+                self.assertEqual(writes, [_encode_packet(command, b"request")])
 
-        empty = object.__new__(ReadOnlyUsbSession)
-        empty_frames = iter(
-            (
-                _encode_packet(COMMAND_ACK, bytes((COMMAND_SWITCH_FDT_MODE, 1))),
-                _encode_packet(COMMAND_SWITCH_FDT_MODE, b""),
-            )
-        )
-        empty._ReadOnlyUsbSession__write_packet = lambda _packet: None
-        empty._read_frame = lambda: next(empty_frames)
-        with self.assertRaisesRegex(ImageCaptureError, "result prefix"):
-            _fixed_exchange(empty, COMMAND_SWITCH_FDT_MODE, b"request")
-
-    def test_chip_config_exchange_drops_trailing_not_leading_byte(self):
-        for body, expected in (
-            (b"\x01", b""),
-            (b"\x01\x00", b"\x01"),
-            (b"\x01\x7f\x00", b"\x01\x7f"),
-        ):
+    def test_chip_config_exchange_preserves_checksum_free_payload(self):
+        for body in (b"", b"\x01", b"\x01\x7f"):
             with self.subTest(body=body):
                 session = object.__new__(ReadOnlyUsbSession)
                 frames = iter(
@@ -153,27 +135,15 @@ class ImageEnvelopeTests(unittest.TestCase):
                 session._read_frame = lambda **_kwargs: next(frames)
                 self.assertEqual(
                     _chip_config_exchange(session, b"config", TEST_DEADLINE),
-                    expected,
+                    body,
                 )
-
-        empty = object.__new__(ReadOnlyUsbSession)
-        empty_frames = iter(
-            (
-                _encode_packet(COMMAND_ACK, bytes((COMMAND_UPLOAD_CONFIG, 1))),
-                _encode_packet(COMMAND_UPLOAD_CONFIG, b""),
-            )
-        )
-        empty._ReadOnlyUsbSession__write_packet = lambda _packet: None
-        empty._read_frame = lambda **_kwargs: next(empty_frames)
-        with self.assertRaisesRegex(ImageCaptureError, "trailing byte"):
-            _chip_config_exchange(empty, b"config", TEST_DEADLINE)
 
     def test_register_exchange_uses_exact_milan_read_parser(self):
         session = object.__new__(ReadOnlyUsbSession)
         frames = iter(
             (
                 _encode_packet(COMMAND_ACK, bytes((COMMAND_READ_REGISTER, 1))),
-                _encode_packet(COMMAND_READ_REGISTER, b"\x02\x34\x12"),
+                _encode_packet(COMMAND_READ_REGISTER, b"\x34\x12"),
             )
         )
         writes = []
@@ -185,7 +155,7 @@ class ImageEnvelopeTests(unittest.TestCase):
         )
         self.assertEqual(writes, [_encode_packet(COMMAND_READ_REGISTER, b"request")])
 
-        for body in (b"", b"\x02", b"\x02\x34", b"\x02\x34\x12\x00", b"\x00\x34\x12", b"\x04\x34\x12"):
+        for body in (b"", b"\x34", b"\x34\x12\x00"):
             with self.subTest(body=body):
                 bad = object.__new__(ReadOnlyUsbSession)
                 bad_frames = iter(
@@ -199,14 +169,13 @@ class ImageEnvelopeTests(unittest.TestCase):
                 with self.assertRaises(ImageCaptureError):
                     _read_register_exchange(bad, b"request", TEST_DEADLINE)
 
-    def test_milan_parse_other_removes_exactly_one_result_byte(self):
-        self.assertEqual(_milan_parse_other_body(b"\x01"), b"")
+    def test_milan_parse_other_preserves_decoded_payload(self):
+        self.assertEqual(_milan_parse_other_body(b""), b"")
+        self.assertEqual(_milan_parse_other_body(b"\x01"), b"\x01")
         self.assertEqual(
-            _milan_parse_other_body(b"\x7f" + bytes(range(12))),
+            _milan_parse_other_body(bytes(range(12))),
             bytes(range(12)),
         )
-        with self.assertRaisesRegex(ImageCaptureError, "result prefix"):
-            _milan_parse_other_body(b"")
 
     @staticmethod
     def tls_record(payload: bytes = b"encrypted") -> bytes:

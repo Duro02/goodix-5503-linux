@@ -127,10 +127,11 @@ def _ack_only(
 
 
 def _milan_parse_other_body(body: bytes) -> bytes:
-    """Reproduce Milan McuParseOther's one-byte result-prefix removal."""
-    if len(body) < 1:
-        raise ImageCaptureError("Milan command response has no result prefix")
-    return body[1:]
+    """Return payload already stripped of the checksum by ``_decode_packet``."""
+    # The DLL parser subtracts the trailing protocol checksum from its packet
+    # length and copies from the unchanged payload pointer. Our decoder has
+    # already validated and removed that checksum, so no payload byte is lost.
+    return body
 
 
 def _exchange_raw_command_body(
@@ -171,11 +172,9 @@ def _chip_config_exchange(
     body = _exchange_raw_command_body(
         session, COMMAND_UPLOAD_CONFIG, payload, operation_deadline
     )
-    if not body:
-        raise ImageCaptureError("config response is missing its trailing byte")
-    # Milan McuParseChipConfig shortens the decoded body by one but copies from
-    # the original start pointer: unlike McuParseOther, it drops the final byte.
-    return body[:-1]
+    # McuParseChipConfig removes the packet checksum at a lower layer. The
+    # checksum-free payload returned by our decoder must remain intact.
+    return body
 
 
 def _read_register_exchange(
@@ -186,11 +185,11 @@ def _read_register_exchange(
     body = _exchange_raw_command_body(
         session, COMMAND_READ_REGISTER, payload, operation_deadline
     )
-    if len(body) != 3:
-        raise ImageCaptureError("register-read response must be exactly 3 bytes")
-    if ((body[0] & 0x0F) >> 1) != 1:
-        raise ImageCaptureError("register response is not a read operation")
-    return body[1:]
+    # McuParseRegRw derives read/write from the separate command header (0x82),
+    # which _decode_packet has already checked. Its payload is the register data.
+    if len(body) != 2:
+        raise ImageCaptureError("register-read response must be exactly 2 bytes")
+    return body
 
 
 def _validate_tls_records(ciphertext: bytes | bytearray) -> None:

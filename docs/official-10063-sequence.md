@@ -79,16 +79,29 @@ No firmware, PSK or persistent operation is required for this work.
 
 ## Targeted profile-table findings
 
-The correct local profile is `GF3258 DN2` at `0x180257a70`, with sensor ops at
-`0x180257ac0`. The previously considered table `0x180258110` belongs to GF3288
-and must not be used. Important GF3258 slots are:
+The DLL selects between two GF3258 profiles solely from the shifted four-byte
+MCU chip-ID register read (`82/0000000400`), not from PID, firmware or OTP:
+
+- chip ID `0x220f`: `GF3258 DN2` at `0x180257a70`, ops `0x180257ac0`;
+- chip ID `0x2503`: `GF3258 WN2` at `0x180256b80`, ops `0x180256bd0`.
+
+The retained local observations did not include this chip ID, so the unit's
+profile remains unclassified. The prepared DN2 config is circular evidence
+because its derivation deliberately chose DN2's `GetChipConfig`. The table
+`0x180258110` belongs to GF3288 and remains inapplicable. DN2-only slots used by
+the dormant implementation are:
 
 - `+0x30` GetChipConfig `0x18006c020`;
 - `+0x50` GetFdtInitParam `0x18006bf50`;
 - `+0x60` MilanFSerMcuGetImage `0x180065c90`;
-- `+0x78` GF3258 GetFdtManualBase `0x18006cdb0`;
-- `+0x80` GF3258 GetNavBase `0x18006c6c0`;
+- `+0x78` GetFdtManualBase `0x18006cdb0`;
+- `+0x80` GetNavBase `0x18006c6c0`;
 - `+0x88` GetFdtDelta `0x180064570`.
+
+WN2 differs materially: its config template and profile-specific operations are
+different, its navigation base is 80x16 rather than 80x12, and its expected
+image sample is 10,564 rather than 7,684 bytes. A DN2 upload may be accepted at
+the command layer without proving that the hardware is DN2.
 
 `LogicMilanFSeries::Start` at `0x180087890` proves the high-level cold order:
 cold command-00 precheck, one D6 POV discriminator, D0/TLS start, validated
@@ -102,17 +115,17 @@ base follows a different branch. It does not prove the community sequence
 With pinned globals `0x180256808=1` and `0x180256810=1` and a calloc-zero fresh
 logic object, the normal cold branch executes command `00/00000000`, then one
 D6/`0000`, and later exactly one C4/`0100`. D6 advertises capacity one and
-accepts post-result lengths 0..1; an empty result retains the pre-zeroed
+accepts decoded payload lengths 0..1; an empty payload retains the pre-zeroed
 normal-cold discriminator `00`. `AA`, `DA`, and `DF` select unsupported
 resume/reconnect branches and therefore fail closed in the free cold-only path.
 D2 and duplicate C4 remain unsupported.
-Config 90 uses its distinct `McuParseChipConfig` parser. It sets output length
-to decoded length minus one but copies from the original start pointer, thereby
-dropping the **final** decoded byte rather than the first byte. The resulting
-output is bounded to one or two bytes and byte zero must equal `01`. Treating
-this response as `McuParseOther` incorrectly removes the leading status byte;
-the fourth controlled validation exposed exactly that host parser mismatch and
-stopped before C4 or image acquisition.
+Config 90 uses `McuParseChipConfig`, whose input length includes the trailing
+wire checksum. It subtracts that checksum and copies the payload from its
+unchanged start pointer. The free `_decode_packet()` already validates and
+removes this checksum, so its returned payload must not be sliced again. Config
+payload is bounded to one or two bytes and byte zero must equal `01`. The fourth
+controlled validation exposed the former double-removal bug and stopped before
+C4 or image acquisition.
 
 ## Corrected GF3258 command 36 layout
 
@@ -185,16 +198,16 @@ content-dependent failure: it is a fixed row copy. The free coordinator performs
 the same decode and crop and retains the result through the later acquisitions
 before wiping it; no proprietary enclave implementation is required.
 
-Each command-36 call requests a bounded 12-byte data body after its separate
-ACK. The official transport accepts 0..12, writes into a pre-zeroed 12-byte
-buffer, and then processes all six words. The controlled runs exposed one
-previously omitted host layer: Milan `McuParseOther` at `0x1800a74e0` requires a
-nonempty decoded inner body and removes exactly its first result byte before
-IoHub capacity checking. A normal command-36 decoded body is therefore one
-result byte plus 12 base bytes; the wrapper receives 12. The free fixed exchange
-now reproduces this callback before the HU parser. Post-ParseOther bodies 0..12
-are right-zero-padded and anything over 12 remains an error. Output1 is the
-padded raw six-word response. Output2 transforms each
+Each command-36 call requests a bounded 12-byte payload after its separate ACK.
+`McuParseOther` at `0x1800a74e0` subtracts the trailing wire checksum represented
+in its packet-object length and copies from the unchanged payload pointer; it
+does **not** remove a leading result byte. The free `_decode_packet()` has
+already removed that checksum, so the payload must pass unchanged to the HU
+parser. Payloads 0..12 are right-zero-padded and anything over 12 remains an
+error. The latest controlled run reported 15 only after the former one-byte
+slice, proving the actual checksum-free device payload was 16 bytes and still
+exceeds the official capacity. Output1 is the padded raw six-word response.
+Output2 transforms each
 raw LE16 word `x` to `((x >> 1) << 8) | 0x80`; accepted output2 becomes the base
 for later requests. The DLL retries inconsistent pairs without a numeric bound;
 the free implementation must instead use the existing operation deadline and a

@@ -76,9 +76,10 @@ The separately authorized fourth attempt successfully consumed the bounded D0
 completion, then timed out waiting for B2. It saved no image and attempted
 cleanup reset. An intermediate audit incorrectly replaced the ten-byte request
 with generic `_FpMcuGetImage` payload `01 00`; the next attempt timed out after
-D0. Corrected profile dispatch now proves local GF3258 discriminator 10 uses
-`_HUGetImage` and requires `01 00` plus four OTP-derived LE16 DAC words. No
-further hardware attempt was made.
+D0. That correction reconstructed the discriminator-10 DN2 `_HUGetImage`
+request as `01 00` plus four OTP-derived LE16 DAC words. A later audit proved
+that the DLL selects DN2 versus WN2 from an MCU chip-ID register value that was
+not retained, so this unit-specific profile conclusion is now reopened.
 
 A D4/`0000` hypothesis was then derived from the 5110 Chicago log,
 but the complete profile audit invalidated its use for Milan: pinned Milan code
