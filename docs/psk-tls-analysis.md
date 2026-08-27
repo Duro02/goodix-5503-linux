@@ -150,8 +150,11 @@ If a write response or immediate readback is lost, the result is reported as
 ambiguous and no automatic retry occurs. A later invocation performs the same
 preflight and recognizes either the preserved old hash or the exact prepared
 new hash; an already-matching new hash returns success without another write.
-This path remains unexecuted and requires independent review plus explicit
-hardware-write authorization.
+This path passed independent review and was executed once after explicit
+hardware-write authorization. Firmware and IAP preflight matched, opcode `0xe0`
+returned success, and immediate `0xbb020007` readback exactly matched the
+prepared verification record. No firmware, register or configuration write was
+performed.
 
 ## Ranked options
 

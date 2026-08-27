@@ -7,8 +7,8 @@ or PSK write, configuration upload, register write or reset command was issued.
 USB ID:    27c6:5503
 Firmware:  GF3258_RTSEC_APP_10063
 IAP:       MILAN_RTSEC_IAP_10027
-PSK hash:  R-family selector 0xbb020007 is present, but differs from the
-           public community-development hash
+PSK hash:  reprovisioned with the locally prepared random PSK; R-family
+           selector 0xbb020007 exactly matches the prepared verification record
 G selector: 0xbb020001 returned MCU status 0x01 (unavailable)
 R recheck: succeeded through the reviewed official R-family parser
 Protected record 0xbb010002: 324 bytes
@@ -59,8 +59,11 @@ TLS image capture now depends on recovering the lost per-user DPAPI state or,
 after preserving all readable evidence and an explicit risk decision,
 reprovisioning PSK state without changing firmware. Exact restoration of the old
 pairing is impossible because `0xbb010003` is not readable; failure recovery must
-retry provisioning with a known new PSK. Fresh random pairing material has now
-been prepared locally with the independently reviewed offline-only tool. This
-does not authorize device provisioning: the exact write implementation,
-post-write readback and TLS recovery sequence must still be tested and reviewed
-before requesting explicit hardware-write approval.
+retry provisioning with a known new PSK. Fresh random pairing material was prepared locally with the independently
+reviewed offline-only tool. After explicit authorization, the reviewed fixed
+write path sent one `0xbb010003` white-box TLV without changing firmware. The
+MCU returned success and the immediate `0xbb020007` readback exactly matched the
+prepared verification record. The original pairing is no longer active; the
+known new PSK and its white-box record remain in owner-only Git-ignored files so
+the same pairing can be recognized or retried. TLS handshake validation is the
+next step.
