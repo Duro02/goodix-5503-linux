@@ -11,6 +11,8 @@ PSK hash:  R-family selector 0xbb020007 is present, but differs from the
            public community-development hash
 G selector: 0xbb020001 returned MCU status 0x01 (unavailable)
 R recheck: succeeded through the reviewed official R-family parser
+Protected record 0xbb010002: 324 bytes
+Protected record SHA-256: 062cb94a5805bf27bc05d519eaaaaa5fdc20ac17063d352cda9a5a6b92d78b1c
 ```
 
 ## Interpretation
