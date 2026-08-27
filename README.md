@@ -9,7 +9,7 @@
 - `NOP`：唤醒/同步设备；
 - `FIRMWARE_VERSION`：读取应用固件版本；
 - `GET_IAP_VERSION`：读取 IAP 版本；
-- `PRESET_PSK_READ`：可选，仅以官方 R-family 固定选择器 `0xbb020007` 比较 32 字节 PSK 校验哈希，不输出密钥材料。
+- `PRESET_PSK_READ`：可选，仅允许官方 R-family 的两个固定只读选择器：`0xbb020007` 比较 32 字节校验哈希；`0xbb010002` 只报告不透明受保护记录的长度和 SHA-256，不输出记录内容或明文密钥。
 
 下列功能没有实现，并会被命令白名单阻止：
 
@@ -43,9 +43,10 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 ```bash
 sudo .venv/bin/goodix-5503-probe
 sudo .venv/bin/goodix-5503-probe --check-psk-state
+sudo .venv/bin/goodix-5503-probe --inspect-protected-record
 ```
 
-默认不会查询 PSK 状态。输出仅包含 USB 地址、固件/IAP 版本和可选的哈希匹配状态。
+默认不会查询任何 PSK 状态。受保护记录检查会先设置并验证 `PR_SET_DUMPABLE=0`，同时设置 `RLIMIT_CORE=0`；任一步失败都会在 USB 访问前终止。记录内容仅短暂存在于进程内存，计算摘要后覆盖可变副本；输出只包含长度和 SHA-256。该选项仍应在独立安全审查通过后首次运行。
 
 ## 上游参考与许可证
 

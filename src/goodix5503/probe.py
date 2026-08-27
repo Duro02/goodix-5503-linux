@@ -11,8 +11,12 @@ later), pinned reference commit cc43bb3b3154a0bccc0412ae024013c7e1923139.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
+import hashlib
 import json
 import math
+import resource
 import struct
 from dataclasses import asdict, dataclass
 from typing import Final
@@ -44,7 +48,9 @@ ALLOWED_COMMANDS: Final = frozenset(
 KNOWN_5503_PMK_HASH: Final = bytes.fromhex(
     "81b8ff490612022a121a9449ee3aad2792f32b9f3141182cd01019945ee50361"
 )
+OFFICIAL_PROTECTED_PSK_SELECTOR: Final = 0xBB010002
 OFFICIAL_R_PSK_HASH_SELECTOR: Final = 0xBB020007
+MAX_PROTECTED_RECORD_LENGTH: Final = 4096
 
 
 class ProtocolError(RuntimeError):
@@ -64,6 +70,8 @@ class ProbeResult:
     firmware: str
     iap: str | None
     psk_state: str
+    protected_record_length: int | None
+    protected_record_sha256: str | None
 
 
 def _encode_packet(command: int, payload: bytes = b"", *, checksum: bool = True) -> bytes:
@@ -229,10 +237,9 @@ class ReadOnlyUsbSession:
         if (payload, checksum) not in expected[command]:
             raise UnsafeCommandError(f"blocked payload/options for command 0x{command:02x}")
 
-    def request(
+    def __exchange(
         self, command: int, payload: bytes = b"", *, checksum: bool = True
     ) -> bytes:
-        self._validate_request(command, payload, checksum)
         self.__write_packet(_encode_packet(command, payload, checksum=checksum))
         if command == COMMAND_NOP:
             # NOP may return nothing, an ACK, or a protocol response depending on
@@ -247,12 +254,36 @@ class ReadOnlyUsbSession:
         _check_ack(ack, command)
         return _decode_packet(self._read_frame(), command, checksum=checksum)
 
+    def request(
+        self, command: int, payload: bytes = b"", *, checksum: bool = True
+    ) -> bytes:
+        self._validate_request(command, payload, checksum)
+        return self.__exchange(command, payload, checksum=checksum)
+
+    def protected_record_metadata(self) -> tuple[int, str]:
+        """Hash the exact protected record without returning its raw response."""
+        _disable_core_dumps()
+        payload = struct.pack("<II", OFFICIAL_PROTECTED_PSK_SELECTOR, 0)
+        protected = _decode_r_read_response(
+            self.__exchange(COMMAND_PRESET_PSK_READ, payload),
+            OFFICIAL_PROTECTED_PSK_SELECTOR,
+        )
+        try:
+            if not 0 < len(protected) <= MAX_PROTECTED_RECORD_LENGTH:
+                raise ProtocolError(
+                    f"protected PSK record length {len(protected)} is outside "
+                    f"the accepted range 1..{MAX_PROTECTED_RECORD_LENGTH}"
+                )
+            return len(protected), hashlib.sha256(protected).hexdigest()
+        finally:
+            protected[:] = b"\x00" * len(protected)
+
 
 def _decode_c_string(payload: bytes) -> str:
     return payload.split(b"\x00", 1)[0].decode("ascii", errors="strict")
 
 
-def _decode_r_read_response(reply: bytes, expected_selector: int) -> bytes:
+def _decode_r_read_response(reply: bytes, expected_selector: int) -> bytearray:
     """Decode the official R-family e4 response."""
     if not reply:
         raise ProtocolError("device returned an empty PSK metadata response")
@@ -268,12 +299,12 @@ def _decode_r_read_response(reply: bytes, expected_selector: int) -> bytes:
         raise ProtocolError(
             f"unexpected PSK metadata selector 0x{selector:08x}"
         )
-    value = reply[9:]
-    if value_length != len(value):
+    received_length = len(reply) - 9
+    if value_length != received_length:
         raise ProtocolError(
-            f"invalid PSK metadata length {value_length}; received {len(value)}"
+            f"invalid PSK metadata length {value_length}; received {received_length}"
         )
-    return value
+    return bytearray(memoryview(reply)[9:])
 
 
 def _read_psk_state(session: ReadOnlyUsbSession) -> str:
@@ -283,12 +314,49 @@ def _read_psk_state(session: ReadOnlyUsbSession) -> str:
         session.request(COMMAND_PRESET_PSK_READ, payload),
         OFFICIAL_R_PSK_HASH_SELECTOR,
     )
-    if len(value) != 32:
-        raise ProtocolError(f"unexpected PSK verification hash length {len(value)}")
-    return "known-community-hash" if value == KNOWN_5503_PMK_HASH else "different-hash"
+    try:
+        if len(value) != 32:
+            raise ProtocolError(f"unexpected PSK verification hash length {len(value)}")
+        return (
+            "known-community-hash"
+            if value == KNOWN_5503_PMK_HASH
+            else "different-hash"
+        )
+    finally:
+        value[:] = b"\x00" * len(value)
 
 
-def probe(*, check_psk_state: bool = False, timeout_seconds: float = 5.0) -> ProbeResult:
+def _disable_core_dumps() -> None:
+    """Fail closed unless Linux marks the process non-dumpable."""
+    pr_set_dumpable = 4
+    pr_get_dumpable = 3
+    libc = ctypes.CDLL(None, use_errno=True)
+    prctl = libc.prctl
+    prctl.argtypes = [
+        ctypes.c_int,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+    ]
+    prctl.restype = ctypes.c_int
+
+    if prctl(pr_set_dumpable, 0, 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, errno.errorcode.get(error, "prctl failed"))
+    if prctl(pr_get_dumpable, 0, 0, 0, 0) != 0:
+        raise RuntimeError("failed to verify that the process is non-dumpable")
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
+def probe(
+    *,
+    check_psk_state: bool = False,
+    inspect_protected_record: bool = False,
+    timeout_seconds: float = 5.0,
+) -> ProbeResult:
+    if inspect_protected_record:
+        _disable_core_dumps()
     with ReadOnlyUsbSession(timeout_seconds) as session:
         session.request(COMMAND_NOP, checksum=False)
         firmware = _decode_c_string(session.request(COMMAND_FIRMWARE_VERSION))
@@ -298,6 +366,13 @@ def probe(*, check_psk_state: bool = False, timeout_seconds: float = 5.0) -> Pro
         )
 
         psk_state = _read_psk_state(session) if check_psk_state else "not-queried"
+        protected_record_length = None
+        protected_record_sha256 = None
+        if inspect_protected_record:
+            protected_record_length, protected_record_sha256 = (
+                session.protected_record_metadata()
+            )
+
         return ProbeResult(
             vendor_id=f"{VENDOR_ID:04x}",
             product_id=f"{PRODUCT_ID:04x}",
@@ -306,6 +381,8 @@ def probe(*, check_psk_state: bool = False, timeout_seconds: float = 5.0) -> Pro
             firmware=firmware,
             iap=iap,
             psk_state=psk_state,
+            protected_record_length=protected_record_length,
+            protected_record_sha256=protected_record_sha256,
         )
 
 
@@ -318,10 +395,19 @@ def main() -> int:
         action="store_true",
         help="compare PSK metadata hash without displaying key material",
     )
+    parser.add_argument(
+        "--inspect-protected-record",
+        action="store_true",
+        help="report only the length and SHA-256 of the opaque protected PSK record",
+    )
     parser.add_argument("--timeout", type=float, default=5.0)
     args = parser.parse_args()
 
-    result = probe(check_psk_state=args.check_psk_state, timeout_seconds=args.timeout)
+    result = probe(
+        check_psk_state=args.check_psk_state,
+        inspect_protected_record=args.inspect_protected_record,
+        timeout_seconds=args.timeout,
+    )
     print(json.dumps(asdict(result), indent=2, sort_keys=True))
     return 0
 

@@ -118,10 +118,16 @@ A live read of G selector `0xbb020001` returned MCU status `0x01`, while the R
 selector `0xbb020007` is present and contains a non-community hash. This proves
 that the local `27c6:5503` uses the official R-family record path.
 
-The fixed R-family 32-byte verification-hash read is implemented with an exact
-payload whitelist. Unlike G, the R wire request does not transmit a requested
-length; the MCU returns the selected object's length. This makes a bounded
-read-only backup technically more tractable, but selector `0xbb010002` remains
-outside the runtime whitelist until a separate safety review covers storage,
-permissions, accidental disclosure and rollback semantics. No future reader may
-expose a general raw-command interface.
+The fixed R-family verification-hash read is implemented with an exact payload
+whitelist. Unlike G, the R wire request does not transmit a requested length;
+the MCU returns the selected object's length.
+
+A separate inspection path for selector `0xbb010002` is implemented but must not
+be used on hardware until its independent review passes. It fails closed unless
+`PR_SET_DUMPABLE=0` is set and verified, also sets `RLIMIT_CORE=0`, accepts at
+most 4096 bytes, reports only length and SHA-256, and overwrites its mutable copy
+after hashing. The protected selector is excluded from the public raw-response
+`request()` whitelist and is reachable only through a scoped metadata method.
+It does not yet save a backup. The unavoidable residual is a short-lived
+immutable USB response object in Python memory. No reader may expose a general
+raw-command interface.

@@ -1,11 +1,13 @@
 import array
 import struct
 import unittest
+from unittest.mock import patch
 
 from goodix5503.probe import (
     COMMAND_ACK,
     COMMAND_FIRMWARE_VERSION,
     COMMAND_PRESET_PSK_READ,
+    OFFICIAL_PROTECTED_PSK_SELECTOR,
     OFFICIAL_R_PSK_HASH_SELECTOR,
     ProtocolError,
     ReadOnlyUsbSession,
@@ -80,7 +82,9 @@ class PacketTests(unittest.TestCase):
         for payload in (
             struct.pack("<II", OFFICIAL_R_PSK_HASH_SELECTOR, 1),
             struct.pack("<IIII", 32, 0, 0xBB020001, 0),
-            struct.pack("<II", 0xBB010002, 0),
+            struct.pack("<II", OFFICIAL_PROTECTED_PSK_SELECTOR, 0),
+            struct.pack("<II", OFFICIAL_PROTECTED_PSK_SELECTOR, 1),
+            struct.pack("<II", 0xBB010003, 0),
         ):
             with self.subTest(payload=payload), self.assertRaises(
                 UnsafeCommandError
@@ -107,6 +111,41 @@ class PacketTests(unittest.TestCase):
             _decode_r_read_response(
                 b"\x01" + reply[1:], OFFICIAL_R_PSK_HASH_SELECTOR
             )
+
+    def test_protected_record_metadata_reports_only_length_and_digest(self):
+        value = b"opaque-protected-record"
+        reply = (
+            b"\x00"
+            + struct.pack("<II", OFFICIAL_PROTECTED_PSK_SELECTOR, len(value))
+            + value
+        )
+
+        session = object.__new__(ReadOnlyUsbSession)
+        calls = []
+
+        def exchange(command, payload, *, checksum=True):
+            calls.append((command, payload, checksum))
+            return reply
+
+        session._ReadOnlyUsbSession__exchange = exchange
+        with patch("goodix5503.probe._disable_core_dumps") as disable_dumps:
+            length, digest = session.protected_record_metadata()
+        disable_dumps.assert_called_once_with()
+        self.assertEqual(length, len(value))
+        self.assertEqual(
+            digest,
+            "c32b89b774b73f6f575c3581648adc0a8ca07769782ae601d69a3675c4e96567",
+        )
+        self.assertEqual(
+            calls,
+            [
+                (
+                    COMMAND_PRESET_PSK_READ,
+                    struct.pack("<II", OFFICIAL_PROTECTED_PSK_SELECTOR, 0),
+                    True,
+                )
+            ],
+        )
 
     def test_padded_64_byte_response_returns_one_frame(self):
         frame = _encode_packet(COMMAND_ACK, bytes((COMMAND_FIRMWARE_VERSION, 1)))
