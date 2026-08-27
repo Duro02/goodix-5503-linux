@@ -31,9 +31,10 @@ class FakeInEndpoint:
 
     def __init__(self, chunks):
         self.chunks = list(chunks)
+        self.timeouts = []
 
     def read(self, _size, timeout):
-        del timeout
+        self.timeouts.append(timeout)
         if not self.chunks:
             raise AssertionError("unexpected USB read")
         return array.array("B", self.chunks.pop(0))
@@ -318,6 +319,23 @@ class PacketTests(unittest.TestCase):
         session = reader_session(frame + b"\x00" * (64 - len(frame)))
         self.assertEqual(session._read_frame(), frame)
         self.assertEqual(session._rx_buffer, b"")
+
+    def test_fragmented_frame_uses_one_decreasing_operation_deadline(self):
+        frame = _encode_packet(COMMAND_FIRMWARE_VERSION, b"version")
+        session = reader_session(frame[:2], frame[2:5], frame[5:])
+        with patch(
+            "goodix5503.probe.time.monotonic",
+            side_effect=(100.0, 100.1, 100.2, 100.3),
+        ):
+            self.assertEqual(session._read_frame(), frame)
+        self.assertEqual(len(session.endpoint_in.timeouts), 3)
+        self.assertLessEqual(session.endpoint_in.timeouts[0], 5000)
+        self.assertGreater(
+            session.endpoint_in.timeouts[0], session.endpoint_in.timeouts[1]
+        )
+        self.assertGreater(
+            session.endpoint_in.timeouts[1], session.endpoint_in.timeouts[2]
+        )
 
     def test_split_response_is_reassembled(self):
         frame = _encode_packet(COMMAND_FIRMWARE_VERSION, b"x" * 100)

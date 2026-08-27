@@ -19,6 +19,7 @@ import os
 import stat
 import struct
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Final
@@ -219,10 +220,20 @@ class ReadOnlyUsbSession:
 
     def _read_frame(self, *, timeout_ms: int | None = None) -> bytes:
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms
-        while len(self._rx_buffer) < 4:
+        deadline = time.monotonic() + timeout / 1000
+
+        def read_chunk() -> None:
+            remaining_ms = math.ceil((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                raise ProtocolError("complete USB frame deadline expired")
             self._rx_buffer.extend(
-                self.endpoint_in.read(self._max_packet_size, timeout=timeout).tobytes()
+                self.endpoint_in.read(
+                    self._max_packet_size, timeout=min(timeout, remaining_ms)
+                ).tobytes()
             )
+
+        while len(self._rx_buffer) < 4:
+            read_chunk()
 
         outer_length = struct.unpack("<H", self._rx_buffer[1:3])[0]
         frame_length = 4 + outer_length
@@ -230,9 +241,7 @@ class ReadOnlyUsbSession:
             raise ProtocolError("invalid outer frame length")
 
         while len(self._rx_buffer) < frame_length:
-            self._rx_buffer.extend(
-                self.endpoint_in.read(self._max_packet_size, timeout=timeout).tobytes()
-            )
+            read_chunk()
 
         frame = bytes(self._rx_buffer[:frame_length])
         del self._rx_buffer[:frame_length]

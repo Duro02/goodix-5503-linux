@@ -272,7 +272,7 @@ class TlsPlaintextBoundaryTests(unittest.TestCase):
                 self.server_side = server_side
                 return fake_socket
 
-        server = _TlsImageServer(FakeContext())
+        server = _TlsImageServer(FakeContext(), float("inf"))
         server.server_transport = object()
         server.image_requested.set()
         server._run()
@@ -309,7 +309,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
                 events.append(("close",))
 
         class FakeTlsServer:
-            def __init__(self, _context):
+            def __init__(self, _context, _operation_deadline):
                 events.append(("tls-init",))
 
             def establish(self, _session):

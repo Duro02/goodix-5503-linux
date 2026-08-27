@@ -12,6 +12,7 @@ import ssl
 import struct
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Final
 
@@ -236,8 +237,9 @@ class _ResetGuard:
 class _TlsImageServer:
     """Keep the reviewed local TLS socket alive for one application record set."""
 
-    def __init__(self, context: ssl.SSLContext):
+    def __init__(self, context: ssl.SSLContext, operation_deadline: float):
         self.context = context
+        self.operation_deadline = operation_deadline
         self.server_transport: socket.socket | None = None
         self.bridge: socket.socket | None = None
         self.thread: threading.Thread | None = None
@@ -259,7 +261,8 @@ class _TlsImageServer:
                     raise TlsTestError("TLS server negotiated no cipher")
                 self.handshake_result.append(cipher[0])
                 self.handshake_done.set()
-                if not self.image_requested.wait(10):
+                image_wait = max(0.0, self.operation_deadline - time.monotonic())
+                if not self.image_requested.wait(image_wait):
                     return
                 plaintext = bytearray(PLAINTEXT_IMAGE_LENGTH)
                 surplus = bytearray(1)
@@ -289,7 +292,9 @@ class _TlsImageServer:
                     surplus[:] = b"\x00" * len(surplus)
                     plaintext[:] = b"\x00" * len(plaintext)
                     self.image_done.set()
-                self.release.wait(5)
+                self.release.wait(
+                    min(5.0, max(0.0, self.operation_deadline - time.monotonic()))
+                )
         except BaseException as error:
             if not self.handshake_done.is_set():
                 self.handshake_result.append(error)
@@ -325,7 +330,8 @@ class _TlsImageServer:
             raise ImageCaptureError("TLS image server is not established")
         self.image_requested.set()
         self.bridge.sendall(ciphertext)
-        if not self.image_done.wait(10) or not self.image_result:
+        image_wait = max(0.0, self.operation_deadline - time.monotonic())
+        if not self.image_done.wait(image_wait) or not self.image_result:
             raise ImageCaptureError("TLS image plaintext timed out")
         result = self.image_result[0]
         if isinstance(result, BaseException):
@@ -395,13 +401,16 @@ def run_prepared_clear_frame_capture(
         if not hmac.compare_digest(live, derived):
             raise ImageCaptureError("device PSK does not match prepared PSK")
         context = _build_tls_context(psk)
+        operation_deadline = time.monotonic() + min(
+            120.0, max(30.0, timeout_seconds * 8)
+        )
 
         reset_guard.start()
         pov = _fixed_exchange(session, COMMAND_POV_IMAGE_CHECK, b"\x00\x00")
         if not pov:
             raise ImageCaptureError("POV check returned an empty response")
 
-        tls_server = _TlsImageServer(context)
+        tls_server = _TlsImageServer(context, operation_deadline)
         cipher = tls_server.establish(session)
         # Official 10063 sends D4 after the server-side TLS handshake before
         # querying MCU TLS state or requesting image data. Community 10062 omits it.
