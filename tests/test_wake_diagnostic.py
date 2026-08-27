@@ -1,4 +1,5 @@
 import builtins
+import threading
 import unittest
 from array import array
 from unittest.mock import patch
@@ -7,9 +8,11 @@ import usb.core
 
 from goodix5503.probe import COMMAND_FIRMWARE_VERSION, _encode_packet
 from goodix5503.wake_diagnostic import (
+    QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION,
     WAKE_A8_DIAGNOSTIC_CONFIRMATION,
     WAKE_DIAGNOSTIC_CONFIRMATION,
     WakeDiagnosticError,
+    observe_one_queued_wake_a8,
     observe_one_wake,
     observe_one_wake_a8,
 )
@@ -20,6 +23,12 @@ class WakeDiagnosticTests(unittest.TestCase):
         with patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession") as session:
             with self.assertRaisesRegex(WakeDiagnosticError, "review is not complete"):
                 observe_one_wake(WAKE_DIAGNOSTIC_CONFIRMATION)
+            session.assert_not_called()
+
+    def test_queued_a8_gate_prevents_usb_open(self):
+        with patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession") as session:
+            with self.assertRaisesRegex(WakeDiagnosticError, "review is not complete"):
+                observe_one_queued_wake_a8(QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION)
             session.assert_not_called()
 
     def test_a8_gate_prevents_usb_open(self):
@@ -135,6 +144,175 @@ class WakeDiagnosticTests(unittest.TestCase):
         )
         self.assertEqual(result["transfer_count"], 0)
         self.assertEqual(result["operation"], "runtime-only-memory-geneva-wake-a8-observation")
+
+    def test_queued_a8_starts_one_32k_reader_before_wake_and_write(self):
+        events = []
+        release = threading.Event()
+
+        class Endpoint:
+            def read(self, size, timeout):
+                events.append(("read", size, timeout))
+                release.wait(timeout=1.0)
+                raise usb.core.USBTimeoutError("done")
+
+        class Session:
+            endpoint_in = Endpoint()
+
+            def wake_up(self, **kwargs):
+                events.append(("wake", kwargs["timeout_ms"]))
+
+            def _ReadOnlyUsbSession__write_packet(self, packet):
+                events.append(("write", packet))
+                release.set()
+
+            def close(self):
+                events.append(("close",))
+
+        with (
+            patch("goodix5503.wake_diagnostic.QUEUED_WAKE_A8_DIAGNOSTIC_REVIEW_COMPLETE", True),
+            patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession", return_value=Session()),
+            patch("goodix5503.wake_diagnostic._drop_sudo_privileges", side_effect=lambda: events.append(("drop",))),
+            patch("goodix5503.wake_diagnostic.time.sleep", side_effect=lambda delay: events.append(("sleep", delay))),
+            patch("goodix5503.wake_diagnostic.time.monotonic", return_value=10.0),
+        ):
+            result = observe_one_queued_wake_a8(QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION)
+        self.assertEqual(events[0], ("drop",))
+        self.assertEqual(events[1], ("read", 0x8000, 600))
+        self.assertEqual(events[2:], [
+            ("sleep", 0.025),
+            ("wake", 600),
+            ("sleep", 0.050),
+            ("write", _encode_packet(COMMAND_FIRMWARE_VERSION)),
+            ("close",),
+        ])
+        self.assertEqual(result["transfer_count"], 0)
+        self.assertEqual(
+            result["operation"],
+            "runtime-only-memory-geneva-queued-wake-a8-observation",
+        )
+
+    def test_queued_reader_failure_prevents_wake_and_a8(self):
+        failed = threading.Event()
+        events = []
+
+        class Endpoint:
+            def read(self, _size, _timeout=None, **_kwargs):
+                failed.set()
+                raise RuntimeError("pipe failed")
+
+        class Session:
+            endpoint_in = Endpoint()
+
+            def wake_up(self, **_kwargs):
+                events.append("wake")
+
+            def close(self):
+                events.append("close")
+
+        def barrier(delay):
+            if delay == 0.025:
+                self.assertTrue(failed.wait(timeout=1.0))
+
+        with (
+            patch("goodix5503.wake_diagnostic.QUEUED_WAKE_A8_DIAGNOSTIC_REVIEW_COMPLETE", True),
+            patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession", return_value=Session()),
+            patch("goodix5503.wake_diagnostic._drop_sudo_privileges"),
+            patch("goodix5503.wake_diagnostic.time.sleep", side_effect=barrier),
+        ):
+            with self.assertRaisesRegex(WakeDiagnosticError, "stopped before wake"):
+                observe_one_queued_wake_a8(QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION)
+        self.assertEqual(events, ["close"])
+
+    def test_queued_capture_wipes_buffers_when_close_fails(self):
+        raw = array("B", b"queued")
+        release = threading.Event()
+        tracked = []
+
+        class Endpoint:
+            calls = 0
+
+            def read(self, _size, _timeout=None, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return raw
+                release.wait(timeout=1.0)
+                raise usb.core.USBTimeoutError("done")
+
+        class Session:
+            endpoint_in = Endpoint()
+
+            def wake_up(self, **_kwargs):
+                pass
+
+            def _ReadOnlyUsbSession__write_packet(self, _packet):
+                release.set()
+
+            def close(self):
+                raise RuntimeError("close failed")
+
+        def tracking_bytearray(value=b""):
+            result = builtins.bytearray(value)
+            tracked.append(result)
+            return result
+
+        with (
+            patch("goodix5503.wake_diagnostic.QUEUED_WAKE_A8_DIAGNOSTIC_REVIEW_COMPLETE", True),
+            patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession", return_value=Session()),
+            patch("goodix5503.wake_diagnostic._drop_sudo_privileges"),
+            patch("goodix5503.wake_diagnostic.bytearray", side_effect=tracking_bytearray, create=True),
+            patch("goodix5503.wake_diagnostic.time.sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "close failed"):
+                observe_one_queued_wake_a8(QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION)
+        self.assertFalse(any(raw))
+        self.assertTrue(tracked)
+        self.assertTrue(all(not any(buffer) for buffer in tracked))
+
+    def test_queued_ninth_transfer_fails_before_wake_and_wipes(self):
+        raw_buffers = [array("B", bytes((value,))) for value in range(1, 10)]
+        originals = list(raw_buffers)
+        overflow = threading.Event()
+        tracked = []
+        events = []
+
+        class Endpoint:
+            def read(self, _size, _timeout=None, **_kwargs):
+                result = raw_buffers.pop(0)
+                if len(raw_buffers) == 0:
+                    overflow.set()
+                return result
+
+        class Session:
+            endpoint_in = Endpoint()
+
+            def wake_up(self, **_kwargs):
+                events.append("wake")
+
+            def close(self):
+                events.append("close")
+
+        def tracking_bytearray(value=b""):
+            result = builtins.bytearray(value)
+            tracked.append(result)
+            return result
+
+        def barrier(delay):
+            if delay == 0.025:
+                self.assertTrue(overflow.wait(timeout=1.0))
+
+        with (
+            patch("goodix5503.wake_diagnostic.QUEUED_WAKE_A8_DIAGNOSTIC_REVIEW_COMPLETE", True),
+            patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession", return_value=Session()),
+            patch("goodix5503.wake_diagnostic._drop_sudo_privileges"),
+            patch("goodix5503.wake_diagnostic.bytearray", side_effect=tracking_bytearray, create=True),
+            patch("goodix5503.wake_diagnostic.time.sleep", side_effect=barrier),
+        ):
+            with self.assertRaisesRegex(WakeDiagnosticError, "stopped before wake"):
+                observe_one_queued_wake_a8(QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION)
+        self.assertEqual(events, ["close"])
+        self.assertTrue(all(not any(buffer) for buffer in originals))
+        self.assertEqual(len(tracked), 9)
+        self.assertTrue(all(not any(buffer) for buffer in tracked))
 
     def test_wrong_confirmation_prevents_usb_and_core_dump_calls(self):
         with (
