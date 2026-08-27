@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from goodix5503.image_capture import (
+    CLEAR_CAPTURE_CONFIRMATION,
     COMMAND_GET_IMAGE,
     GET_IMAGE_CLEAR,
     IMAGE_HEIGHT,
@@ -245,6 +246,14 @@ class TlsPlaintextBoundaryTests(unittest.TestCase):
 
 
 class CaptureOrchestratorTests(unittest.TestCase):
+    def test_orchestrator_refuses_before_usb_without_exact_confirmation(self):
+        for confirmation in (None, "", CLEAR_CAPTURE_CONFIRMATION + " "):
+            with self.subTest(confirmation=confirmation):
+                with patch("goodix5503.image_capture.ReadOnlyUsbSession") as session:
+                    with self.assertRaisesRegex(ImageCaptureError, "confirmation"):
+                        run_prepared_clear_frame_capture(confirmation)
+                session.assert_not_called()
+
     def test_orchestrator_uses_only_fixed_runtime_sequence_and_resets_cleanup(self):
         events = []
 
@@ -312,7 +321,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
             patch("goodix5503.image_capture._TlsImageServer", FakeTlsServer),
             patch("goodix5503.image_capture._request_encrypted_clear_image", return_value=bytearray(b"cipher")),
         ):
-            result = run_prepared_clear_frame_capture()
+            result = run_prepared_clear_frame_capture(CLEAR_CAPTURE_CONFIRMATION)
 
         self.assertEqual(result["pixel_min"], 0)
         self.assertEqual(result["pixel_max"], 0)

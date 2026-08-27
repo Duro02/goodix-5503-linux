@@ -68,6 +68,9 @@ IMAGE_HEIGHT: Final = 64
 EXPECTED_RUNTIME_CONFIG_SHA256: Final = (
     "54e6cd4c0d18b4472e7ec066a11aabcc55389779e426562a9c2bcfd2e188eba6"
 )
+CLEAR_CAPTURE_CONFIRMATION: Final = (
+    "I AUTHORIZE ONE RUNTIME-ONLY MEMORY CLEAR FRAME"
+)
 
 FDT_CLEAR_MODE: Final = bytes.fromhex(
     "0d018b0084008c0088008096809180928085808c8086"
@@ -332,9 +335,12 @@ class _TlsImageServer:
 
 
 def run_prepared_clear_frame_capture(
+    confirmation: str | None = None,
     timeout_seconds: float = 5.0,
 ) -> dict[str, int | str]:
     """Capture one memory-only clear frame using only reviewed fixed commands."""
+    if confirmation != CLEAR_CAPTURE_CONFIRMATION:
+        raise ImageCaptureError("exact clear-frame hardware confirmation is required")
     _disable_core_dumps()
     _preflight_tls_runtime()
     session: ReadOnlyUsbSession | None = None
