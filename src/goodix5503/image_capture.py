@@ -27,6 +27,7 @@ from .probe import (
     COMMAND_FIRMWARE_VERSION,
     COMMAND_GET_IAP_VERSION,
     COMMAND_NOP,
+    FLAGS_MESSAGE_PROTOCOL,
     ProtocolError,
     ReadOnlyUsbSession,
     _check_ack,
@@ -120,7 +121,16 @@ def _request_encrypted_clear_image(session: ReadOnlyUsbSession) -> bytearray:
     )
     ack = _decode_packet(session._read_frame(), COMMAND_ACK)
     _check_ack(ack, COMMAND_GET_IMAGE)
-    payload = _decode_outer(session._read_frame(), FLAGS_TLS_IMAGE)
+    frame = session._read_frame()
+    if frame[0] == FLAGS_MESSAGE_PROTOCOL:
+        # Official 10063 emitted a normal command-success prelude before the
+        # encrypted B2 frame on the first reviewed hardware attempt. Accept
+        # only a fully validated response for this exact image command.
+        prelude = _decode_packet(frame, COMMAND_GET_IMAGE)
+        if not prelude or prelude[0] != 1:
+            raise ImageCaptureError("image command prelude did not report success")
+        frame = session._read_frame()
+    payload = _decode_outer(frame, FLAGS_TLS_IMAGE)
     if len(payload) <= 9:
         raise ImageCaptureError("encrypted image envelope is too short")
     ciphertext = bytearray(payload[9:])

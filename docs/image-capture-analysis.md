@@ -38,8 +38,18 @@ OTP-derived image tcode change from the default 256 to 224. It is stored owner-o
 differs from the zero-OTP regression output, confirming that real nonzero OTP
 processing did not simply return the all-default vector.
 
-No configuration has yet been uploaded. The next hardware stage remains gated
-on review of the exact runtime-only clear-frame sequence.
+The first reviewed runtime-only clear-frame attempt uploaded this exact config,
+completed TLS and reached the fixed image request. After its ACK, firmware 10063
+returned a normal message-protocol (`0xa0`) frame where the community 10062 flow
+expected the encrypted (`0xb2`) frame immediately. The fail-closed parser stopped
+without decoding or saving image data, then attempted its cleanup reset. No
+persistent write or firmware operation occurred, and the attempt was not retried.
+
+The revised parser handles this observed 10063 ordering only if the intervening
+frame fully decodes as a successful response for the exact image command `0x20`;
+it then still requires the next frame to be a structurally valid `0xb2` TLS image
+envelope. Other commands, failure status, or malformed packets remain fatal. A
+second hardware attempt remains separately review- and user-gated.
 
 ## Community post-TLS sequence under review
 

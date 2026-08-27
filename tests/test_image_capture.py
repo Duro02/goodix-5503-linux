@@ -108,6 +108,38 @@ class ImageEnvelopeTests(unittest.TestCase):
         finally:
             result[:] = b"\x00" * len(result)
 
+    def test_image_request_accepts_only_exact_success_prelude_before_b2(self):
+        session = object.__new__(ReadOnlyUsbSession)
+        ciphertext = self.tls_record(b"ciphertext")
+        frames = iter(
+            (
+                _encode_packet(COMMAND_ACK, bytes((COMMAND_GET_IMAGE, 1))),
+                _encode_packet(COMMAND_GET_IMAGE, b"\x01"),
+                _encode_outer(0xB2, b"123456789" + ciphertext),
+            )
+        )
+        session._ReadOnlyUsbSession__write_packet = lambda _packet: None
+        session._read_frame = lambda: next(frames)
+        result = _request_encrypted_clear_image(session)
+        try:
+            self.assertEqual(result, bytearray(ciphertext))
+        finally:
+            result[:] = b"\x00" * len(result)
+
+        for command, status in ((COMMAND_GET_IMAGE, 0), (0x36, 1)):
+            with self.subTest(command=command, status=status):
+                bad_session = object.__new__(ReadOnlyUsbSession)
+                bad_frames = iter(
+                    (
+                        _encode_packet(COMMAND_ACK, bytes((COMMAND_GET_IMAGE, 1))),
+                        _encode_packet(command, bytes((status,))),
+                    )
+                )
+                bad_session._ReadOnlyUsbSession__write_packet = lambda _packet: None
+                bad_session._read_frame = lambda: next(bad_frames)
+                with self.assertRaises((ImageCaptureError, ProtocolError)):
+                    _request_encrypted_clear_image(bad_session)
+
     def test_image_request_rejects_short_or_malformed_envelope(self):
         for payload in (b"123456789", b"123456789not-tls"):
             with self.subTest(payload=payload):
