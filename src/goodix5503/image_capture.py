@@ -163,6 +163,21 @@ def _fixed_exchange(
     return _milan_parse_other_body(body)
 
 
+def _chip_config_exchange(
+    session: ReadOnlyUsbSession,
+    payload: bytes,
+    operation_deadline: float,
+) -> bytes:
+    body = _exchange_raw_command_body(
+        session, COMMAND_UPLOAD_CONFIG, payload, operation_deadline
+    )
+    if not body:
+        raise ImageCaptureError("config response is missing its trailing byte")
+    # Milan McuParseChipConfig shortens the decoded body by one but copies from
+    # the original start pointer: unlike McuParseOther, it drops the final byte.
+    return body[:-1]
+
+
 def _read_register_exchange(
     session: ReadOnlyUsbSession,
     payload: bytes,
@@ -731,9 +746,8 @@ def run_prepared_clear_frame_capture(
 
         tls_server = _TlsImageServer(context, operation_deadline)
         cipher = tls_server.establish(session)
-        config_result = _fixed_exchange(
+        config_result = _chip_config_exchange(
             session,
-            COMMAND_UPLOAD_CONFIG,
             bytes(config),
             operation_deadline,
         )

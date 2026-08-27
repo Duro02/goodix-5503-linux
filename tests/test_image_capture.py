@@ -14,6 +14,7 @@ from goodix5503.image_capture import (
     _ResetGuard,
     _TlsImageServer,
     _acquire_hu_fresh_base_frame,
+    _chip_config_exchange,
     _fixed_exchange,
     _milan_parse_other_body,
     _read_register_exchange,
@@ -103,7 +104,6 @@ class ImageEnvelopeTests(unittest.TestCase):
     def test_fixed_exchange_decodes_ack_then_applies_milan_parse_other(self):
         for command, result in (
             (COMMAND_POV_IMAGE_CHECK, b"\x00"),
-            (COMMAND_UPLOAD_CONFIG, b"\x01"),
             (COMMAND_SWITCH_FDT_MODE, bytes(range(12))),
         ):
             with self.subTest(command=command):
@@ -134,6 +134,39 @@ class ImageEnvelopeTests(unittest.TestCase):
         empty._read_frame = lambda: next(empty_frames)
         with self.assertRaisesRegex(ImageCaptureError, "result prefix"):
             _fixed_exchange(empty, COMMAND_SWITCH_FDT_MODE, b"request")
+
+    def test_chip_config_exchange_drops_trailing_not_leading_byte(self):
+        for body, expected in (
+            (b"\x01", b""),
+            (b"\x01\x00", b"\x01"),
+            (b"\x01\x7f\x00", b"\x01\x7f"),
+        ):
+            with self.subTest(body=body):
+                session = object.__new__(ReadOnlyUsbSession)
+                frames = iter(
+                    (
+                        _encode_packet(COMMAND_ACK, bytes((COMMAND_UPLOAD_CONFIG, 1))),
+                        _encode_packet(COMMAND_UPLOAD_CONFIG, body),
+                    )
+                )
+                session._ReadOnlyUsbSession__write_packet = lambda _packet: None
+                session._read_frame = lambda **_kwargs: next(frames)
+                self.assertEqual(
+                    _chip_config_exchange(session, b"config", TEST_DEADLINE),
+                    expected,
+                )
+
+        empty = object.__new__(ReadOnlyUsbSession)
+        empty_frames = iter(
+            (
+                _encode_packet(COMMAND_ACK, bytes((COMMAND_UPLOAD_CONFIG, 1))),
+                _encode_packet(COMMAND_UPLOAD_CONFIG, b""),
+            )
+        )
+        empty._ReadOnlyUsbSession__write_packet = lambda _packet: None
+        empty._read_frame = lambda **_kwargs: next(empty_frames)
+        with self.assertRaisesRegex(ImageCaptureError, "trailing byte"):
+            _chip_config_exchange(empty, b"config", TEST_DEADLINE)
 
     def test_register_exchange_uses_exact_milan_read_parser(self):
         session = object.__new__(ReadOnlyUsbSession)
@@ -790,9 +823,11 @@ class CaptureOrchestratorTests(unittest.TestCase):
             events.append(("exchange", command, payload))
             if command == COMMAND_POV_IMAGE_CHECK:
                 return b"\x00"
-            if command == COMMAND_UPLOAD_CONFIG:
-                return b"\x01"
             return b""
+
+        def chip_config_exchange(_session, payload, _deadline):
+            events.append(("exchange", COMMAND_UPLOAD_CONFIG, payload))
+            return b"\x01"
 
         def ack_only(_session, command, payload, _deadline=None):
             events.append(("ack-only", command, payload))
@@ -822,6 +857,10 @@ class CaptureOrchestratorTests(unittest.TestCase):
             patch("goodix5503.image_capture._build_tls_context", return_value=object()),
             patch("goodix5503.image_capture._reset_sensor", side_effect=lambda _s: events.append(("reset",))),
             patch("goodix5503.image_capture._fixed_exchange", side_effect=fixed_exchange),
+            patch(
+                "goodix5503.image_capture._chip_config_exchange",
+                side_effect=chip_config_exchange,
+            ),
             patch("goodix5503.image_capture._ack_only", side_effect=ack_only),
             patch("goodix5503.image_capture._TlsImageServer", FakeTlsServer),
             patch(

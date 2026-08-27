@@ -106,8 +106,13 @@ accepts post-result lengths 0..1; an empty result retains the pre-zeroed
 normal-cold discriminator `00`. `AA`, `DA`, and `DF` select unsupported
 resume/reconnect branches and therefore fail closed in the free cold-only path.
 D2 and duplicate C4 remain unsupported.
-Config 90 uses its distinct parser: after the common result prefix, one or two
-bytes are bounded and byte zero must equal `01`.
+Config 90 uses its distinct `McuParseChipConfig` parser. It sets output length
+to decoded length minus one but copies from the original start pointer, thereby
+dropping the **final** decoded byte rather than the first byte. The resulting
+output is bounded to one or two bytes and byte zero must equal `01`. Treating
+this response as `McuParseOther` incorrectly removes the leading status byte;
+the fourth controlled validation exposed exactly that host parser mismatch and
+stopped before C4 or image acquisition.
 
 ## Corrected GF3258 command 36 layout
 
