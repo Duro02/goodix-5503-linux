@@ -59,7 +59,6 @@ from .tls_check import (
 COMMAND_UPLOAD_CONFIG: Final = 0x90
 COMMAND_SET_DRIVER_STATE: Final = 0xC4
 COMMAND_GET_POV_IMAGE: Final = 0xD2
-COMMAND_TLS_ESTABLISHED: Final = 0xD4
 COMMAND_POV_IMAGE_CHECK: Final = 0xD6
 COMMAND_SWITCH_FDT_MODE: Final = 0x36
 COMMAND_GET_IMAGE: Final = 0x20
@@ -75,6 +74,9 @@ EXPECTED_RUNTIME_CONFIG_SHA256: Final = LOCAL_RUNTIME_CONFIG_SHA256
 CLEAR_CAPTURE_CONFIRMATION: Final = (
     "I AUTHORIZE ONE RUNTIME-ONLY MEMORY CLEAR FRAME"
 )
+# The pinned GF3258 cold/base call graph is still being reconstructed. Keep the
+# former community-derived candidate unreachable even with confirmation.
+OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE: Final = False
 
 FDT_CLEAR_MODE: Final = bytes.fromhex(
     "0d018b0084008c0088008096809180928085808c8086"
@@ -362,6 +364,8 @@ def run_prepared_clear_frame_capture(
     """Capture one memory-only clear frame using only reviewed fixed commands."""
     if confirmation != CLEAR_CAPTURE_CONFIRMATION:
         raise ImageCaptureError("exact clear-frame hardware confirmation is required")
+    if not OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE:
+        raise ImageCaptureError("official GF3258 capture sequence is not complete")
     _disable_core_dumps()
     _preflight_tls_runtime()
     session: ReadOnlyUsbSession | None = None
@@ -412,9 +416,6 @@ def run_prepared_clear_frame_capture(
 
         tls_server = _TlsImageServer(context, operation_deadline)
         cipher = tls_server.establish(session)
-        # Official 10063 sends D4 after the server-side TLS handshake before
-        # querying MCU TLS state or requesting image data. Community 10062 omits it.
-        _ack_only(session, COMMAND_TLS_ESTABLISHED, b"\x00\x00")
         uploaded = _fixed_exchange(session, COMMAND_UPLOAD_CONFIG, bytes(config))
         if not uploaded or uploaded[0] != 1:
             raise ImageCaptureError("runtime configuration upload was rejected")

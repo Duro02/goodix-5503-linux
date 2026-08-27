@@ -37,9 +37,11 @@ Runtime clear-frame attempts: all reached image command after TLS/config/init
   opaque data body is not status `1`, matching the official null-output D0 path.
   The fourth consumed bounded D0 then timed out before B2, revealing that the
   community 10062 ten-byte image request differs from official 10063 `01 00`.
-  A standing-authorized run with `01 00` still timed out after D0; official logs
-  then exposed the missing post-handshake D4/`0000` notification. No attempt has
-  decoded/saved an image; each attempted cleanup reset.
+  A standing-authorized run with `01 00` still timed out after D0. A subsequent
+  full profile audit showed that the proposed D4 step belonged to a 5110 log,
+  not pinned Milan code; it was removed without another run. No attempt has
+  decoded/saved an image; each attempted cleanup reset. Hardware capture is now
+  disabled before USB until the GF3258 base path is completely reconstructed.
 ```
 
 ## Interpretation

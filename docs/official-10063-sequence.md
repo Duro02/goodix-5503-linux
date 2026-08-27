@@ -24,7 +24,7 @@ It exists to prevent further step-at-a-time substitution of community commands.
 | Identity | firmware `GF3258_RTSEC_APP_10063`, IAP `MILAN_RTSEC_IAP_10027` | official package/profile and local reads |
 | Config | 256-byte template at `0x180257d70`; `GetChipConfig` at `0x18006c020`; local tcode 224, FDT delta 21, official checksum | pinned DLL, local read-only OTP derivation, free KAT |
 | TLS request | D0 through `McuReqTlsConnection` at `0x1800ac0b0`; caller supplies null output pointer/length, so later A0/D0 data is opaque | pinned DLL call at `0x1800ac14f` |
-| TLS finish | fixed D4/`0000` ACK-only after TLS state 16 | shared IoHub log; exact Milan caller VA still missing |
+| TLS status | Milan operation table selects wire `92` with a dynamic one-byte request and two-byte output; no immediate D4 constructor exists in pinned Milan code | table `0x180259ce0`, `McuGetTlsStatus` `0x1800af210` |
 | Image wrapper | `MilanFSerMcuGetImage` at `0x180065c90`; validates output size and dispatches to generic or discriminator-10 path | pinned DLL |
 | Generic image request | command 20, payload exactly `01 00`, length 2 | `_FpMcuGetImage` `0x180058610`, IoHub call `0x18005871a` |
 | FDT constructor | selector-derived commands 30/32/34/36; payload is two-byte header plus optional dynamic bytes | `_FpMcuSwitchToFdtMode` `0x1800589b0` |
@@ -52,17 +52,18 @@ Most importantly, the current command-36 literal is the community 10062 value.
 The official constructor proves that these bytes are dynamic caller input; the
 literal was not found in the pinned DLL. Another hardware run is blocked until
 that dynamic Milan input and the surrounding call chain are recovered or the
-command is removed from the first-frame path with official evidence.
+command is removed from the first-frame path with official evidence. The prior
+D4/`0000` step has also been removed: it came from the 5110 log, while pinned
+Milan uses a dynamic wire-92 TLS-status operation and exposes no immediate D4.
 
 ## Current narrow candidate versus proof
 
-The prototype currently performs identity/PSK checks, reset, D6, TLS D0 flights,
-D4, config 90, C4 twice, D2, command 36, image 20 and cleanup reset. Only reset,
-TLS, D4, config identity, image `20/0100`, packet/TLS validation and cleanup are
-well supported. D6/C4/D2/36 and their ordering remain a community-derived block.
-The prototype therefore remains useful as a fail-closed protocol harness but is
-not yet an attested reproduction of the complete official 10063 capture state
-machine.
+The former prototype candidate performed identity/PSK checks, reset, D6, TLS D0
+flights, config 90, C4 twice, D2, command 36, image 20 and cleanup reset. Only
+reset, TLS, config identity, image `20/0100`, packet/TLS validation and cleanup
+are well supported. D6/C4/D2/36 and their ordering remain a community-derived
+block. The hardware entry point is now explicitly disabled before USB even with
+confirmation; it cannot be mistaken for an attested official sequence.
 
 ## Offline work gate
 
@@ -79,3 +80,30 @@ Before another capture attempt:
 6. independently review the resulting complete sequence.
 
 No firmware, PSK or persistent operation is required for this work.
+
+## Targeted profile-table findings
+
+The correct local profile is `GF3258 DN2` at `0x180257a70`, with sensor ops at
+`0x180257ac0`. The previously considered table `0x180258110` belongs to GF3288
+and must not be used. Important GF3258 slots are:
+
+- `+0x30` GetChipConfig `0x18006c020`;
+- `+0x50` GetFdtInitParam `0x18006bf50`;
+- `+0x60` MilanFSerMcuGetImage `0x180065c90`;
+- `+0x78` GF3258 GetFdtManualBase `0x18006cdb0`;
+- `+0x80` GF3258 GetNavBase `0x18006c6c0`;
+- `+0x88` GetFdtDelta `0x180064570`.
+
+`LogicMilanFSeries::Start` at `0x180087890` proves the high-level cold order:
+D6-capable POV check, D0/TLS start, config generation/upload, one optional
+post-config state hook, FDT/OTP host initialization, then `UpdateAllBase` at
+`0x18008bdc0`. A fresh-base branch calls manual FDT base, nav base, manual FDT
+base, delta validation, image base, then a third manual FDT base. A valid saved
+base follows a different branch. It does not prove the community sequence
+`C4,C4,D2,36,20`.
+
+The pinned Milan MCU table selects generic D6/D2/C4 constructors but only proves
+capability. D6 has a one-byte output whose content its constructor does not
+interpret; D2 is output-bearing POV data, not a boolean; C4 is ACK-only and only
+one shared direct state-1 caller was found. The community duplicate C4 and fixed
+D2 invocation remain unsupported.

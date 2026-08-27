@@ -79,12 +79,11 @@ the community ten-byte image payload, while official `_FpMcuGetImage` constructs
 exactly `01 00`. The offline path now uses only the official two-byte payload.
 
 The next standing-authorized attempt still timed out after D0 with the corrected
-two-byte request. Official logs reveal an earlier missing 10063 handshake-final
-step: immediately after TLS reaches state 16, the host sends command `0xd4` with
-payload `0000` and receives its ACK before querying MCU TLS state. The community
-5503/10062 path omits D4, although other community families implement it as
-`tls_successfully_established()`. The fixed 10063 path now sends exact D4/`0000`
-after the in-process TLS handshake and before configuration/image initialization.
+two-byte request. A D4/`0000` hypothesis was derived from the 5110 Chicago log,
+but the complete profile audit invalidated its use for Milan: pinned Milan code
+contains no immediate D4 constructor and selects a dynamic wire-92 TLS-status
+operation instead. D4 has been removed, and hardware capture is disabled while
+the actual GF3258 cold/base path is reconstructed.
 
 ## Community post-TLS sequence under review
 

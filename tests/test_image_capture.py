@@ -26,7 +26,6 @@ from goodix5503.image_capture import (
     COMMAND_POV_IMAGE_CHECK,
     COMMAND_SET_DRIVER_STATE,
     COMMAND_SWITCH_FDT_MODE,
-    COMMAND_TLS_ESTABLISHED,
     COMMAND_UPLOAD_CONFIG,
 )
 from goodix5503.pairing import PSK_PATH, VERIFICATION_PATH
@@ -290,6 +289,12 @@ class CaptureOrchestratorTests(unittest.TestCase):
                         run_prepared_clear_frame_capture(confirmation)
                 session.assert_not_called()
 
+    def test_incomplete_official_sequence_is_blocked_before_usb(self):
+        with patch("goodix5503.image_capture.ReadOnlyUsbSession") as session:
+            with self.assertRaisesRegex(ImageCaptureError, "not complete"):
+                run_prepared_clear_frame_capture(CLEAR_CAPTURE_CONFIRMATION)
+        session.assert_not_called()
+
     def test_orchestrator_uses_only_fixed_runtime_sequence_and_resets_cleanup(self):
         events = []
 
@@ -341,6 +346,10 @@ class CaptureOrchestratorTests(unittest.TestCase):
             events.append(("ack-only", command, payload))
 
         with (
+            patch(
+                "goodix5503.image_capture.OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE",
+                True,
+            ),
             patch("goodix5503.image_capture.ReadOnlyUsbSession", FakeSession),
             patch("goodix5503.image_capture._disable_core_dumps"),
             patch("goodix5503.image_capture._preflight_tls_runtime"),
@@ -368,20 +377,17 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertEqual(events.count(("reset",)), 2)
         runtime = [event for event in events if event[0] in ("exchange", "ack-only")]
         self.assertEqual(runtime[0], ("exchange", COMMAND_POV_IMAGE_CHECK, b"\x00\x00"))
+        self.assertEqual(runtime[1][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
+        self.assertEqual(len(runtime[1][2]), 256)
         self.assertEqual(
-            runtime[1], ("ack-only", COMMAND_TLS_ESTABLISHED, b"\x00\x00")
-        )
-        self.assertEqual(runtime[2][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
-        self.assertEqual(len(runtime[2][2]), 256)
-        self.assertEqual(
-            runtime[3:5],
+            runtime[2:4],
             [
                 ("ack-only", COMMAND_SET_DRIVER_STATE, b"\x01\x00"),
                 ("ack-only", COMMAND_SET_DRIVER_STATE, b"\x01\x00"),
             ],
         )
-        self.assertEqual(runtime[5], ("exchange", COMMAND_GET_POV_IMAGE, b"\x00\x00"))
-        self.assertEqual(runtime[6], ("exchange", COMMAND_SWITCH_FDT_MODE, FDT_CLEAR_MODE))
+        self.assertEqual(runtime[4], ("exchange", COMMAND_GET_POV_IMAGE, b"\x00\x00"))
+        self.assertEqual(runtime[5], ("exchange", COMMAND_SWITCH_FDT_MODE, FDT_CLEAR_MODE))
         self.assertIn(("tls-close",), events)
         self.assertEqual(events[-1], ("close",))
 
