@@ -36,7 +36,11 @@ has SHA-256 `54e6cd4c0d18b4472e7ec066a11aabcc55389779e426562a9c2bcfd2e188eba6`,
 a valid independently checked official checksum, FDT delta `0x15`, and an
 OTP-derived image tcode change from the default 256 to 224. It is stored owner-only at `artifacts/device-backup/runtime-config-5503.bin`. Its hash
 differs from the zero-OTP regression output, confirming that real nonzero OTP
-processing did not simply return the all-default vector.
+processing did not simply return the all-default vector. Static comparison shows
+that this unit's final config changes only image tcode bytes `0xeb..0xec` from
+256 to 224 and the resulting checksum; FDT delta remains the official default
+21. `build_local_runtime_config()` now reproduces the exact pinned config hash
+from the free template/field/checksum implementation without loading the DLL.
 
 The first reviewed runtime-only clear-frame attempt uploaded this exact config,
 completed TLS and reached the fixed image request. After its ACK, firmware 10063

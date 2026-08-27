@@ -15,7 +15,11 @@ import threading
 from pathlib import Path
 from typing import Final
 
-from .chip_config import RUNTIME_CONFIG_PATH, _validate_config_checksum
+from .chip_config import (
+    LOCAL_RUNTIME_CONFIG_SHA256,
+    RUNTIME_CONFIG_PATH,
+    _validate_config_checksum,
+)
 from .pairing import (
     PSK_PATH,
     VERIFICATION_PATH,
@@ -65,9 +69,7 @@ PLAINTEXT_IMAGE_LENGTH: Final = 7684
 PIXEL_COUNT: Final = 5120
 IMAGE_WIDTH: Final = 80
 IMAGE_HEIGHT: Final = 64
-EXPECTED_RUNTIME_CONFIG_SHA256: Final = (
-    "54e6cd4c0d18b4472e7ec066a11aabcc55389779e426562a9c2bcfd2e188eba6"
-)
+EXPECTED_RUNTIME_CONFIG_SHA256: Final = LOCAL_RUNTIME_CONFIG_SHA256
 CLEAR_CAPTURE_CONFIRMATION: Final = (
     "I AUTHORIZE ONE RUNTIME-ONLY MEMORY CLEAR FRAME"
 )

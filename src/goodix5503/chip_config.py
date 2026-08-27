@@ -25,6 +25,11 @@ PROJECT_ROOT: Final = Path(__file__).resolve().parents[2]
 RUNTIME_CONFIG_PATH: Final = (
     PROJECT_ROOT / "artifacts" / "device-backup" / "runtime-config-5503.bin"
 )
+LOCAL_IMAGE_TCODE: Final = 224
+LOCAL_FDT_DELTA: Final = 21
+LOCAL_RUNTIME_CONFIG_SHA256: Final = (
+    "54e6cd4c0d18b4472e7ec066a11aabcc55389779e426562a9c2bcfd2e188eba6"
+)
 EXPECTED_ZERO_OTP_CONFIG: Final = bytes.fromhex(
     "581160712c9d2cc91ce518fd00fd00fd03ba000180ca0004008400c0b38600bb"
     "c48800baba8a00b2b28c00aaaa8e00c1c19000bbbb9200b1b1940000a8960000"
@@ -57,6 +62,20 @@ def _validate_config_checksum(config: bytes | bytearray) -> None:
         raise ChipConfigError(
             f"invalid official configuration checksum 0x{received:04x}"
         )
+
+
+def build_local_runtime_config() -> bytearray:
+    """Build this unit's reviewed config without loading the proprietary DLL."""
+    config = bytearray(EXPECTED_ZERO_OTP_CONFIG)
+    struct.pack_into("<H", config, 0xEB, LOCAL_IMAGE_TCODE)
+    config[0xC7] = 0x80
+    config[0xC8] = LOCAL_FDT_DELTA
+    struct.pack_into("<H", config, 0xFE, _config_checksum(config[:0xFE]))
+    _validate_config_checksum(config)
+    if hashlib.sha256(config).hexdigest() != LOCAL_RUNTIME_CONFIG_SHA256:
+        config[:] = b"\x00" * len(config)
+        raise ChipConfigError("free local configuration vector does not match")
+    return config
 
 
 def emulate_chip_config(otp: bytearray, wbdi_path: Path) -> bytearray:

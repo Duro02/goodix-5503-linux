@@ -57,7 +57,10 @@ needed:
 
 - **Local prototype:** install the already derived 256-byte config and random PSK
   as root-owned `0600` state outside the source tree, with exact device identity,
-  config SHA-256 and verification-record checks before every reset/upload.
+  config SHA-256 and verification-record checks before every reset/upload. The
+  free `build_local_runtime_config()` KAT already reproduces this unit's exact
+  official-derived hash from tcode 224, FDT delta 21 and the reviewed checksum;
+  the DLL is no longer needed to rebuild this unit's config.
 - **Portable driver:** independently reimplement the reviewed OTP-to-config
   algorithm in free C code and validate it against offline official vectors.
   This removes the local DLL and per-machine pre-generated config requirement.

@@ -1,12 +1,16 @@
+import hashlib
 import importlib.util
 import unittest
 from pathlib import Path
 
 from goodix5503.chip_config import (
     EXPECTED_ZERO_OTP_CONFIG,
+    LOCAL_RUNTIME_CONFIG_SHA256,
+    RUNTIME_CONFIG_PATH,
     ChipConfigError,
     _config_checksum,
     _validate_config_checksum,
+    build_local_runtime_config,
     emulate_chip_config,
     verify_zero_otp_vector,
 )
@@ -31,6 +35,15 @@ class ChipConfigTests(unittest.TestCase):
     def test_pinned_official_zero_otp_vector(self):
         verify_zero_otp_vector(self.pinned_wbdi_or_skip())
         self.assertEqual(len(EXPECTED_ZERO_OTP_CONFIG), 256)
+
+    def test_free_local_builder_matches_official_otp_derived_config(self):
+        config = build_local_runtime_config()
+        try:
+            self.assertEqual(hashlib.sha256(config).hexdigest(), LOCAL_RUNTIME_CONFIG_SHA256)
+            if RUNTIME_CONFIG_PATH.exists():
+                self.assertEqual(config, RUNTIME_CONFIG_PATH.read_bytes())
+        finally:
+            config[:] = b"\x00" * len(config)
 
     def test_official_checksum_accepts_vector_and_rejects_corruption(self):
         self.assertEqual(
