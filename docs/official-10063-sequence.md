@@ -101,9 +101,11 @@ base follows a different branch. It does not prove the community sequence
 
 With pinned globals `0x180256808=1` and `0x180256810=1` and a calloc-zero fresh
 logic object, the normal cold branch executes command `00/00000000`, then one
-D6/`0000`, and later exactly one C4/`0100`. D6 returns one post-result byte;
-`AA`, `DA`, and `DF` select unsupported resume/reconnect branches and therefore
-fail closed in the free cold-only path. D2 and duplicate C4 remain unsupported.
+D6/`0000`, and later exactly one C4/`0100`. D6 advertises capacity one and
+accepts post-result lengths 0..1; an empty result retains the pre-zeroed
+normal-cold discriminator `00`. `AA`, `DA`, and `DF` select unsupported
+resume/reconnect branches and therefore fail closed in the free cold-only path.
+D2 and duplicate C4 remain unsupported.
 Config 90 uses its distinct parser: after the common result prefix, one or two
 bytes are bounded and byte zero must equal `01`.
 
@@ -166,7 +168,8 @@ For no valid saved base, `UpdateAllBase` `0x18008bdc0` performs:
    8,12,...,52 as an 80x12 (1,920-byte) nav base;
 3. command 36 manual base1;
 4. command 70 payload `14 00`, then command 82 register-read payload
-   `00 82 00 02 00`; interpret the returned LE16 value shifted right by eight
+   `00 82 00 02 00`; parse its distinct Milan RegRw header, require read
+   operation and exactly two data bytes, then interpret the returned LE16 value shifted right by eight
    as delta and compare base0/base1;
 5. command 20 image base;
 6. command 36 manual base2;

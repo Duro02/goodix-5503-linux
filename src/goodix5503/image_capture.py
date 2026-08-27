@@ -133,7 +133,7 @@ def _milan_parse_other_body(body: bytes) -> bytes:
     return body[1:]
 
 
-def _fixed_exchange(
+def _exchange_raw_command_body(
     session: ReadOnlyUsbSession,
     command: int,
     payload: bytes,
@@ -146,10 +146,36 @@ def _fixed_exchange(
         _read_frame_bounded(session, operation_deadline), COMMAND_ACK
     )
     _check_ack(ack, command)
-    body = _decode_packet(
+    return _decode_packet(
         _read_frame_bounded(session, operation_deadline), command
     )
+
+
+def _fixed_exchange(
+    session: ReadOnlyUsbSession,
+    command: int,
+    payload: bytes,
+    operation_deadline: float | None = None,
+) -> bytes:
+    body = _exchange_raw_command_body(
+        session, command, payload, operation_deadline
+    )
     return _milan_parse_other_body(body)
+
+
+def _read_register_exchange(
+    session: ReadOnlyUsbSession,
+    payload: bytes,
+    operation_deadline: float,
+) -> bytes:
+    body = _exchange_raw_command_body(
+        session, COMMAND_READ_REGISTER, payload, operation_deadline
+    )
+    if len(body) != 3:
+        raise ImageCaptureError("register-read response must be exactly 3 bytes")
+    if ((body[0] & 0x0F) >> 1) != 1:
+        raise ImageCaptureError("register response is not a read operation")
+    return body[1:]
 
 
 def _validate_tls_records(ciphertext: bytes | bytearray) -> None:
@@ -211,8 +237,8 @@ def _request_encrypted_clear_image(
         elif command == COMMAND_GET_IMAGE and not seen_image_prelude:
             seen_image_prelude = True
             prelude = _decode_packet(frame, command)
-            if not prelude or prelude[0] != 1:
-                raise ImageCaptureError("image prelude did not report success")
+            if prelude != b"\x01":
+                raise ImageCaptureError("image prelude did not report exact success")
         else:
             raise ImageCaptureError("unexpected or duplicate image prelude command")
         frame = _read_frame_bounded(session, operation_deadline)
@@ -230,11 +256,13 @@ def _request_encrypted_clear_image(
         raise
 
 
-def _validate_cold_pov_result(result: bytes) -> None:
-    if len(result) != 1:
-        raise ImageCaptureError("cold POV response must be exactly one byte")
-    if result[0] in (0xAA, 0xDA, 0xDF):
+def _validate_cold_pov_result(result: bytes) -> int:
+    if len(result) > 1:
+        raise ImageCaptureError("cold POV response exceeds one byte")
+    discriminator = result[0] if result else 0
+    if discriminator in (0xAA, 0xDA, 0xDF):
         raise ImageCaptureError("unsupported resume/reconnect POV state")
+    return discriminator
 
 
 def _validate_config_result(result: bytes) -> None:
@@ -572,9 +600,8 @@ def _acquire_hu_fresh_base_frame(
                     b"\x14\x00",
                     operation_deadline,
                 )
-                delta_body = _fixed_exchange(
+                delta_body = _read_register_exchange(
                     session,
-                    COMMAND_READ_REGISTER,
                     b"\x00\x82\x00\x02\x00",
                     operation_deadline,
                 )

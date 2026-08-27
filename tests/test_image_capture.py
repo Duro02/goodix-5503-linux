@@ -16,6 +16,7 @@ from goodix5503.image_capture import (
     _acquire_hu_fresh_base_frame,
     _fixed_exchange,
     _milan_parse_other_body,
+    _read_register_exchange,
     _request_encrypted_clear_image,
     _validate_cold_pov_result,
     _validate_config_result,
@@ -47,10 +48,11 @@ HU_FRESH_FDT_REQUEST = bytes.fromhex(
 
 
 class ImageDecodeTests(unittest.TestCase):
-    def test_cold_pov_accepts_normal_byte_and_rejects_resume_states(self):
-        _validate_cold_pov_result(b"\x00")
-        _validate_cold_pov_result(b"\x01")
-        for result in (b"", b"\x00\x00", b"\xaa", b"\xda", b"\xdf"):
+    def test_cold_pov_accepts_bounded_normal_result_and_rejects_resume_states(self):
+        self.assertEqual(_validate_cold_pov_result(b""), 0)
+        self.assertEqual(_validate_cold_pov_result(b"\x00"), 0)
+        self.assertEqual(_validate_cold_pov_result(b"\x01"), 1)
+        for result in (b"\x00\x00", b"\xaa", b"\xda", b"\xdf"):
             with self.subTest(result=result):
                 with self.assertRaises(ImageCaptureError):
                     _validate_cold_pov_result(result)
@@ -103,7 +105,6 @@ class ImageEnvelopeTests(unittest.TestCase):
             (COMMAND_POV_IMAGE_CHECK, b"\x00"),
             (COMMAND_UPLOAD_CONFIG, b"\x01"),
             (COMMAND_SWITCH_FDT_MODE, bytes(range(12))),
-            (COMMAND_READ_REGISTER, b"\x34\x12"),
         ):
             with self.subTest(command=command):
                 session = object.__new__(ReadOnlyUsbSession)
@@ -133,6 +134,37 @@ class ImageEnvelopeTests(unittest.TestCase):
         empty._read_frame = lambda: next(empty_frames)
         with self.assertRaisesRegex(ImageCaptureError, "result prefix"):
             _fixed_exchange(empty, COMMAND_SWITCH_FDT_MODE, b"request")
+
+    def test_register_exchange_uses_exact_milan_read_parser(self):
+        session = object.__new__(ReadOnlyUsbSession)
+        frames = iter(
+            (
+                _encode_packet(COMMAND_ACK, bytes((COMMAND_READ_REGISTER, 1))),
+                _encode_packet(COMMAND_READ_REGISTER, b"\x02\x34\x12"),
+            )
+        )
+        writes = []
+        session._ReadOnlyUsbSession__write_packet = writes.append
+        session._read_frame = lambda **_kwargs: next(frames)
+        self.assertEqual(
+            _read_register_exchange(session, b"request", TEST_DEADLINE),
+            b"\x34\x12",
+        )
+        self.assertEqual(writes, [_encode_packet(COMMAND_READ_REGISTER, b"request")])
+
+        for body in (b"", b"\x02", b"\x02\x34", b"\x02\x34\x12\x00", b"\x00\x34\x12", b"\x04\x34\x12"):
+            with self.subTest(body=body):
+                bad = object.__new__(ReadOnlyUsbSession)
+                bad_frames = iter(
+                    (
+                        _encode_packet(COMMAND_ACK, bytes((COMMAND_READ_REGISTER, 1))),
+                        _encode_packet(COMMAND_READ_REGISTER, body),
+                    )
+                )
+                bad._ReadOnlyUsbSession__write_packet = lambda _packet: None
+                bad._read_frame = lambda **_kwargs: next(bad_frames)
+                with self.assertRaises(ImageCaptureError):
+                    _read_register_exchange(bad, b"request", TEST_DEADLINE)
 
     def test_milan_parse_other_removes_exactly_one_result_byte(self):
         self.assertEqual(_milan_parse_other_body(b"\x01"), b"")
@@ -213,13 +245,17 @@ class ImageEnvelopeTests(unittest.TestCase):
             prefix[:] = b"\x00" * len(prefix)
             result[:] = b"\x00" * len(result)
 
-        for command, status in ((COMMAND_GET_IMAGE, 0), (0x36, 1)):
-            with self.subTest(command=command, status=status):
+        for command, body in (
+            (COMMAND_GET_IMAGE, b"\x00"),
+            (COMMAND_GET_IMAGE, b"\x01\x00"),
+            (0x36, b"\x01"),
+        ):
+            with self.subTest(command=command, body=body):
                 bad_session = object.__new__(ReadOnlyUsbSession)
                 bad_frames = iter(
                     (
                         _encode_packet(COMMAND_ACK, bytes((COMMAND_GET_IMAGE, 1))),
-                        _encode_packet(command, bytes((status,))),
+                        _encode_packet(command, body),
                     )
                 )
                 bad_session._ReadOnlyUsbSession__write_packet = lambda _packet: None
@@ -375,9 +411,11 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
 
         def exchange(_session, command, payload, _deadline):
             commands.append((command, payload))
-            if command == COMMAND_SWITCH_FDT_MODE:
-                return next(responses)
-            self.assertEqual(command, COMMAND_READ_REGISTER)
+            self.assertEqual(command, COMMAND_SWITCH_FDT_MODE)
+            return next(responses)
+
+        def read_register(_session, payload, _deadline):
+            commands.append((COMMAND_READ_REGISTER, payload))
             self.assertEqual(payload, b"\x00\x82\x00\x02\x00")
             return b"\x00\x05"
 
@@ -389,6 +427,10 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
 
         with (
             patch("goodix5503.image_capture._fixed_exchange", side_effect=exchange),
+            patch(
+                "goodix5503.image_capture._read_register_exchange",
+                side_effect=read_register,
+            ),
             patch("goodix5503.image_capture._ack_only") as ack,
             patch(
                 "goodix5503.image_capture._receive_hu_plaintext_image",
@@ -447,10 +489,8 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
             (
                 self.base(1000),
                 self.base(2000),
-                b"\x00\x05",
                 self.base(1000),
                 self.base(1001),
-                b"\x00\x05",
                 self.base(1002),
             )
         )
@@ -466,6 +506,10 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
 
         with (
             patch("goodix5503.image_capture._fixed_exchange", side_effect=exchange),
+            patch(
+                "goodix5503.image_capture._read_register_exchange",
+                return_value=b"\x00\x05",
+            ),
             patch("goodix5503.image_capture._ack_only"),
             patch(
                 "goodix5503.image_capture._receive_hu_plaintext_image",
@@ -489,11 +533,10 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
 
         def exchange(_session, command, _payload, _deadline):
             nonlocal exchange_count
+            self.assertEqual(command, COMMAND_SWITCH_FDT_MODE)
             exchange_count += 1
-            if command == COMMAND_READ_REGISTER:
-                return b"\x00\x01"
             # Alternate far-apart base0/base1 values on every attempt.
-            return self.base(1000 if exchange_count % 3 == 1 else 2000)
+            return self.base(1000 if exchange_count % 2 == 1 else 2000)
 
         def receive(_session, _tls, _payload, _deadline):
             nonlocal image_count
@@ -502,6 +545,10 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
 
         with (
             patch("goodix5503.image_capture._fixed_exchange", side_effect=exchange),
+            patch(
+                "goodix5503.image_capture._read_register_exchange",
+                return_value=b"\x00\x01",
+            ),
             patch("goodix5503.image_capture._ack_only"),
             patch(
                 "goodix5503.image_capture._receive_hu_plaintext_image",
@@ -517,7 +564,7 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
                     TEST_DEADLINE,
                 )
         self.assertEqual(image_count, 3)
-        self.assertEqual(exchange_count, 9)
+        self.assertEqual(exchange_count, 6)
 
     def test_timeout_cleanup_wipes_an_unclaimed_late_plaintext_result(self):
         class FakeBridge:
