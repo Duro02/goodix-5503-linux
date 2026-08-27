@@ -107,19 +107,25 @@ sequentially, so a legal A8 completion can approach 3,000 ms after submission.
 The earlier 500/600 ms windows were therefore insufficient. The queued
 diagnostic now uses a 3,250 ms absolute envelope, rechecks the deadline and live
 reader after wake and settle, caps the A8 OUT timeout to remaining time, and
-records write/completion timing. The reviewed one-shot observed A8 OUT complete
-at 528 ms, an exact ten-zero-byte IN completion at 531 ms, and the valid
-31-byte A8 firmware frame at 533 ms. The old `invalid outer frame length` is
-therefore explained mechanically by feeding the leading zero completion to the
-A0 parser. Whether it is an official lower-layer status/ACK or a malformed
-callback that Geneva discards is still being traced; no generic drain/filter is
-inferred from it. This remains diagnostic only and source-gated.
+records write/completion timing. The reviewed one-shot observed the **free
+outer-A8** OUT complete at 528 ms, an exact ten-zero-byte IN completion at 531
+ms, and the valid 31-byte A8 firmware frame at 533 ms. This explains the free
+client's old `invalid outer frame length`. Final loader tracing proves outer A8
+is legitimate firmware-version traffic from `McuGetFirmwareVersion @
+0x1800a6060`, called by SelfCheck and ProcessPsk. The distinct
+`McuGetCpuVersion @ 0x18009c830` F0/F1 SPI branch is runtime-flag gated and
+skipped by the pinned USB configuration; its SPB sequence must not be translated
+into libusb commands. The empirical zero transfer still cannot be promoted into
+an ignore rule until its exact IoHub disposition is closed. This remains
+diagnostic only and source-gated.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
 APP identity read and the R verification read `E4/bb020007`, then compares the
-owner-only local PSK-derived record. Windows additionally performs two A8 reads
-and reads protected record `bb010002` before recovering the same paired secret.
+owner-only local PSK-derived record. A normal successful Windows loader performs
+two total A8 reads (SelfCheck and ProcessPsk); a third occurs only after the
+SelfCheck read fails and HardResetMcu retries. Windows also reads protected
+record `bb010002` before recovering the same paired secret.
 Those omitted operations are read-only and have no proven sensor-state effect;
 the local protected record was separately backed up and the PSK is independently
 verified. Claims of exact ordering below apply from loader wake/reset and the

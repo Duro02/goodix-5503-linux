@@ -73,11 +73,16 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   ms absolute envelope with post-wake/post-settle deadline checks and timing
   output. The reviewed 3,250 ms one-shot then captured two complete IN
   transfers at 531/533 ms: first exactly ten zero bytes, then a valid 31-byte
-  A8 frame containing `GF3258_RTSEC_APP_10063`. Wake completed at 26 ms and A8
-  OUT ran from 76 to 528 ms. This finally reproduces the prior invalid-outer-
-  length cause: the synchronous parser treated the leading zero transfer as an
-  A0 outer header. Its exact official role/handling is under static review;
-  nothing was retried and all diagnostic source gates remain false.
+  A8 frame containing `GF3258_RTSEC_APP_10063`. Wake completed at 26 ms and the
+  free outer-A8 OUT ran from 76 to 528 ms. This reproduces the prior invalid-
+  outer-length cause in the free client: its synchronous parser treated the
+  leading zero transfer as an A0 outer header. Final pinned-Win11 loader tracing
+  shows outer A8 is legitimate firmware-version traffic in SelfCheck and
+  ProcessPsk. A separate optional `McuGetCpuVersion` F0/F1 SPI branch exists but
+  is skipped by the pinned USB globals and is not a libusb protocol. The ten
+  zeros remain an empirical completion whose exact IoHub disposition is being
+  traced, not a token to ignore. Nothing was retried and all diagnostic source
+  gates remain false.
 ```
 
 ## Interpretation
