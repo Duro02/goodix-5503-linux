@@ -1,6 +1,9 @@
 import array
+import stat
 import struct
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from goodix5503.probe import (
@@ -15,6 +18,7 @@ from goodix5503.probe import (
     _decode_r_read_response,
     _decode_packet,
     _encode_packet,
+    _write_secure_backup,
 )
 
 
@@ -146,6 +150,62 @@ class PacketTests(unittest.TestCase):
                 )
             ],
         )
+
+    def test_backup_drops_privileges_before_filesystem_access(self):
+        value = b"opaque-protected-record"
+        reply = (
+            b"\x00"
+            + struct.pack("<II", OFFICIAL_PROTECTED_PSK_SELECTOR, len(value))
+            + value
+        )
+        session = object.__new__(ReadOnlyUsbSession)
+        session._ReadOnlyUsbSession__exchange = (
+            lambda _command, _payload, checksum=True: reply
+        )
+        order = []
+        session.close = lambda: order.append("close")
+
+        with (
+            patch(
+                "goodix5503.probe._disable_core_dumps",
+                side_effect=lambda: order.append("harden"),
+            ),
+            patch(
+                "goodix5503.probe._drop_sudo_privileges",
+                side_effect=lambda: order.append("drop"),
+            ),
+            patch(
+                "goodix5503.probe._write_secure_backup",
+                side_effect=lambda _path, _data: order.append("write"),
+            ),
+        ):
+            length, _digest, _path = session.backup_protected_record()
+        self.assertEqual(length, len(value))
+        self.assertEqual(
+            order, ["harden", "close", "drop", "harden", "write"]
+        )
+
+    def test_secure_backup_refuses_root_filesystem_access(self):
+        with patch("goodix5503.probe.os.geteuid", return_value=0):
+            with self.assertRaisesRegex(RuntimeError, "filesystem access as root"):
+                _write_secure_backup(Path("unused"), bytearray(b"protected"))
+
+    def test_secure_backup_is_exclusive_and_mode_600(self):
+        protected = bytearray(b"opaque-protected-record")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory = root / "artifacts" / "device-backup"
+            path = directory / "backup.bin"
+            with patch("goodix5503.probe.PROJECT_ROOT", root):
+                _write_secure_backup(path, protected)
+                self.assertEqual(path.read_bytes(), bytes(protected))
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+
+                with self.assertRaises(FileExistsError):
+                    _write_secure_backup(path, bytearray(b"replacement"))
+            self.assertEqual(path.read_bytes(), bytes(protected))
+            self.assertEqual(list(directory.glob(".psk-record-*")), [])
 
     def test_padded_64_byte_response_returns_one_frame(self):
         frame = _encode_packet(COMMAND_ACK, bytes((COMMAND_FIRMWARE_VERSION, 1)))

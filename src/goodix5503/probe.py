@@ -16,9 +16,13 @@ import errno
 import hashlib
 import json
 import math
+import os
 import resource
+import stat
 import struct
+import tempfile
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Final
 
 import usb.core
@@ -51,6 +55,10 @@ KNOWN_5503_PMK_HASH: Final = bytes.fromhex(
 OFFICIAL_PROTECTED_PSK_SELECTOR: Final = 0xBB010002
 OFFICIAL_R_PSK_HASH_SELECTOR: Final = 0xBB020007
 MAX_PROTECTED_RECORD_LENGTH: Final = 4096
+PROJECT_ROOT: Final = Path(__file__).resolve().parents[2]
+PROTECTED_RECORD_BACKUP: Final = (
+    PROJECT_ROOT / "artifacts" / "device-backup" / "psk-record-bb010002.bin"
+)
 
 
 class ProtocolError(RuntimeError):
@@ -72,6 +80,7 @@ class ProbeResult:
     psk_state: str
     protected_record_length: int | None
     protected_record_sha256: str | None
+    protected_record_backup: str | None
 
 
 def _encode_packet(command: int, payload: bytes = b"", *, checksum: bool = True) -> bytes:
@@ -260,21 +269,40 @@ class ReadOnlyUsbSession:
         self._validate_request(command, payload, checksum)
         return self.__exchange(command, payload, checksum=checksum)
 
-    def protected_record_metadata(self) -> tuple[int, str]:
-        """Hash the exact protected record without returning its raw response."""
-        _disable_core_dumps()
+    def __read_protected_record(self) -> bytearray:
         payload = struct.pack("<II", OFFICIAL_PROTECTED_PSK_SELECTOR, 0)
         protected = _decode_r_read_response(
             self.__exchange(COMMAND_PRESET_PSK_READ, payload),
             OFFICIAL_PROTECTED_PSK_SELECTOR,
         )
+        if not 0 < len(protected) <= MAX_PROTECTED_RECORD_LENGTH:
+            protected[:] = b"\x00" * len(protected)
+            raise ProtocolError(
+                f"protected PSK record length is outside the accepted range "
+                f"1..{MAX_PROTECTED_RECORD_LENGTH}"
+            )
+        return protected
+
+    def protected_record_metadata(self) -> tuple[int, str]:
+        """Hash the exact protected record without returning its raw response."""
+        _disable_core_dumps()
+        protected = self.__read_protected_record()
         try:
-            if not 0 < len(protected) <= MAX_PROTECTED_RECORD_LENGTH:
-                raise ProtocolError(
-                    f"protected PSK record length {len(protected)} is outside "
-                    f"the accepted range 1..{MAX_PROTECTED_RECORD_LENGTH}"
-                )
             return len(protected), hashlib.sha256(protected).hexdigest()
+        finally:
+            protected[:] = b"\x00" * len(protected)
+
+    def backup_protected_record(self) -> tuple[int, str, Path]:
+        """Save the protected record atomically without returning raw bytes."""
+        _disable_core_dumps()
+        protected = self.__read_protected_record()
+        try:
+            digest = hashlib.sha256(protected).hexdigest()
+            self.close()
+            _drop_sudo_privileges()
+            _disable_core_dumps()
+            _write_secure_backup(PROTECTED_RECORD_BACKUP, protected)
+            return len(protected), digest, PROTECTED_RECORD_BACKUP
         finally:
             protected[:] = b"\x00" * len(protected)
 
@@ -326,6 +354,93 @@ def _read_psk_state(session: ReadOnlyUsbSession) -> str:
         value[:] = b"\x00" * len(value)
 
 
+def _sudo_owner() -> tuple[int, int]:
+    if os.geteuid() != 0:
+        return os.geteuid(), os.getegid()
+    try:
+        uid = int(os.environ["SUDO_UID"])
+        gid = int(os.environ["SUDO_GID"])
+    except (KeyError, ValueError) as error:
+        raise RuntimeError("refusing a root-owned backup without SUDO_UID/GID") from error
+    if uid <= 0 or gid < 0:
+        raise RuntimeError("invalid SUDO_UID/GID for protected-record backup")
+    return uid, gid
+
+
+def _drop_sudo_privileges() -> None:
+    if os.geteuid() != 0:
+        return
+    uid, gid = _sudo_owner()
+    os.setgroups([])
+    os.setresgid(gid, gid, gid)
+    os.setresuid(uid, uid, uid)
+    if os.getresuid() != (uid, uid, uid) or os.getresgid() != (gid, gid, gid):
+        raise RuntimeError("failed to drop sudo privileges permanently")
+
+
+def _fsync_directory(directory: Path) -> None:
+    descriptor = os.open(
+        directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _mkdir(directory: Path, mode: int) -> bool:
+    try:
+        directory.mkdir(mode=mode)
+    except FileExistsError:
+        return False
+    return True
+
+
+def _require_real_directory(directory: Path) -> None:
+    info = directory.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError("protected-record backup path contains a symlink")
+
+
+def _write_secure_backup(path: Path, protected: bytearray) -> None:
+    if os.geteuid() == 0:
+        raise RuntimeError("refusing protected-record filesystem access as root")
+    artifacts = PROJECT_ROOT / "artifacts"
+    directory = path.parent
+    if _mkdir(artifacts, 0o700):
+        _fsync_directory(PROJECT_ROOT)
+    _require_real_directory(artifacts)
+    if _mkdir(directory, 0o700):
+        _fsync_directory(artifacts)
+    _require_real_directory(directory)
+    os.chmod(directory, 0o700)
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".psk-record-", dir=directory
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        view = memoryview(protected)
+        written = 0
+        while written < len(view):
+            count = os.write(descriptor, view[written:])
+            if count <= 0:
+                raise OSError("short write while saving protected-record backup")
+            written += count
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+
+        os.link(temporary, path, follow_symlinks=False)
+        temporary.unlink()
+        _fsync_directory(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
 def _disable_core_dumps() -> None:
     """Fail closed unless Linux marks the process non-dumpable."""
     pr_set_dumpable = 4
@@ -353,10 +468,13 @@ def probe(
     *,
     check_psk_state: bool = False,
     inspect_protected_record: bool = False,
+    backup_protected_record: bool = False,
     timeout_seconds: float = 5.0,
 ) -> ProbeResult:
-    if inspect_protected_record:
+    if inspect_protected_record or backup_protected_record:
         _disable_core_dumps()
+    if backup_protected_record:
+        _sudo_owner()
     with ReadOnlyUsbSession(timeout_seconds) as session:
         session.request(COMMAND_NOP, checksum=False)
         firmware = _decode_c_string(session.request(COMMAND_FIRMWARE_VERSION))
@@ -368,10 +486,16 @@ def probe(
         psk_state = _read_psk_state(session) if check_psk_state else "not-queried"
         protected_record_length = None
         protected_record_sha256 = None
+        protected_record_backup = None
         if inspect_protected_record:
             protected_record_length, protected_record_sha256 = (
                 session.protected_record_metadata()
             )
+        elif backup_protected_record:
+            length, digest, path = session.backup_protected_record()
+            protected_record_length = length
+            protected_record_sha256 = digest
+            protected_record_backup = str(path)
 
         return ProbeResult(
             vendor_id=f"{VENDOR_ID:04x}",
@@ -383,6 +507,7 @@ def probe(
             psk_state=psk_state,
             protected_record_length=protected_record_length,
             protected_record_sha256=protected_record_sha256,
+            protected_record_backup=protected_record_backup,
         )
 
 
@@ -395,10 +520,16 @@ def main() -> int:
         action="store_true",
         help="compare PSK metadata hash without displaying key material",
     )
-    parser.add_argument(
+    protected_group = parser.add_mutually_exclusive_group()
+    protected_group.add_argument(
         "--inspect-protected-record",
         action="store_true",
         help="report only the length and SHA-256 of the opaque protected PSK record",
+    )
+    protected_group.add_argument(
+        "--backup-protected-record",
+        action="store_true",
+        help="atomically save the opaque protected PSK record in artifacts/device-backup",
     )
     parser.add_argument("--timeout", type=float, default=5.0)
     args = parser.parse_args()
@@ -406,6 +537,7 @@ def main() -> int:
     result = probe(
         check_psk_state=args.check_psk_state,
         inspect_protected_record=args.inspect_protected_record,
+        backup_protected_record=args.backup_protected_record,
         timeout_seconds=args.timeout,
     )
     print(json.dumps(asdict(result), indent=2, sort_keys=True))

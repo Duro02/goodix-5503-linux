@@ -9,4 +9,5 @@ dist/
 .mypy_cache/
 probe-output*.json
 artifacts/windows-driver/
+artifacts/device-backup/
 *.pgm

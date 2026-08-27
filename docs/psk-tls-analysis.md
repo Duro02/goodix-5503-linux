@@ -128,6 +128,15 @@ be used on hardware until its independent review passes. It fails closed unless
 most 4096 bytes, reports only length and SHA-256, and overwrites its mutable copy
 after hashing. The protected selector is excluded from the public raw-response
 `request()` whitelist and is reachable only through a scoped metadata method.
-It does not yet save a backup. The unavoidable residual is a short-lived
-immutable USB response object in Python memory. No reader may expose a general
-raw-command interface.
+A separate backup mode writes the same protected response to the Git-ignored
+`artifacts/device-backup/` directory using a mode-`0600` temporary file, file
+and directory fsync, and an exclusive hard-link commit that cannot overwrite an
+existing backup. After the USB read, the session is closed and a sudo run
+permanently drops to the invoking UID/GID before every filesystem operation.
+Because `setresuid` may reset Linux dumpability, the process immediately sets
+and verifies `PR_SET_DUMPABLE=0` again after the drop. Filesystem access as root
+is rejected.
+New child directories are durably committed by fsyncing each parent. The raw
+record is never returned by a public method or printed. The unavoidable residual
+is a short-lived immutable USB response object in Python memory. No reader may
+expose a general raw-command interface.
