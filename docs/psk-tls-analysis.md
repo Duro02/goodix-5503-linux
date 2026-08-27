@@ -198,8 +198,13 @@ Not feasible:
 
 ## Current safety boundary
 
-No PSK write, firmware write, reset, register write, TLS/image or configuration
-upload command is authorized.
+One explicitly authorized fixed PSK reprovisioning completed with readback, and
+separately reviewed runtime resets/TLS handshakes completed without persistent
+writes. Firmware and registers have never been written. The fixed read-only OTP
+query and offline official config derivation have also completed; the derived
+configuration has not been uploaded. Clear-frame configuration upload, sensor
+mode changes and image commands remain pending code review and a separate
+explicit hardware authorization.
 
 Static mapping has now confirmed two read transports under opcode `0xe4`:
 

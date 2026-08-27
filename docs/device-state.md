@@ -61,12 +61,10 @@ DPAPI path rather than machine scope. The former Windows user's DPAPI master key
 is therefore required to decrypt it; the enclave alternative is not the format
 stored on this device.
 
-TLS image capture now depends on recovering the lost per-user DPAPI state or,
-after preserving all readable evidence and an explicit risk decision,
-reprovisioning PSK state without changing firmware. Exact restoration of the old
-pairing is impossible because `0xbb010003` is not readable; failure recovery must
-retry provisioning with a known new PSK. Fresh random pairing material was prepared locally with the independently
-reviewed offline-only tool. After explicit authorization, the reviewed fixed
+Exact restoration of the former Windows pairing is impossible because
+`0xbb010003` is not readable. This no longer blocks TLS image work: fresh random
+pairing material was prepared locally with the independently reviewed
+offline-only tool. After explicit authorization, the reviewed fixed
 write path sent one `0xbb010003` white-box TLV without changing firmware. The
 MCU returned success and the immediate `0xbb020007` readback exactly matched the
 prepared verification record. The original pairing is no longer active; the
