@@ -44,7 +44,7 @@ ALLOWED_COMMANDS: Final = frozenset(
 KNOWN_5503_PMK_HASH: Final = bytes.fromhex(
     "81b8ff490612022a121a9449ee3aad2792f32b9f3141182cd01019945ee50361"
 )
-OFFICIAL_PSK_HASH_SELECTOR: Final = 0xBB020001
+OFFICIAL_R_PSK_HASH_SELECTOR: Final = 0xBB020007
 
 
 class ProtocolError(RuntimeError):
@@ -221,12 +221,7 @@ class ReadOnlyUsbSession:
             COMMAND_FIRMWARE_VERSION: {(b"", True)},
             COMMAND_GET_IAP_VERSION: {(b"\x19\x00", True)},
             COMMAND_PRESET_PSK_READ: {
-                (
-                    struct.pack(
-                        "<IIII", 32, 0, OFFICIAL_PSK_HASH_SELECTOR, 0
-                    ),
-                    True,
-                ),
+                (struct.pack("<II", OFFICIAL_R_PSK_HASH_SELECTOR, 0), True),
             },
         }
         if command not in ALLOWED_COMMANDS:
@@ -257,8 +252,8 @@ def _decode_c_string(payload: bytes) -> str:
     return payload.split(b"\x00", 1)[0].decode("ascii", errors="strict")
 
 
-def _decode_g_read_chunk(reply: bytes, requested_length: int) -> bytes:
-    """Decode the G-read response without assigning meaning to its opaque header."""
+def _decode_r_read_response(reply: bytes, expected_selector: int) -> bytes:
+    """Decode the official R-family e4 response."""
     if not reply:
         raise ProtocolError("device returned an empty PSK metadata response")
     if reply[0] != 0:
@@ -268,21 +263,28 @@ def _decode_g_read_chunk(reply: bytes, requested_length: int) -> bytes:
     if len(reply) < 9:
         raise ProtocolError("truncated PSK metadata response")
 
-    value = reply[9:]
-    if len(value) != requested_length:
+    selector, value_length = struct.unpack("<II", reply[1:9])
+    if selector != expected_selector:
         raise ProtocolError(
-            f"unexpected PSK metadata length {len(value)}; "
-            f"expected {requested_length}"
+            f"unexpected PSK metadata selector 0x{selector:08x}"
+        )
+    value = reply[9:]
+    if value_length != len(value):
+        raise ProtocolError(
+            f"invalid PSK metadata length {value_length}; received {len(value)}"
         )
     return value
 
 
 def _read_psk_state(session: ReadOnlyUsbSession) -> str:
-    # This exact selector and length are used by the official G validation path.
-    payload = struct.pack("<IIII", 32, 0, OFFICIAL_PSK_HASH_SELECTOR, 0)
-    value = _decode_g_read_chunk(
-        session.request(COMMAND_PRESET_PSK_READ, payload), 32
+    # The 5503 hardware uses the official R-family selector-only read format.
+    payload = struct.pack("<II", OFFICIAL_R_PSK_HASH_SELECTOR, 0)
+    value = _decode_r_read_response(
+        session.request(COMMAND_PRESET_PSK_READ, payload),
+        OFFICIAL_R_PSK_HASH_SELECTOR,
     )
+    if len(value) != 32:
+        raise ProtocolError(f"unexpected PSK verification hash length {len(value)}")
     return "known-community-hash" if value == KNOWN_5503_PMK_HASH else "different-hash"
 
 

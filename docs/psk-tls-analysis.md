@@ -25,9 +25,12 @@ blocked.
 
 Addresses are virtual addresses in Win11 `Wbdi.dll` 3.1.581.610.
 
-- `fcn.1800420f0`: Goodix PSK validation/load path, associated with
+- `fcn.1800420f0`: G-family PSK validation/load path, associated with
   `PresetPskIsVaildG`.
 - `fcn.180042d30`: `PresetPskReadG` protected-data read wrapper.
+- `fcn.1800426c0`: R-family validation path, `PresetPskIsValidR`.
+- `fcn.180043130`: `PresetPskReadSpecDataR`; it calls the R transport at
+  `fcn.1800af930`.
 - `fcn.180041ec0`: DPAPI fallback that calls `CryptUnprotectData`.
 - `fcn.18004cb20` / `fcn.18004d7d0`: enclave-proxy calls selected when the
   enclave-library handle is present.
@@ -44,7 +47,8 @@ Observed validation flow:
 3. Recover a 32-byte plaintext through either the enclave path or the DPAPI
    fallback (`CryptUnprotectData`).
 4. Calculate a 32-byte local digest.
-5. Read exactly 32 bytes from selector `0xbb020001`.
+5. Read exactly 32 bytes from the family-specific verification selector:
+   `0xbb020001` for G or `0xbb020007` for R.
 6. Compare the two 32-byte values.
 7. Cache the recovered plaintext PSK for TLS.
 8. Explicitly clear temporary buffers.
@@ -99,19 +103,25 @@ Not feasible:
 No PSK write, firmware write, reset, register write, TLS/image or configuration
 upload command is authorized.
 
-Static mapping has now confirmed:
+Static mapping has now confirmed two read transports under opcode `0xe4`:
 
-- protected record selector: `0xbb010002`;
-- verification hash selector: `0xbb020001` with length 32;
-- Goodix lower read opcode: `0xe4` (confirmed at `Wbdi.dll` virtual addresses
-  `0x18009ccd1` and `0x18009cd51`);
-- request body: little-endian `chunk_length`, `offset`, `selector`, `0`;
-- nominal chunk size: `0x100` bytes;
-- returned data starts after a 9-byte status/header prefix.
+- Both families use protected-record selector `0xbb010002`.
+- **G family:** verification selector `0xbb020001`; request body is little-endian
+  `chunk_length`, `offset`, `selector`, `0`; nominal chunk size is `0x100`.
+  Opcode `0xe4` is visible at `0x18009ccd1` and `0x18009cd51`.
+- **R family:** verification selector `0xbb020007`; wire request body is only
+  `selector`, `0`. `PresetPskReadSpecDataR` calls `fcn.1800af930`, which sends
+  opcode `0xe4` at `0x1800afb68` and `0x1800afbd9`. The response is status byte,
+  echoed selector, little-endian value length, then value bytes.
 
-The fixed 32-byte verification-hash read is implemented with an exact payload
-whitelist. A protected-record backup remains blocked because its runtime-derived
-length depends on the active sealing path; asking for an arbitrary first chunk
-would not prove a complete or correctly bounded backup. Any future reader must
-obtain that length through a trusted equivalent of the official path and must
-never expose a general raw-command interface.
+A live read of G selector `0xbb020001` returned MCU status `0x01`, while the R
+selector `0xbb020007` is present and contains a non-community hash. This proves
+that the local `27c6:5503` uses the official R-family record path.
+
+The fixed R-family 32-byte verification-hash read is implemented with an exact
+payload whitelist. Unlike G, the R wire request does not transmit a requested
+length; the MCU returns the selected object's length. This makes a bounded
+read-only backup technically more tractable, but selector `0xbb010002` remains
+outside the runtime whitelist until a separate safety review covers storage,
+permissions, accidental disclosure and rollback semantics. No future reader may
+expose a general raw-command interface.

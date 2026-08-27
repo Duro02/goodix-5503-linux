@@ -9,7 +9,7 @@
 - `NOP`：唤醒/同步设备；
 - `FIRMWARE_VERSION`：读取应用固件版本；
 - `GET_IAP_VERSION`：读取 IAP 版本；
-- `PRESET_PSK_READ`：可选，仅以官方固定选择器和固定 32 字节长度比较 PSK 校验哈希，不输出密钥材料。
+- `PRESET_PSK_READ`：可选，仅以官方 R-family 固定选择器 `0xbb020007` 比较 32 字节 PSK 校验哈希，不输出密钥材料。
 
 下列功能没有实现，并会被命令白名单阻止：
 
