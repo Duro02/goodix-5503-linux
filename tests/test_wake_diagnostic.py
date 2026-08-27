@@ -1,4 +1,5 @@
 import builtins
+import hashlib
 import threading
 import unittest
 from array import array
@@ -6,12 +7,16 @@ from unittest.mock import patch
 
 import usb.core
 
-from goodix5503.probe import COMMAND_FIRMWARE_VERSION, _encode_packet
+from goodix5503.probe import COMMAND_FIRMWARE_VERSION, ReadOnlyUsbSession, _encode_packet
 from goodix5503.wake_diagnostic import (
+    OFFICIAL_GENEVA_A8_DIAGNOSTIC_CONFIRMATION,
+    OFFICIAL_GENEVA_A8_REQUEST,
     QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION,
     WAKE_A8_DIAGNOSTIC_CONFIRMATION,
     WAKE_DIAGNOSTIC_CONFIRMATION,
     WakeDiagnosticError,
+    _write_official_geneva_a8,
+    observe_one_official_geneva_a8,
     observe_one_queued_wake_a8,
     observe_one_wake,
     observe_one_wake_a8,
@@ -24,6 +29,93 @@ class WakeDiagnosticTests(unittest.TestCase):
             with self.assertRaisesRegex(WakeDiagnosticError, "review is not complete"):
                 observe_one_wake(WAKE_DIAGNOSTIC_CONFIRMATION)
             session.assert_not_called()
+
+    def test_official_a8_gate_prevents_usb_open(self):
+        with patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession") as session:
+            with self.assertRaisesRegex(WakeDiagnosticError, "review is not complete"):
+                observe_one_official_geneva_a8(OFFICIAL_GENEVA_A8_DIAGNOSTIC_CONFIRMATION)
+            session.assert_not_called()
+
+    def test_official_geneva_a8_exact_single_write_kat(self):
+        self.assertEqual(
+            OFFICIAL_GENEVA_A8_REQUEST.hex(),
+            "f03d00000a0a0a0a0aa80300000001",
+        )
+        self.assertEqual(len(OFFICIAL_GENEVA_A8_REQUEST), 15)
+        self.assertEqual(
+            hashlib.sha256(OFFICIAL_GENEVA_A8_REQUEST).hexdigest(),
+            "2041160ef95640c114c6678578bdd6c6906527a8c59d3dd639e30f34f2069d7b",
+        )
+
+    def test_official_geneva_a8_writer_rejects_short_write_and_timeout(self):
+        class Endpoint:
+            def __init__(self, written):
+                self.written = written
+                self.calls = []
+
+            def write(self, payload, timeout):
+                self.calls.append((bytes(payload), timeout))
+                return self.written
+
+        session = object.__new__(ReadOnlyUsbSession)
+        session.endpoint_out = Endpoint(15)
+        _write_official_geneva_a8(session, 432)
+        self.assertEqual(
+            session.endpoint_out.calls,
+            [(OFFICIAL_GENEVA_A8_REQUEST, 432)],
+        )
+        session.endpoint_out = Endpoint(14)
+        with self.assertRaisesRegex(WakeDiagnosticError, "not fully"):
+            _write_official_geneva_a8(session, 432)
+        with self.assertRaisesRegex(WakeDiagnosticError, "positive"):
+            _write_official_geneva_a8(session, 0)
+
+    def test_official_a8_queues_reader_then_writes_unpadded_kat_once(self):
+        release = threading.Event()
+        clock = [10.0]
+        writes = []
+
+        class InEndpoint:
+            def read(self, size, timeout):
+                self.last = (size, timeout)
+                release.wait(timeout=1.0)
+                threading.Event().wait(0.020)
+                clock[0] = 13.250
+                raise usb.core.USBTimeoutError("done")
+
+        class OutEndpoint:
+            def write(self, payload, timeout):
+                writes.append((bytes(payload), timeout))
+                release.set()
+                return len(payload)
+
+        class Session:
+            endpoint_in = InEndpoint()
+            endpoint_out = OutEndpoint()
+
+            def wake_up(self, **_kwargs):
+                pass
+
+            def close(self):
+                pass
+
+        with (
+            patch("goodix5503.wake_diagnostic.OFFICIAL_GENEVA_A8_DIAGNOSTIC_REVIEW_COMPLETE", True),
+            patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession", return_value=Session()),
+            patch("goodix5503.wake_diagnostic._drop_sudo_privileges"),
+            patch("goodix5503.wake_diagnostic.time.sleep"),
+            patch("goodix5503.wake_diagnostic.time.monotonic", side_effect=lambda: clock[0]),
+        ):
+            result = observe_one_official_geneva_a8(
+                OFFICIAL_GENEVA_A8_DIAGNOSTIC_CONFIRMATION
+            )
+        self.assertEqual(Session.endpoint_in.last, (0x8000, 3250))
+        self.assertEqual(writes, [(OFFICIAL_GENEVA_A8_REQUEST, 3250)])
+        self.assertEqual(result["transfer_count"], 0)
+        self.assertEqual(
+            result["operation"],
+            "runtime-only-memory-official-geneva-wake-a8-observation",
+        )
 
     def test_queued_a8_gate_prevents_usb_open(self):
         with patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession") as session:
