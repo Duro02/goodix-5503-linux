@@ -290,8 +290,9 @@ def _validate_cold_pov_result(result: bytes) -> int:
     if len(result) > 1:
         raise ImageCaptureError("cold POV response exceeds one byte")
     discriminator = result[0] if result else 0
-    if discriminator in (0xAA, 0xDA, 0xDF):
-        raise ImageCaptureError("unsupported resume/reconnect POV state")
+    # AA/DA/DF call McuStopTls in the pinned Start path and then rejoin the
+    # common D0/config path. At this point the free path has no active host TLS
+    # session, socket, thread or server, so it is already in that stopped state.
     return discriminator
 
 

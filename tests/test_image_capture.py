@@ -51,14 +51,13 @@ HU_FRESH_FDT_REQUEST = bytes.fromhex(
 
 
 class ImageDecodeTests(unittest.TestCase):
-    def test_cold_pov_accepts_bounded_normal_result_and_rejects_resume_states(self):
+    def test_cold_pov_accepts_all_bounded_official_discriminators(self):
         self.assertEqual(_validate_cold_pov_result(b""), 0)
-        self.assertEqual(_validate_cold_pov_result(b"\x00"), 0)
-        self.assertEqual(_validate_cold_pov_result(b"\x01"), 1)
-        for result in (b"\x00\x00", b"\xaa", b"\xda", b"\xdf"):
-            with self.subTest(result=result):
-                with self.assertRaises(ImageCaptureError):
-                    _validate_cold_pov_result(result)
+        for value in (0x00, 0x01, 0xAA, 0xDA, 0xDF):
+            with self.subTest(value=value):
+                self.assertEqual(_validate_cold_pov_result(bytes((value,))), value)
+        with self.assertRaises(ImageCaptureError):
+            _validate_cold_pov_result(b"\x00\x00")
 
     def test_dn2_profile_refuses_zero_and_wn2_chip_ids(self):
         _validate_dn2_chip_id(0x220F)

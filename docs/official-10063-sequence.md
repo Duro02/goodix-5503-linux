@@ -121,8 +121,11 @@ With pinned globals `0x180256808=1` and `0x180256810=1` and a calloc-zero fresh
 logic object, the normal cold branch executes command `00/00000000`, then one
 D6/`0000`, and later exactly one C4/`0100`. D6 advertises capacity one and
 accepts decoded payload lengths 0..1; an empty payload retains the pre-zeroed
-normal-cold discriminator `00`. `AA`, `DA`, and `DF` select unsupported
-resume/reconnect branches and therefore fail closed in the free cold-only path.
+normal-cold discriminator `00`. `AA`, `DA`, and `DF` each call host-only
+`McuStopTls` and then rejoin the same D0/config path. They emit no branch-local
+USB packet and consume no saved one-key image. Because the free path has not yet
+created a host TLS object at D6, it is already in the equivalent stopped state
+and accepts these bounded discriminators before starting a fresh D0 session.
 D2 and duplicate C4 remain unsupported.
 Config 90 uses `McuParseChipConfig`, whose input length includes the trailing
 wire checksum. It subtracts that checksum and copies the payload from its
