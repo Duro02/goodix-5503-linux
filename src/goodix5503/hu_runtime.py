@@ -110,7 +110,9 @@ def parse_hu_manual_fdt_response(
 ) -> tuple[bytearray, bytearray]:
     """Return exact raw and driver-transformed forms of a command-36 body."""
     if len(response) > 12:
-        raise HuRuntimeError("HU manual FDT response exceeds 12 bytes")
+        raise HuRuntimeError(
+            f"HU manual FDT response length {len(response)} exceeds 12 bytes"
+        )
     # The pinned wrapper supplies a zeroed 12-byte destination and accepts any
     # transport body up to that capacity before processing all 12 bytes.
     raw = bytearray(12)

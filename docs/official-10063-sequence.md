@@ -174,10 +174,14 @@ before wiping it; no proprietary enclave implementation is required.
 
 Each command-36 call requests a bounded 12-byte data body after its separate
 ACK. The official transport accepts 0..12, writes into a pre-zeroed 12-byte
-buffer, and then processes all six words. The first controlled hardware run
-confirmed that this firmware can return a short body, so the free path now
-reproduces the bounded zero-padding behavior and still rejects anything over
-12 bytes. Output1 is the padded raw six-word response. Output2 transforms each
+buffer, and then processes all six words. The controlled runs exposed one
+previously omitted host layer: Milan `McuParseOther` at `0x1800a74e0` requires a
+nonempty decoded inner body and removes exactly its first result byte before
+IoHub capacity checking. A normal command-36 decoded body is therefore one
+result byte plus 12 base bytes; the wrapper receives 12. The free fixed exchange
+now reproduces this callback before the HU parser. Post-ParseOther bodies 0..12
+are right-zero-padded and anything over 12 remains an error. Output1 is the
+padded raw six-word response. Output2 transforms each
 raw LE16 word `x` to `((x >> 1) << 8) | 0x80`; accepted output2 becomes the base
 for later requests. The DLL retries inconsistent pairs without a numeric bound;
 the free implementation must instead use the existing operation deadline and a

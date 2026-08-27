@@ -14,6 +14,8 @@ from goodix5503.image_capture import (
     _ResetGuard,
     _TlsImageServer,
     _acquire_hu_fresh_base_frame,
+    _fixed_exchange,
+    _milan_parse_other_body,
     _request_encrypted_clear_image,
     _validate_prepared_config,
     _validate_tls_records,
@@ -75,6 +77,50 @@ class ImageDecodeTests(unittest.TestCase):
 
 
 class ImageEnvelopeTests(unittest.TestCase):
+    def test_fixed_exchange_decodes_ack_then_applies_milan_parse_other(self):
+        for command, result in (
+            (COMMAND_UPLOAD_CONFIG, b""),
+            (COMMAND_SWITCH_FDT_MODE, bytes(range(12))),
+            (COMMAND_READ_REGISTER, b"\x34\x12"),
+        ):
+            with self.subTest(command=command):
+                session = object.__new__(ReadOnlyUsbSession)
+                writes = []
+                frames = iter(
+                    (
+                        _encode_packet(COMMAND_ACK, bytes((command, 1))),
+                        _encode_packet(command, b"\x7f" + result),
+                    )
+                )
+                session._ReadOnlyUsbSession__write_packet = writes.append
+                session._read_frame = lambda: next(frames)
+                self.assertEqual(_fixed_exchange(session, command, b"request"), result)
+                self.assertEqual(
+                    writes,
+                    [_encode_packet(command, b"request")],
+                )
+
+        empty = object.__new__(ReadOnlyUsbSession)
+        empty_frames = iter(
+            (
+                _encode_packet(COMMAND_ACK, bytes((COMMAND_SWITCH_FDT_MODE, 1))),
+                _encode_packet(COMMAND_SWITCH_FDT_MODE, b""),
+            )
+        )
+        empty._ReadOnlyUsbSession__write_packet = lambda _packet: None
+        empty._read_frame = lambda: next(empty_frames)
+        with self.assertRaisesRegex(ImageCaptureError, "result prefix"):
+            _fixed_exchange(empty, COMMAND_SWITCH_FDT_MODE, b"request")
+
+    def test_milan_parse_other_removes_exactly_one_result_byte(self):
+        self.assertEqual(_milan_parse_other_body(b"\x01"), b"")
+        self.assertEqual(
+            _milan_parse_other_body(b"\x7f" + bytes(range(12))),
+            bytes(range(12)),
+        )
+        with self.assertRaisesRegex(ImageCaptureError, "result prefix"):
+            _milan_parse_other_body(b"")
+
     @staticmethod
     def tls_record(payload: bytes = b"encrypted") -> bytes:
         return b"\x17\x03\x03" + struct.pack(">H", len(payload)) + payload

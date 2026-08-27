@@ -123,6 +123,13 @@ def _ack_only(
     _check_ack(ack, command)
 
 
+def _milan_parse_other_body(body: bytes) -> bytes:
+    """Reproduce Milan McuParseOther's one-byte result-prefix removal."""
+    if len(body) < 1:
+        raise ImageCaptureError("Milan command response has no result prefix")
+    return body[1:]
+
+
 def _fixed_exchange(
     session: ReadOnlyUsbSession,
     command: int,
@@ -136,9 +143,10 @@ def _fixed_exchange(
         _read_frame_bounded(session, operation_deadline), COMMAND_ACK
     )
     _check_ack(ack, command)
-    return _decode_packet(
+    body = _decode_packet(
         _read_frame_bounded(session, operation_deadline), command
     )
+    return _milan_parse_other_body(body)
 
 
 def _validate_tls_records(ciphertext: bytes | bytearray) -> None:
@@ -667,14 +675,12 @@ def run_prepared_clear_frame_capture(
         reset_guard.start()
         tls_server = _TlsImageServer(context, operation_deadline)
         cipher = tls_server.establish(session)
-        uploaded = _fixed_exchange(
+        _fixed_exchange(
             session,
             COMMAND_UPLOAD_CONFIG,
             bytes(config),
             operation_deadline,
         )
-        if not uploaded or uploaded[0] != 1:
-            raise ImageCaptureError("runtime configuration upload was rejected")
 
         opaque_prefix, plaintext, fdt_response_lengths = _acquire_hu_fresh_base_frame(
             session,
