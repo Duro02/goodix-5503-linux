@@ -1,7 +1,7 @@
 import struct
 import time
 import unittest
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, call, patch
 
 from goodix5503.image_capture import (
     CLEAR_CAPTURE_CONFIRMATION,
@@ -18,6 +18,7 @@ from goodix5503.image_capture import (
     _fixed_exchange,
     _milan_parse_other_body,
     _read_chip_id_bounded,
+    _read_otp_bounded,
     _read_register_exchange,
     _request_encrypted_clear_image,
     _validate_cold_pov_result,
@@ -29,6 +30,7 @@ from goodix5503.image_capture import (
     run_prepared_clear_frame_capture,
 )
 from goodix5503.chip_config import EXPECTED_ZERO_OTP_CONFIG, RUNTIME_CONFIG_PATH
+from goodix5503.hu_runtime import goodix_crc8
 from goodix5503.image_capture import (
     COMMAND_COLD_PRECHECK,
     COMMAND_POV_IMAGE_CHECK,
@@ -48,6 +50,21 @@ HU_IMAGE_REQUEST = b"\x01\x00" + HU_DAC_FIELD
 HU_FRESH_FDT_REQUEST = bytes.fromhex(
     "0d018b0084008c008800800080008000800080008000"
 )
+
+
+def seal_dn2_otp_integrity(otp: bytearray) -> bytearray:
+    otp[0x3E] = goodix_crc8(otp[0x32:0x36])
+    otp[0x3F] = goodix_crc8(
+        otp[0x16:0x1C] + otp[0x1D:0x24] + otp[0x28:0x32]
+    )
+    otp[0x3D] = goodix_crc8(
+        otp[0x0B:0x16]
+        + otp[0x1C:0x1D]
+        + otp[0x32:0x3C]
+        + otp[0x3E:0x3F]
+    )
+    otp[0x3C] = goodix_crc8(otp[0x00:0x0B] + otp[0x24:0x28])
+    return otp
 
 
 class ImageDecodeTests(unittest.TestCase):
@@ -170,6 +187,68 @@ class ImageEnvelopeTests(unittest.TestCase):
         )
         self.assertEqual(len(timeouts), 2)
         self.assertTrue(all(timeout > 0 for timeout in timeouts))
+
+    def test_bounded_post_reset_otp_exchange_uses_exact_request(self):
+        session = object.__new__(ReadOnlyUsbSession)
+        frames = iter(
+            (
+                _encode_packet(COMMAND_ACK, b"\xa6\x01"),
+                _encode_packet(0xA6, bytes(range(64))),
+            )
+        )
+        writes = []
+        timeouts = []
+        session._ReadOnlyUsbSession__write_packet = writes.append
+
+        def read_frame(**kwargs):
+            timeouts.append(kwargs["timeout_ms"])
+            return next(frames)
+
+        session._read_frame = read_frame
+        otp = _read_otp_bounded(session, TEST_DEADLINE)
+        try:
+            self.assertEqual(otp, bytearray(range(64)))
+            self.assertEqual(writes, [_encode_packet(0xA6, b"\x00\x00")])
+            self.assertEqual(timeouts, [1500, 1500])
+        finally:
+            otp[:] = b"\x00" * len(otp)
+
+        reducing = object.__new__(ReadOnlyUsbSession)
+        reducing_frames = iter(
+            (
+                _encode_packet(COMMAND_ACK, b"\xa6\x01"),
+                _encode_packet(0xA6, bytes(64)),
+            )
+        )
+        reducing_timeouts = []
+        reducing._ReadOnlyUsbSession__write_packet = lambda _packet: None
+
+        def reducing_read(**kwargs):
+            reducing_timeouts.append(kwargs["timeout_ms"])
+            return next(reducing_frames)
+
+        reducing._read_frame = reducing_read
+        with patch(
+            "goodix5503.image_capture.time.monotonic",
+            side_effect=(9.0, 9.5),
+        ):
+            reduced_otp = _read_otp_bounded(reducing, 10.0)
+        try:
+            self.assertEqual(reducing_timeouts, [1000, 500])
+        finally:
+            reduced_otp[:] = b"\x00" * len(reduced_otp)
+
+        short = object.__new__(ReadOnlyUsbSession)
+        short_frames = iter(
+            (
+                _encode_packet(COMMAND_ACK, b"\xa6\x01"),
+                _encode_packet(0xA6, b"short"),
+            )
+        )
+        short._ReadOnlyUsbSession__write_packet = lambda _packet: None
+        short._read_frame = lambda **_kwargs: next(short_frames)
+        with self.assertRaisesRegex(ImageCaptureError, "exactly 64"):
+            _read_otp_bounded(short, TEST_DEADLINE)
 
     def test_register_exchange_uses_exact_milan_read_parser(self):
         session = object.__new__(ReadOnlyUsbSession)
@@ -752,20 +831,21 @@ class CaptureOrchestratorTests(unittest.TestCase):
 
     def test_otp_is_wiped_when_runtime_derivation_fails(self):
         issued = bytearray(b"S" * 64)
+        issued[0x32:0x36] = bytes.fromhex("8b848c88")
+        issued[42], issued[43] = 0xD7, 0x28
+        seal_dn2_otp_integrity(issued)
 
         class FakeSession:
             def __init__(self, _timeout):
                 pass
 
+            def wake_up(self, *, timeout_ms):
+                self.timeout_ms = timeout_ms
+
             def request(self, command, payload=b"", *, checksum=True):
                 if command == 0xA8:
                     return b"GF3258_RTSEC_APP_10063\x00"
-                if command == 0xF6:
-                    return b"MILAN_RTSEC_IAP_10027\x00"
                 return b""
-
-            def read_otp(self):
-                return issued
 
             def close(self):
                 pass
@@ -782,6 +862,15 @@ class CaptureOrchestratorTests(unittest.TestCase):
                 "goodix5503.image_capture._read_live_verification",
                 return_value=bytearray(32),
             ),
+            patch("goodix5503.image_capture._drop_sudo_privileges"),
+            patch("goodix5503.image_capture.os.geteuid", return_value=1000),
+            patch("goodix5503.image_capture._read_secure_secret", return_value=bytearray(32)),
+            patch("goodix5503.image_capture.calculate_r_verification_record", return_value=bytearray(32)),
+            patch("goodix5503.image_capture._build_tls_context", return_value=object()),
+            patch("goodix5503.image_capture._ResetGuard.start"),
+            patch("goodix5503.image_capture._read_chip_id_bounded", return_value=0x220F),
+            patch("goodix5503.image_capture._ack_only"),
+            patch("goodix5503.image_capture._read_otp_bounded", return_value=issued),
             patch(
                 "goodix5503.image_capture.derive_hu_dac_field",
                 side_effect=ValueError("derivation stopped"),
@@ -799,22 +888,14 @@ class CaptureOrchestratorTests(unittest.TestCase):
             def __init__(self, timeout):
                 events.append(("open", timeout))
 
+            def wake_up(self, *, timeout_ms):
+                events.append(("wake", timeout_ms))
+
             def request(self, command, payload=b"", *, checksum=True):
                 events.append(("request", command, payload, checksum))
                 if command == 0xA8:
                     return b"GF3258_RTSEC_APP_10063\x00"
-                if command == 0xF6:
-                    return b"MILAN_RTSEC_IAP_10027\x00"
                 return b""
-
-            def read_otp(self):
-                events.append(("read-otp",))
-                otp = bytearray(64)
-                otp[0x32:0x36] = bytes.fromhex("8b848c88")
-                otp[0x3D] = 0xA1
-                otp[0x3E] = 0x1F
-                issued_otps.append(otp)
-                return otp
 
             def close(self):
                 events.append(("close",))
@@ -835,15 +916,21 @@ class CaptureOrchestratorTests(unittest.TestCase):
                 events.append(("tls-close",))
 
         def drop_privileges():
-            self.assertTrue(issued_otps)
-            self.assertTrue(all(not any(otp) for otp in issued_otps))
+            self.assertFalse(issued_otps)
             events.append(("drop-privileges",))
 
-        def read_secret(path, length):
-            self.assertEqual(length, 256 if path == RUNTIME_CONFIG_PATH else 32)
-            if path == RUNTIME_CONFIG_PATH:
-                return bytearray(EXPECTED_ZERO_OTP_CONFIG)
+        def read_secret(_path, length):
+            self.assertEqual(length, 32)
             return bytearray(b"K" * 32)
+
+        def read_otp(_session, _deadline):
+            events.append(("read-otp",))
+            otp = bytearray(64)
+            otp[0x32:0x36] = bytes.fromhex("8b848c88")
+            otp[42], otp[43] = 0xD7, 0x28
+            seal_dn2_otp_integrity(otp)
+            issued_otps.append(otp)
+            return otp
 
         def fixed_exchange(_session, command, payload, _deadline=None):
             events.append(("exchange", command, payload))
@@ -871,14 +958,17 @@ class CaptureOrchestratorTests(unittest.TestCase):
             patch("goodix5503.image_capture.ReadOnlyUsbSession", FakeSession),
             patch("goodix5503.image_capture._disable_core_dumps"),
             patch("goodix5503.image_capture._preflight_tls_runtime"),
-            patch("goodix5503.image_capture._read_live_verification", return_value=bytearray(b"K" * 32)),
+            patch(
+                "goodix5503.image_capture._read_live_verification",
+                side_effect=lambda _session: events.append(("verification-read",)) or bytearray(b"K" * 32),
+            ),
             patch(
                 "goodix5503.image_capture._drop_sudo_privileges",
                 side_effect=drop_privileges,
             ),
             patch("goodix5503.image_capture.os.geteuid", return_value=1000),
             patch("goodix5503.image_capture._read_secure_secret", side_effect=read_secret),
-            patch("goodix5503.image_capture._validate_prepared_config"),
+            patch("goodix5503.image_capture._read_otp_bounded", side_effect=read_otp),
             patch("goodix5503.image_capture.calculate_r_verification_record", return_value=bytearray(b"K" * 32)),
             patch("goodix5503.image_capture._build_tls_context", return_value=object()),
             patch(
@@ -916,12 +1006,18 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertEqual(result["pixel_max"], 0)
         self.assertEqual(result["pixel_sum"], 0)
         self.assertEqual(result["fdt_response_lengths"], "1,1,1")
+        requests = [event for event in events if event[0] == "request"]
+        self.assertEqual(requests, [("request", 0xA8, b"", True)])
+        self.assertEqual(events.count(("verification-read",)), 1)
         self.assertEqual(events.count(("reset",)), 2)
         self.assertEqual(events.count(("read-chip-id",)), 1)
+        self.assertLess(events.index(("wake", ANY)), events.index(("sleep", 0.050)))
+        self.assertLess(events.index(("sleep", 0.050)), events.index(("reset",)))
         self.assertLess(events.index(("reset",)), events.index(("sleep", 0.010)))
         self.assertLess(events.index(("sleep", 0.010)), events.index(("read-chip-id",)))
         self.assertLess(events.index(("read-chip-id",)), events.index(("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00")))
-        sleep.assert_called_once_with(0.010)
+        self.assertLess(events.index(("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00")), events.index(("read-otp",)))
+        sleep.assert_has_calls([call(0.050), call(0.010)])
         runtime = [
             event for event in events if event[0] in ("exchange", "ack-only")
         ]

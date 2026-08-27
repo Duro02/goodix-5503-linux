@@ -31,6 +31,25 @@ def goodix_crc8(data: bytes | bytearray) -> int:
     return crc ^ 0xFF
 
 
+def gf3258_dn2_otp_integrity(otp: bytes | bytearray) -> bool:
+    """Apply the pinned MilanHUCheckSensorOTP three-region integrity gate."""
+    if len(otp) != 64:
+        return False
+    mt = bytes(otp[0x16:0x1C]) + bytes(otp[0x1D:0x24]) + bytes(otp[0x28:0x32])
+    if goodix_crc8(mt) != otp[0x3F]:
+        return False
+    ft = (
+        bytes(otp[0x0B:0x16])
+        + bytes(otp[0x1C:0x1D])
+        + bytes(otp[0x32:0x3C])
+        + bytes(otp[0x3E:0x3F])
+    )
+    if goodix_crc8(ft) != otp[0x3D]:
+        return False
+    whole = bytes(otp[0x00:0x0B]) + bytes(otp[0x24:0x28])
+    return goodix_crc8(whole) == otp[0x3C]
+
+
 def classify_hu_right_info(otp: bytearray) -> RightInfoClass:
     """Classify, and when required repair, an exact mutable 64-byte OTP copy."""
     if not isinstance(otp, bytearray):

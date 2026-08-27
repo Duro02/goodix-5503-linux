@@ -11,6 +11,7 @@ from goodix5503.chip_config import (
     _config_checksum,
     _validate_config_checksum,
     build_local_runtime_config,
+    build_runtime_config,
     emulate_chip_config,
     verify_zero_otp_vector,
 )
@@ -44,6 +45,30 @@ class ChipConfigTests(unittest.TestCase):
                 self.assertEqual(config, RUNTIME_CONFIG_PATH.read_bytes())
         finally:
             config[:] = b"\x00" * len(config)
+
+    def test_free_general_builder_matches_static_otp_known_answers(self):
+        vectors = (
+            ({}, "e60d9c767c140b080a3b69ba89d88c60514373beda4a57da9248940a28f46246"),
+            ({42: 0xD7, 43: 0x28}, LOCAL_RUNTIME_CONFIG_SHA256),
+            ({42: 0, 43: 0xAB, 45: 0x54}, "8d773ede73c5dfead300019244ce6e1f1850e7bfbf9491b3b822cb01b763b459"),
+            ({42: 0x21, 45: 0x21}, "7a86e397c8b55dfea7b892d1d1414dcc221a2c37f59465505f44fca6323d06df"),
+            ({27: 0x11}, "240fa4de444ea9354fb2ada9f95c9811f5d6c5b902bbacc0513ef893136ffbbc"),
+            ({27: 0x22, 42: 0xD7, 43: 0x28}, "adc6d213eb13588ee4207e0e12002e826810ebff604c24a1ddcc12f4d6cee562"),
+        )
+        for assignments, expected_hash in vectors:
+            with self.subTest(assignments=assignments):
+                otp = bytearray(64)
+                for offset, value in assignments.items():
+                    otp[offset] = value
+                config = build_runtime_config(otp)
+                try:
+                    self.assertEqual(hashlib.sha256(config).hexdigest(), expected_hash)
+                    _validate_config_checksum(config)
+                finally:
+                    otp[:] = b"\x00" * len(otp)
+                    config[:] = b"\x00" * len(config)
+        with self.assertRaises(ValueError):
+            build_runtime_config(bytes(63))
 
     def test_official_checksum_accepts_vector_and_rejects_corruption(self):
         self.assertEqual(

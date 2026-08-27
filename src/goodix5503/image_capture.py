@@ -13,19 +13,19 @@ import struct
 import sys
 import threading
 import time
-from pathlib import Path
 from typing import Final
 
 from .chip_config import (
     LOCAL_RUNTIME_CONFIG_SHA256,
-    RUNTIME_CONFIG_PATH,
     _validate_config_checksum,
+    build_runtime_config,
 )
 from .hu_runtime import (
     build_hu_image_request,
     build_hu_manual_fdt_request,
     build_hu_nav_base,
     derive_hu_dac_field,
+    gf3258_dn2_otp_integrity,
     hu_fdt_bases_within_delta,
     parse_hu_manual_fdt_response,
 )
@@ -38,8 +38,6 @@ from .pairing import (
 from .probe import (
     COMMAND_ACK,
     COMMAND_FIRMWARE_VERSION,
-    COMMAND_GET_IAP_VERSION,
-    COMMAND_NOP,
     FLAGS_MESSAGE_PROTOCOL,
     ProtocolError,
     ReadOnlyUsbSession,
@@ -51,7 +49,7 @@ from .probe import (
     _drop_sudo_privileges,
     _encode_packet,
 )
-from .provision import EXPECTED_FIRMWARE, EXPECTED_IAP, _read_live_verification
+from .provision import EXPECTED_FIRMWARE, _read_live_verification
 from .tls_check import (
     FLAGS_TLS,
     TlsTestError,
@@ -191,6 +189,28 @@ def _read_chip_id_bounded(
         operation_deadline,
     )
     return _decode_chip_id_register(body)
+
+
+def _read_otp_bounded(
+    session: ReadOnlyUsbSession,
+    operation_deadline: float,
+) -> bytearray:
+    command = 0xA6
+    session._ReadOnlyUsbSession__write_packet(  # type: ignore[attr-defined]
+        _encode_packet(command, b"\x00\x00")
+    )
+
+    def read_phase() -> bytes:
+        remaining = _remaining_timeout_ms(operation_deadline)
+        assert remaining is not None
+        return session._read_frame(timeout_ms=min(1500, remaining))
+
+    ack = _decode_packet(read_phase(), COMMAND_ACK)
+    _check_ack(ack, command)
+    body = _decode_packet(read_phase(), command)
+    if len(body) != 64:
+        raise ImageCaptureError("post-reset OTP response must be exactly 64 bytes")
+    return bytearray(body)
 
 
 def _read_register_exchange(
@@ -733,16 +753,15 @@ def run_prepared_clear_frame_capture(
     try:
         session = ReadOnlyUsbSession(timeout_seconds)
         reset_guard = _ResetGuard(session)
-        session.request(COMMAND_NOP, checksum=False)
+        operation_deadline = time.monotonic() + min(
+            120.0, max(30.0, timeout_seconds * 8)
+        )
+        session.wake_up(timeout_ms=_remaining_timeout_ms(operation_deadline))
+        time.sleep(0.050)
         firmware = _decode_c_string(session.request(COMMAND_FIRMWARE_VERSION))
-        iap = _decode_c_string(session.request(COMMAND_GET_IAP_VERSION, b"\x19\x00"))
-        if firmware != EXPECTED_FIRMWARE or iap != EXPECTED_IAP:
-            raise ImageCaptureError("unexpected firmware or IAP")
+        if firmware != EXPECTED_FIRMWARE:
+            raise ImageCaptureError("unexpected firmware")
         live = _read_live_verification(session)
-        otp = session.read_otp()
-        dac_field = derive_hu_dac_field(otp)
-        image_request = build_hu_image_request(dac_field)
-        otp[:] = b"\x00" * len(otp)
 
         _drop_sudo_privileges()
         _disable_core_dumps()
@@ -750,17 +769,12 @@ def run_prepared_clear_frame_capture(
             raise ImageCaptureError("refusing local pairing/config access as root")
         expected = _read_secure_secret(VERIFICATION_PATH, 32)
         psk = _read_secure_secret(PSK_PATH, 32)
-        config = _read_secure_secret(Path(RUNTIME_CONFIG_PATH), UPLOAD_CONFIG_LENGTH)
-        _validate_prepared_config(config)
         derived = calculate_r_verification_record(psk)
         if not hmac.compare_digest(expected, derived):
             raise ImageCaptureError("saved PSK verification record is inconsistent")
         if not hmac.compare_digest(live, derived):
             raise ImageCaptureError("device PSK does not match prepared PSK")
         context = _build_tls_context(psk)
-        operation_deadline = time.monotonic() + min(
-            120.0, max(30.0, timeout_seconds * 8)
-        )
 
         reset_guard.start(operation_deadline)
         time.sleep(0.010)
@@ -772,6 +786,14 @@ def run_prepared_clear_frame_capture(
             b"\x00\x00\x00\x00",
             operation_deadline,
         )
+        otp = _read_otp_bounded(session, operation_deadline)
+        if not gf3258_dn2_otp_integrity(otp):
+            raise ImageCaptureError("post-reset OTP failed DN2 integrity checks")
+        dac_field = derive_hu_dac_field(otp)
+        image_request = build_hu_image_request(dac_field)
+        config = build_runtime_config(otp)
+        _validate_prepared_config(config)
+        otp[:] = b"\x00" * len(otp)
         pov_result = _fixed_exchange(
             session,
             COMMAND_POV_IMAGE_CHECK,
@@ -810,7 +832,6 @@ def run_prepared_clear_frame_capture(
         return {
             "operation": "runtime-only-memory-clear-frame",
             "firmware": firmware,
-            "iap": iap,
             "tls": "established",
             "cipher": cipher,
             "width": IMAGE_WIDTH,

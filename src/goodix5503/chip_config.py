@@ -64,6 +64,43 @@ def _validate_config_checksum(config: bytes | bytearray) -> None:
         )
 
 
+def build_runtime_config(otp: bytes | bytearray) -> bytearray:
+    """Reproduce DN2 GetChipConfig from one exact validated OTP snapshot."""
+    if len(otp) != 64:
+        raise ValueError("5503 OTP must be exactly 64 bytes")
+    config = bytearray(EXPECTED_ZERO_OTP_CONFIG)
+
+    calibration, complement, repeated = otp[42], otp[43], otp[45]
+    inverse = (~complement) & 0xFF
+    valid_calibration = (
+        (calibration != 0 and calibration == inverse)
+        or (repeated != 0 and repeated == inverse)
+        or (calibration != 0 and repeated == calibration)
+    )
+    if valid_calibration:
+        tcode = ((calibration >> 4) + 1) << 4
+        scaled = ((calibration & 0x0F) + 2) * 100
+        fdt = (((scaled * 256) // tcode) // 3 >> 4) & 0xFF
+        struct.pack_into("<H", config, 0xEB, tcode)
+        struct.pack_into("<H", config, 0xC7, 0x0080 | (fdt << 8))
+
+    selector = otp[27]
+    first = selector & 3
+    second = (selector >> 4) & 3
+    third = ((~selector) >> 2) & 3
+    decoded = (
+        first
+        if first == second or first == third
+        else second if second == third else None
+    )
+    if decoded is not None and decoded > 0:
+        config[0xB3] = decoded + 4
+
+    struct.pack_into("<H", config, 0xFE, _config_checksum(config[:0xFE]))
+    _validate_config_checksum(config)
+    return config
+
+
 def build_local_runtime_config() -> bytearray:
     """Build this unit's reviewed config without loading the proprietary DLL."""
     config = bytearray(EXPECTED_ZERO_OTP_CONFIG)

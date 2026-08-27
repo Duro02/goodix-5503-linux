@@ -8,6 +8,7 @@ from goodix5503.hu_runtime import (
     build_hu_nav_base,
     classify_hu_right_info,
     derive_hu_dac_field,
+    gf3258_dn2_otp_integrity,
     goodix_crc8,
     hu_fdt_bases_within_delta,
     parse_hu_manual_fdt_response,
@@ -26,6 +27,23 @@ class HuRuntimeTests(unittest.TestCase):
         self.assertEqual(goodix_crc8(b""), 0xFF)
         self.assertEqual(goodix_crc8(bytes(23)), 0xFF)
         self.assertEqual(goodix_crc8(b"123456789"), 0x0B)
+
+    def test_dn2_whole_otp_integrity_known_vectors_and_corruption(self):
+        sequential = bytes.fromhex(
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+            "202122232425262728292a2b2c2d2e2f303132333435363738393a3b687c3e68"
+        )
+        zero_valid = bytes.fromhex("00" * 60 + "ffff00ff")
+        for otp in (sequential, zero_valid):
+            with self.subTest(otp=otp[-4:]):
+                self.assertTrue(gf3258_dn2_otp_integrity(otp))
+                for offset in (0x3C, 0x3D, 0x3F):
+                    corrupt = bytearray(otp)
+                    corrupt[offset] ^= 1
+                    self.assertFalse(gf3258_dn2_otp_integrity(corrupt))
+        self.assertFalse(gf3258_dn2_otp_integrity(bytes(64)))
+        self.assertFalse(gf3258_dn2_otp_integrity(bytes(63)))
+        self.assertFalse(gf3258_dn2_otp_integrity(bytes(65)))
 
     def test_long_predicate_a_selects_otp_32(self):
         otp = bytearray(64)

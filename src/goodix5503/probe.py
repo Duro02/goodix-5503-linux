@@ -214,6 +214,13 @@ class ReadOnlyUsbSession:
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
         self.close()
 
+    def wake_up(self, *, timeout_ms: int | None = None) -> None:
+        """Emit the pinned Geneva loader's single raw wake byte."""
+        timeout = self.timeout_ms if timeout_ms is None else timeout_ms
+        written = self.endpoint_out.write(b"\xe5", timeout)
+        if written != 1:
+            raise ProtocolError("raw wake byte was not fully written")
+
     def _drain_input(self) -> None:
         while True:
             try:
@@ -225,7 +232,10 @@ class ReadOnlyUsbSession:
     def __write_packet(self, packet: bytes) -> None:
         padded = packet + b"\x00" * ((-len(packet)) % 0x40)
         for offset in range(0, len(padded), 0x40):
-            self.endpoint_out.write(padded[offset : offset + 0x40], self.timeout_ms)
+            chunk = padded[offset : offset + 0x40]
+            written = self.endpoint_out.write(chunk, self.timeout_ms)
+            if written != len(chunk):
+                raise ProtocolError("USB packet chunk was not fully written")
 
     def _read_frame(self, *, timeout_ms: int | None = None) -> bytes:
         timeout = self.timeout_ms if timeout_ms is None else timeout_ms

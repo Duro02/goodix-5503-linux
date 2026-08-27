@@ -33,19 +33,15 @@ Read-only OTP/config derivation:
   artifacts/device-backup/runtime-config-5503.bin              256 bytes, 0600
   config SHA-256: 54e6cd4c0d18b4472e7ec066a11aabcc55389779e426562a9c2bcfd2e188eba6
   official checksum: valid; FDT delta: 21 (0x15); image tcode: 224 (0x00e0)
-Runtime clear-frame attempts: all reached image command after TLS/config/init
-  and stopped fail-closed before image data. The second identified the `0xa0`
-  prelude as delayed command `0xd0`; the separately authorized third proved its
-  opaque data body is not status `1`, matching the official null-output D0 path.
-  The fourth consumed bounded D0 then timed out before B2, revealing that the
-  An intermediate audit incorrectly selected generic two-byte image request
-  `01 00`; local GF3258 discriminator 10 actually uses a ten-byte HU request
-  whose final eight bytes are OTP-derived DAC words. The `01 00` run timed out
-  after D0. A subsequent
-  full profile audit showed that the proposed D4 step belonged to a 5110 log,
-  not pinned Milan code; it was removed without another run. No attempt has
-  decoded/saved an image; each attempted cleanup reset. Hardware capture is now
-  disabled before USB until the GF3258 base path is completely reconstructed.
+Runtime clear-frame attempts: no attempt decoded or saved an image, and each
+  attempted cleanup reset. Early runs resolved delayed D0 completion and the
+  ten-byte HU image request. Later pinned-parser/cold-state runs reached the
+  first command 36 and consistently received a checksum-free 16-byte payload,
+  which exceeds the official DN2 12-byte output capacity and remains fatal.
+  The latest full diff found two still-missing mandatory prerequisites: raw
+  loader wake `e5` plus 50 ms settle, and CheckSensor A6 OTP acquisition after
+  reset/chip selection and command 00. Hardware capture remains disabled while
+  those corrections are reviewed.
 ```
 
 ## Interpretation

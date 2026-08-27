@@ -58,6 +58,41 @@ class PacketTests(unittest.TestCase):
         ):
             ReadOnlyUsbSession()
 
+    def test_raw_wake_writes_exactly_one_unframed_byte(self):
+        class Endpoint:
+            def __init__(self):
+                self.calls = []
+
+            def write(self, payload, timeout):
+                self.calls.append((payload, timeout))
+                return len(payload)
+
+        session = object.__new__(ReadOnlyUsbSession)
+        session.timeout_ms = 5000
+        session.endpoint_out = Endpoint()
+        session.wake_up(timeout_ms=123)
+        self.assertEqual(session.endpoint_out.calls, [(b"\xe5", 123)])
+
+        session.endpoint_out.write = lambda _payload, _timeout: 0
+        with self.assertRaisesRegex(ProtocolError, "not fully"):
+            session.wake_up()
+
+    def test_framed_writer_rejects_short_usb_chunk(self):
+        class Endpoint:
+            def __init__(self, written):
+                self.written = written
+
+            def write(self, _payload, _timeout):
+                return self.written
+
+        session = object.__new__(ReadOnlyUsbSession)
+        session.timeout_ms = 5000
+        session.endpoint_out = Endpoint(64)
+        session._ReadOnlyUsbSession__write_packet(b"packet")
+        session.endpoint_out = Endpoint(63)
+        with self.assertRaisesRegex(ProtocolError, "not fully"):
+            session._ReadOnlyUsbSession__write_packet(b"packet")
+
     def test_packet_round_trip(self):
         packet = _encode_packet(COMMAND_FIRMWARE_VERSION, b"\x00\x00")
         self.assertEqual(

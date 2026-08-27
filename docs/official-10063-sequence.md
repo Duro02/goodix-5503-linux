@@ -54,7 +54,9 @@ Milan exposes no immediate D4.
 
 ## Current narrow candidate versus proof
 
-The dormant runtime implementation now performs identity/PSK checks, reset,
+The dormant runtime implementation now begins with the Geneva raw wake byte
+`e5` and 50 ms settle, performs identity/PSK checks, loader reset and chip-ID
+selection, the mandatory post-command-00 `A6/0000` CheckSensor OTP snapshot,
 TLS D0 flights, config 90, and the bounded official fresh-base coordinator. It
 uses dynamic HU command-20/36 payloads, exact command-36 bodies, command
 `70/1400`, register-82 delta reads, two consistency comparisons and at most
@@ -76,6 +78,21 @@ Before another capture attempt:
 5. only then consider one runtime-only, memory-only validation.
 
 No firmware, PSK or persistent operation is required for this work.
+
+The free preflight is an explicit **functional PSK substitution**, not a
+byte-for-byte replay of the paired Windows loader: it performs one bounded A8
+APP identity read and the R verification read `E4/bb020007`, then compares the
+owner-only local PSK-derived record. Windows additionally performs two A8 reads
+and reads protected record `bb010002` before recovering the same paired secret.
+Those omitted operations are read-only and have no proven sensor-state effect;
+the local protected record was separately backed up and the PSK is independently
+verified. Claims of exact ordering below apply from loader wake/reset and the
+sensor cold path, not to this substituted host PSK recovery.
+
+F6 is intentionally absent from the up-to-date APP branch. The previously
+recorded `MILAN_RTSEC_IAP_10027` attestation in `docs/device-state.md` is accepted
+for controlled runtime work, while the fresh A8 check prevents proceeding when
+the device is currently in IAP mode.
 
 ## Targeted profile-table findings
 
@@ -108,10 +125,13 @@ the command layer without proving that the hardware is DN2.
 
 Before `LogicMilanFSeries::Start`, pinned `McuDevLoader::Load` performs reset
 `A2/0514`, waits 10 ms, reads and validates the chip ID, and constructs the
-selected profile. `Start` at `0x180087890` then proves the high-level cold order:
-cold command-00 precheck, one D6 POV discriminator, D0/TLS start, validated
-config generation/upload, one pinned-default post-config C4/state-1 hook,
-FDT/OTP host initialization, then `UpdateAllBase` at
+selected profile. The earlier loader begins with raw wake byte `e5` and a 50 ms
+settle; it is not the framed command-00 NOP formerly used by the free preflight.
+`Start` at `0x180087890` then proves the high-level cold order: cold command-00
+precheck, CheckSensor `A6/0000` plus host OTP/DAC validation, one D6 POV
+discriminator, D0/TLS start, validated config generation/upload, one
+pinned-default post-config C4/state-1 hook, remaining host FDT initialization,
+then `UpdateAllBase` at
 `0x18008bdc0`. A fresh-base branch calls manual FDT base, nav base, manual FDT
 base, delta validation, image base, then a third manual FDT base. A valid saved
 base follows a different branch. It does not prove the community sequence
@@ -123,10 +143,15 @@ D6/`0000`, and later exactly one C4/`0100`. D6 advertises capacity one and
 accepts decoded payload lengths 0..1; an empty payload retains the pre-zeroed
 normal-cold discriminator `00`. `AA`, `DA`, and `DF` each call host-only
 `McuStopTls` and then rejoin the same D0/config path. They emit no branch-local
-USB packet and consume no saved one-key image. Because the free path has not yet
-created a host TLS object at D6, it is already in the equivalent stopped state
+USB packet and consume no saved one-key image. Because the free path has no
+active TLS session, socket, thread or server at D6, it is already in the equivalent stopped state
 and accepts these bounded discriminators before starting a fresh D0 session.
 D2 and duplicate C4 remain unsupported.
+The free DN2 config builder consumes that same validated post-reset OTP
+snapshot. It derives selector byte `b3` from OTP offset 27, image tcode at
+`eb:ec` and FDT word at `c7:c8` from offsets 42/43/45, then recomputes the
+checksum; no prior fixed snapshot is uploaded.
+
 Config 90 uses `McuParseChipConfig`, whose input length includes the trailing
 wire checksum. It subtracts that checksum and copies the payload from its
 unchanged start pointer. The free `_decode_packet()` already validates and
