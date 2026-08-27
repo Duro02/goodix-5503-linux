@@ -58,8 +58,10 @@ The dormant runtime implementation now performs identity/PSK checks, reset,
 TLS D0 flights, config 90, and the bounded official fresh-base coordinator. It
 uses dynamic HU command-20/36 payloads, exact command-36 bodies, command
 `70/1400`, register-82 delta reads, two consistency comparisons and at most
-three complete attempts. Unsupported unconditional D6, D2 and C4 calls are
-absent. The TLS bridge supports both command-20 images on one TLS session.
+three complete attempts. Pinned image defaults additionally require cold
+command `00/00000000`, one D6/`0000` discriminator, and exactly one post-config
+C4/`0100`; D2 and duplicate C4 remain absent. The TLS bridge supports both
+command-20 images on one TLS session.
 The hardware entry point remains explicitly disabled before USB even with
 confirmation until this new coordinator passes independent review.
 
@@ -89,18 +91,21 @@ and must not be used. Important GF3258 slots are:
 - `+0x88` GetFdtDelta `0x180064570`.
 
 `LogicMilanFSeries::Start` at `0x180087890` proves the high-level cold order:
-D6-capable POV check, D0/TLS start, config generation/upload, one optional
-post-config state hook, FDT/OTP host initialization, then `UpdateAllBase` at
+cold command-00 precheck, one D6 POV discriminator, D0/TLS start, validated
+config generation/upload, one pinned-default post-config C4/state-1 hook,
+FDT/OTP host initialization, then `UpdateAllBase` at
 `0x18008bdc0`. A fresh-base branch calls manual FDT base, nav base, manual FDT
 base, delta validation, image base, then a third manual FDT base. A valid saved
 base follows a different branch. It does not prove the community sequence
 `C4,C4,D2,36,20`.
 
-The pinned Milan MCU table selects generic D6/D2/C4 constructors but only proves
-capability. D6 has a one-byte output whose content its constructor does not
-interpret; D2 is output-bearing POV data, not a boolean; C4 is ACK-only and only
-one shared direct state-1 caller was found. The community duplicate C4 and fixed
-D2 invocation remain unsupported.
+With pinned globals `0x180256808=1` and `0x180256810=1` and a calloc-zero fresh
+logic object, the normal cold branch executes command `00/00000000`, then one
+D6/`0000`, and later exactly one C4/`0100`. D6 returns one post-result byte;
+`AA`, `DA`, and `DF` select unsupported resume/reconnect branches and therefore
+fail closed in the free cold-only path. D2 and duplicate C4 remain unsupported.
+Config 90 uses its distinct parser: after the common result prefix, one or two
+bytes are bounded and byte zero must equal `01`.
 
 ## Corrected GF3258 command 36 layout
 
@@ -191,7 +196,7 @@ The register-82 delta decode is unsigned high-byte extraction. The DLL executes
 `movzx eax,word` before `sar eax,8`, so raw `00 ff` produces threshold 255;
 base comparisons are `abs(u16_a-u16_b) <= zero_extended_delta`.
 
-There is no C4, D6, D2, AE or wire-92 preparation between these acquisitions.
-D6 is conditional resume/POV logic; post-config C4 state 1 is conditional and
-occurs at most once in this path. The former unconditional D6, duplicate C4 and
-D2 candidate steps must be removed rather than reproduced.
+There is no C4, D6, D2, AE or wire-92 preparation *between* these acquisitions.
+The pinned-default cold D6 occurs before TLS/config and the single C4 occurs
+after validated config but before host FDT initialization. Duplicate C4 and D2
+must not be introduced.

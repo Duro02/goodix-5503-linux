@@ -17,6 +17,8 @@ from goodix5503.image_capture import (
     _fixed_exchange,
     _milan_parse_other_body,
     _request_encrypted_clear_image,
+    _validate_cold_pov_result,
+    _validate_config_result,
     _validate_prepared_config,
     _validate_tls_records,
     decode_packed_image,
@@ -24,7 +26,10 @@ from goodix5503.image_capture import (
 )
 from goodix5503.chip_config import EXPECTED_ZERO_OTP_CONFIG, RUNTIME_CONFIG_PATH
 from goodix5503.image_capture import (
+    COMMAND_COLD_PRECHECK,
+    COMMAND_POV_IMAGE_CHECK,
     COMMAND_READ_REGISTER,
+    COMMAND_SET_DRIVER_STATE,
     COMMAND_SWITCH_FDT_MODE,
     COMMAND_SWITCH_IDLE,
     COMMAND_UPLOAD_CONFIG,
@@ -42,6 +47,22 @@ HU_FRESH_FDT_REQUEST = bytes.fromhex(
 
 
 class ImageDecodeTests(unittest.TestCase):
+    def test_cold_pov_accepts_normal_byte_and_rejects_resume_states(self):
+        _validate_cold_pov_result(b"\x00")
+        _validate_cold_pov_result(b"\x01")
+        for result in (b"", b"\x00\x00", b"\xaa", b"\xda", b"\xdf"):
+            with self.subTest(result=result):
+                with self.assertRaises(ImageCaptureError):
+                    _validate_cold_pov_result(result)
+
+    def test_config_completion_requires_status_one_after_result_prefix(self):
+        _validate_config_result(b"\x01")
+        _validate_config_result(b"\x01\x00")
+        for result in (b"", b"\x00", b"\x02", b"\x01\x00\x00"):
+            with self.subTest(result=result):
+                with self.assertRaisesRegex(ImageCaptureError, "rejected"):
+                    _validate_config_result(result)
+
     def test_zero_otp_config_is_not_the_prepared_device_config(self):
         with self.assertRaisesRegex(ImageCaptureError, "OTP-derived"):
             _validate_prepared_config(EXPECTED_ZERO_OTP_CONFIG)
@@ -79,7 +100,8 @@ class ImageDecodeTests(unittest.TestCase):
 class ImageEnvelopeTests(unittest.TestCase):
     def test_fixed_exchange_decodes_ack_then_applies_milan_parse_other(self):
         for command, result in (
-            (COMMAND_UPLOAD_CONFIG, b""),
+            (COMMAND_POV_IMAGE_CHECK, b"\x00"),
+            (COMMAND_UPLOAD_CONFIG, b"\x01"),
             (COMMAND_SWITCH_FDT_MODE, bytes(range(12))),
             (COMMAND_READ_REGISTER, b"\x34\x12"),
         ):
@@ -719,9 +741,14 @@ class CaptureOrchestratorTests(unittest.TestCase):
 
         def fixed_exchange(_session, command, payload, _deadline=None):
             events.append(("exchange", command, payload))
+            if command == COMMAND_POV_IMAGE_CHECK:
+                return b"\x00"
             if command == COMMAND_UPLOAD_CONFIG:
                 return b"\x01"
             return b""
+
+        def ack_only(_session, command, payload, _deadline=None):
+            events.append(("ack-only", command, payload))
 
         def acquire_fresh(_session, _tls, dac, payload, _deadline):
             self.assertEqual(dac, HU_DAC_FIELD)
@@ -748,6 +775,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
             patch("goodix5503.image_capture._build_tls_context", return_value=object()),
             patch("goodix5503.image_capture._reset_sensor", side_effect=lambda _s: events.append(("reset",))),
             patch("goodix5503.image_capture._fixed_exchange", side_effect=fixed_exchange),
+            patch("goodix5503.image_capture._ack_only", side_effect=ack_only),
             patch("goodix5503.image_capture._TlsImageServer", FakeTlsServer),
             patch(
                 "goodix5503.image_capture._acquire_hu_fresh_base_frame",
@@ -761,10 +789,24 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertEqual(result["pixel_sum"], 0)
         self.assertEqual(result["fdt_response_lengths"], "1,1,1")
         self.assertEqual(events.count(("reset",)), 2)
-        runtime = [event for event in events if event[0] == "exchange"]
-        self.assertEqual(runtime[0][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
-        self.assertEqual(len(runtime[0][2]), 256)
-        self.assertEqual(len(runtime), 1)
+        runtime = [
+            event for event in events if event[0] in ("exchange", "ack-only")
+        ]
+        self.assertEqual(
+            runtime[0],
+            ("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00"),
+        )
+        self.assertEqual(
+            runtime[1],
+            ("exchange", COMMAND_POV_IMAGE_CHECK, b"\x00\x00"),
+        )
+        self.assertEqual(runtime[2][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
+        self.assertEqual(len(runtime[2][2]), 256)
+        self.assertEqual(
+            runtime[3],
+            ("ack-only", COMMAND_SET_DRIVER_STATE, b"\x01\x00"),
+        )
+        self.assertEqual(len(runtime), 4)
         self.assertIn(("tls-close",), events)
         self.assertEqual(events[-1], ("close",))
         self.assertTrue(all(not any(otp) for otp in issued_otps))

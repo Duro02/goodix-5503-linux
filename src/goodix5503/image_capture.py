@@ -64,7 +64,10 @@ from .tls_check import (
     _send_tls,
 )
 
+COMMAND_COLD_PRECHECK: Final = 0x00
 COMMAND_UPLOAD_CONFIG: Final = 0x90
+COMMAND_SET_DRIVER_STATE: Final = 0xC4
+COMMAND_POV_IMAGE_CHECK: Final = 0xD6
 COMMAND_SWITCH_FDT_MODE: Final = 0x36
 COMMAND_SWITCH_IDLE: Final = 0x70
 COMMAND_READ_REGISTER: Final = 0x82
@@ -225,6 +228,18 @@ def _request_encrypted_clear_image(
         opaque_prefix[:] = b"\x00" * len(opaque_prefix)
         ciphertext[:] = b"\x00" * len(ciphertext)
         raise
+
+
+def _validate_cold_pov_result(result: bytes) -> None:
+    if len(result) != 1:
+        raise ImageCaptureError("cold POV response must be exactly one byte")
+    if result[0] in (0xAA, 0xDA, 0xDF):
+        raise ImageCaptureError("unsupported resume/reconnect POV state")
+
+
+def _validate_config_result(result: bytes) -> None:
+    if not 1 <= len(result) <= 2 or result[0] != 1:
+        raise ImageCaptureError("runtime configuration upload was rejected")
 
 
 def _validate_prepared_config(config: bytes | bytearray) -> None:
@@ -673,12 +688,33 @@ def run_prepared_clear_frame_capture(
         )
 
         reset_guard.start()
+        _ack_only(
+            session,
+            COMMAND_COLD_PRECHECK,
+            b"\x00\x00\x00\x00",
+            operation_deadline,
+        )
+        pov_result = _fixed_exchange(
+            session,
+            COMMAND_POV_IMAGE_CHECK,
+            b"\x00\x00",
+            operation_deadline,
+        )
+        _validate_cold_pov_result(pov_result)
+
         tls_server = _TlsImageServer(context, operation_deadline)
         cipher = tls_server.establish(session)
-        _fixed_exchange(
+        config_result = _fixed_exchange(
             session,
             COMMAND_UPLOAD_CONFIG,
             bytes(config),
+            operation_deadline,
+        )
+        _validate_config_result(config_result)
+        _ack_only(
+            session,
+            COMMAND_SET_DRIVER_STATE,
+            b"\x01\x00",
             operation_deadline,
         )
 
