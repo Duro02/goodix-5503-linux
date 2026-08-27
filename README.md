@@ -9,7 +9,7 @@
 - `NOP`：唤醒/同步设备；
 - `FIRMWARE_VERSION`：读取应用固件版本；
 - `GET_IAP_VERSION`：读取 IAP 版本；
-- `PRESET_PSK_READ`：可选，只比较 PSK 元数据哈希，不输出密钥材料。
+- `PRESET_PSK_READ`：可选，仅以官方固定选择器和固定 32 字节长度比较 PSK 校验哈希，不输出密钥材料。
 
 下列功能没有实现，并会被命令白名单阻止：
 
@@ -65,4 +65,4 @@ sudo .venv/bin/goodix-5503-probe --check-psk-state
 
 本机只读探测结果见 [`docs/device-state.md`](docs/device-state.md)：设备已运行官方 `10063` 固件，并存在与社区开发密钥不同的 PSK 状态。因此不会刷写固件或覆盖 PSK。
 
-PSK/TLS 逆向结论见 [`docs/psk-tls-analysis.md`](docs/psk-tls-analysis.md)：官方驱动通过 Windows DPAPI 解封 MCU 中的受保护 PSK 记录；原 Windows DPAPI 上下文已不存在，因此当前随机 PSK 无法仅凭设备哈希恢复。
+PSK/TLS 逆向结论见 [`docs/psk-tls-analysis.md`](docs/psk-tls-analysis.md)：官方驱动存在 Windows DPAPI 回退路径和条件式 enclave 路径。旧系统使用了哪条路径尚未证明；设备哈希本身不能恢复随机 PSK，而 enclave 能否在隔离 Windows 环境中复用现有受保护记录仍待验证。

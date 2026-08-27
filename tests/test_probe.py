@@ -1,12 +1,16 @@
 import array
+import struct
 import unittest
 
 from goodix5503.probe import (
     COMMAND_ACK,
     COMMAND_FIRMWARE_VERSION,
+    COMMAND_PRESET_PSK_READ,
+    OFFICIAL_PSK_HASH_SELECTOR,
     ProtocolError,
     ReadOnlyUsbSession,
     UnsafeCommandError,
+    _decode_g_read_chunk,
     _decode_packet,
     _encode_packet,
 )
@@ -66,6 +70,34 @@ class PacketTests(unittest.TestCase):
         )
         with self.assertRaises(UnsafeCommandError):
             session.request(COMMAND_FIRMWARE_VERSION, b"unexpected")
+
+    def test_only_exact_official_hash_read_is_allowed(self):
+        allowed = struct.pack("<IIII", 32, 0, OFFICIAL_PSK_HASH_SELECTOR, 0)
+        ReadOnlyUsbSession._validate_request(
+            COMMAND_PRESET_PSK_READ, allowed, True
+        )
+
+        for payload in (
+            struct.pack("<II", 0xBB020007, 0),
+            struct.pack("<IIII", 31, 0, OFFICIAL_PSK_HASH_SELECTOR, 0),
+            struct.pack("<IIII", 32, 1, OFFICIAL_PSK_HASH_SELECTOR, 0),
+            struct.pack("<IIII", 32, 0, 0xBB010002, 0),
+        ):
+            with self.subTest(payload=payload), self.assertRaises(
+                UnsafeCommandError
+            ):
+                ReadOnlyUsbSession._validate_request(
+                    COMMAND_PRESET_PSK_READ, payload, True
+                )
+
+    def test_g_read_chunk_uses_opaque_header_and_exact_data_length(self):
+        value = b"x" * 32
+        reply = b"\x00" + b"opaque12" + value
+        self.assertEqual(_decode_g_read_chunk(reply, 32), value)
+        with self.assertRaises(ProtocolError):
+            _decode_g_read_chunk(reply + b"trailing", 32)
+        with self.assertRaises(ProtocolError):
+            _decode_g_read_chunk(b"\x01" + b"opaque12" + value, 32)
 
     def test_padded_64_byte_response_returns_one_frame(self):
         frame = _encode_packet(COMMAND_ACK, bytes((COMMAND_FIRMWARE_VERSION, 1)))
