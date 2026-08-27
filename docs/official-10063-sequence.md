@@ -115,14 +115,14 @@ is legitimate firmware-version traffic from `McuGetFirmwareVersion @
 0x1800a6060`, called by SelfCheck and ProcessPsk. The distinct
 `McuGetCpuVersion @ 0x18009c830` F0/F1 SPI branch is runtime-flag gated and
 skipped by the pinned USB configuration; its SPB sequence must not be translated
-into libusb commands. The empirical zero transfer cannot be promoted into an ignore rule. More
-importantly, pinned `Geneva::SendCmd` passes its framed A8 packet through
-`_WriteSpi @ 0x18009e7b0` at address `0x3d00`, whereas the diagnostic wrote the
-free A0 packet directly. Official `_IoHubExec` requires a separately parsed
-inner B-class ACK before data; the observed `10*00` cannot set that event and
-the lone A8 data frame cannot replace it. Thus this capture diagnoses the free
-transport only and does not satisfy the official firmware call. This remains
-diagnostic only and source-gated.
+into libusb commands. Runtime USB selection sets `0x180256800=1` and
+`0x180256804=0`, so `Geneva::SendCmd` uses `McuWriteRaw`, not `_WriteSpi`. The
+exact official USB A8 OUT is the ten-byte inner packet
+`0a0a0a0aa80300000001`, padded to one 64-byte USB write. The prior free A0
+packet and later 15-byte F0/SPB KAT were both wrong transport layers. Official
+`_IoHubExec` requires a separately parsed inner B-class ACK before data; the
+observed `10*00` cannot set that event and the lone free A8 data frame cannot
+replace it. This remains diagnostic only and source-gated.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8

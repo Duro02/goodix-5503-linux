@@ -38,13 +38,14 @@ class WakeDiagnosticTests(unittest.TestCase):
 
     def test_official_geneva_a8_exact_single_write_kat(self):
         self.assertEqual(
-            OFFICIAL_GENEVA_A8_REQUEST.hex(),
-            "f03d00000a0a0a0a0aa80300000001",
+            OFFICIAL_GENEVA_A8_REQUEST[:10].hex(),
+            "0a0a0a0aa80300000001",
         )
-        self.assertEqual(len(OFFICIAL_GENEVA_A8_REQUEST), 15)
+        self.assertEqual(OFFICIAL_GENEVA_A8_REQUEST[10:], bytes(54))
+        self.assertEqual(len(OFFICIAL_GENEVA_A8_REQUEST), 64)
         self.assertEqual(
             hashlib.sha256(OFFICIAL_GENEVA_A8_REQUEST).hexdigest(),
-            "2041160ef95640c114c6678578bdd6c6906527a8c59d3dd639e30f34f2069d7b",
+            "bf1386becef79cbee10a0783f6cf129b575bd95e1354863712244f5ab6950ab2",
         )
 
     def test_official_geneva_a8_writer_rejects_short_write_and_timeout(self):
@@ -58,19 +59,19 @@ class WakeDiagnosticTests(unittest.TestCase):
                 return self.written
 
         session = object.__new__(ReadOnlyUsbSession)
-        session.endpoint_out = Endpoint(15)
+        session.endpoint_out = Endpoint(64)
         _write_official_geneva_a8(session, 432)
         self.assertEqual(
             session.endpoint_out.calls,
             [(OFFICIAL_GENEVA_A8_REQUEST, 432)],
         )
-        session.endpoint_out = Endpoint(14)
+        session.endpoint_out = Endpoint(63)
         with self.assertRaisesRegex(WakeDiagnosticError, "not fully"):
             _write_official_geneva_a8(session, 432)
         with self.assertRaisesRegex(WakeDiagnosticError, "positive"):
             _write_official_geneva_a8(session, 0)
 
-    def test_official_a8_queues_reader_then_writes_unpadded_kat_once(self):
+    def test_official_a8_queues_reader_then_writes_padded_usb_kat_once(self):
         release = threading.Event()
         clock = [10.0]
         writes = []

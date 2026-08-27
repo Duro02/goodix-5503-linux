@@ -80,13 +80,14 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   shows outer A8 is legitimate firmware-version traffic in SelfCheck and
   ProcessPsk. A separate optional `McuGetCpuVersion` F0/F1 SPI branch exists but
   is skipped by the pinned USB globals and is not a libusb protocol. The ten
-  zeros remain an empirical completion, not a token to ignore. Pinned transport
-  tracing further showed the diagnostic omitted official `Geneva::_WriteSpi`
-  wrapping at address `0x3d00`; official IoHub also requires a separate parsed
-  inner-B ACK before accepting firmware data. The observed zero + A8 frame
-  cannot satisfy that official call, so this was a free-transport diagnostic,
-  not a loader replay. Nothing was retried and all diagnostic source gates
-  remain false.
+  zeros remain an empirical completion, not a token to ignore. Final runtime-
+  branch tracing proved the free A0 request used the wrong layer. A later
+  reviewed 15-byte F0/`_WriteSpi(0x3d00)` one-shot also used the wrong layer:
+  that is the SPB branch and correctly produced no USB IN. For USB 5503 the
+  pinned globals select `McuWriteRaw`; the exact official request is inner
+  `0a0a0a0aa80300000001` padded to one 64-byte OUT. Official IoHub requires a
+  separately parsed inner-B ACK before firmware data. Nothing was retried and
+  all diagnostic source gates remain false.
 ```
 
 ## Interpretation
