@@ -31,9 +31,10 @@ Read-only OTP/config derivation:
   artifacts/device-backup/runtime-config-5503.bin              256 bytes, 0600
   config SHA-256: 54e6cd4c0d18b4472e7ec066a11aabcc55389779e426562a9c2bcfd2e188eba6
   official checksum: valid; FDT delta: 21 (0x15); image tcode: 224 (0x00e0)
-First runtime clear-frame attempt: TLS/config/init reached image command; stopped
-  fail-closed on an observed 10063 command-response prelude (`0xa0`) before the
-  expected encrypted image frame; no image decoded/saved, cleanup reset attempted
+Runtime clear-frame attempts: both reached image command after TLS/config/init
+  and stopped fail-closed before image data. The authorized retry identified the
+  `0xa0` prelude as delayed command `0xd0` TLS completion. Neither attempt decoded
+  or saved an image; both attempted cleanup reset. No third attempt is authorized.
 ```
 
 ## Interpretation

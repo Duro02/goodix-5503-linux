@@ -44,6 +44,7 @@ from .tls_check import (
     _build_tls_context,
     _decode_outer,
     _preflight_tls_runtime,
+    COMMAND_REQUEST_TLS,
     _receive_tls,
     _request_tls_client_hello,
     _reset_sensor,
@@ -122,13 +123,27 @@ def _request_encrypted_clear_image(session: ReadOnlyUsbSession) -> bytearray:
     ack = _decode_packet(session._read_frame(), COMMAND_ACK)
     _check_ack(ack, COMMAND_GET_IMAGE)
     frame = session._read_frame()
-    if frame[0] == FLAGS_MESSAGE_PROTOCOL:
-        # Official 10063 emitted a normal command-success prelude before the
-        # encrypted B2 frame on the first reviewed hardware attempt. Accept
-        # only a fully validated response for this exact image command.
-        prelude = _decode_packet(frame, COMMAND_GET_IMAGE)
+    seen_tls_completion = False
+    seen_image_prelude = False
+    for _index in range(2):
+        if frame[0] != FLAGS_MESSAGE_PROTOCOL:
+            break
+        if len(frame) < 5:
+            raise ImageCaptureError("truncated image prelude")
+        command = frame[4]
+        if (
+            command == COMMAND_REQUEST_TLS
+            and not seen_tls_completion
+            and not seen_image_prelude
+        ):
+            seen_tls_completion = True
+        elif command == COMMAND_GET_IMAGE and not seen_image_prelude:
+            seen_image_prelude = True
+        else:
+            raise ImageCaptureError("unexpected or duplicate image prelude command")
+        prelude = _decode_packet(frame, command)
         if not prelude or prelude[0] != 1:
-            raise ImageCaptureError("image command prelude did not report success")
+            raise ImageCaptureError("image prelude did not report success")
         frame = session._read_frame()
     payload = _decode_outer(frame, FLAGS_TLS_IMAGE)
     if len(payload) <= 9:

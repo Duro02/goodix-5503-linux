@@ -29,7 +29,7 @@ from goodix5503.image_capture import (
 )
 from goodix5503.pairing import PSK_PATH, VERIFICATION_PATH
 from goodix5503.probe import COMMAND_ACK, ProtocolError, ReadOnlyUsbSession, _encode_packet
-from goodix5503.tls_check import _encode_outer
+from goodix5503.tls_check import COMMAND_REQUEST_TLS, _encode_outer
 
 
 class ImageDecodeTests(unittest.TestCase):
@@ -139,6 +139,41 @@ class ImageEnvelopeTests(unittest.TestCase):
                 bad_session._read_frame = lambda: next(bad_frames)
                 with self.assertRaises((ImageCaptureError, ProtocolError)):
                     _request_encrypted_clear_image(bad_session)
+
+    def test_image_request_accepts_delayed_tls_completion_before_b2(self):
+        ciphertext = self.tls_record(b"ciphertext")
+        for preludes in (
+            ((COMMAND_REQUEST_TLS, 1),),
+            ((COMMAND_REQUEST_TLS, 1), (COMMAND_GET_IMAGE, 1)),
+        ):
+            with self.subTest(preludes=preludes):
+                session = object.__new__(ReadOnlyUsbSession)
+                frames = [
+                    _encode_packet(COMMAND_ACK, bytes((COMMAND_GET_IMAGE, 1))),
+                    *(_encode_packet(command, bytes((status,))) for command, status in preludes),
+                    _encode_outer(0xB2, b"123456789" + ciphertext),
+                ]
+                iterator = iter(frames)
+                session._ReadOnlyUsbSession__write_packet = lambda _packet: None
+                session._read_frame = lambda: next(iterator)
+                result = _request_encrypted_clear_image(session)
+                try:
+                    self.assertEqual(result, bytearray(ciphertext))
+                finally:
+                    result[:] = b"\x00" * len(result)
+
+        session = object.__new__(ReadOnlyUsbSession)
+        bad_order = iter(
+            (
+                _encode_packet(COMMAND_ACK, bytes((COMMAND_GET_IMAGE, 1))),
+                _encode_packet(COMMAND_GET_IMAGE, b"\x01"),
+                _encode_packet(COMMAND_REQUEST_TLS, b"\x01"),
+            )
+        )
+        session._ReadOnlyUsbSession__write_packet = lambda _packet: None
+        session._read_frame = lambda: next(bad_order)
+        with self.assertRaisesRegex(ImageCaptureError, "unexpected or duplicate"):
+            _request_encrypted_clear_image(session)
 
     def test_image_request_rejects_short_or_malformed_envelope(self):
         for payload in (b"123456789", b"123456789not-tls"):

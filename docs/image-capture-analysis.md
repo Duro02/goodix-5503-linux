@@ -45,11 +45,19 @@ expected the encrypted (`0xb2`) frame immediately. The fail-closed parser stoppe
 without decoding or saving image data, then attempted its cleanup reset. No
 persistent write or firmware operation occurred, and the attempt was not retried.
 
-The revised parser handles this observed 10063 ordering only if the intervening
-frame fully decodes as a successful response for the exact image command `0x20`;
-it then still requires the next frame to be a structurally valid `0xb2` TLS image
-envelope. Other commands, failure status, or malformed packets remain fatal. A
-second hardware attempt remains separately review- and user-gated.
+On the single authorized retry, the intervening frame fully decoded as command
+`0xd0`, not `0x20`. This is a delayed completion response for the earlier TLS
+request. Static official-driver evidence agrees: `McuReqTlsConnection` at
+`0x1800ac0b0` submits `0xd0` through `IoHubMcuSendCmd2`, whose ACK and later data
+notifications are separate. The retry again stopped fail-closed, decoded/saved
+no image, and attempted cleanup reset. No third attempt is authorized.
+
+The offline state-machine revision permits at most one successful, fully
+validated delayed `0xd0` completion before an optional successful `0x20`
+prelude; `0xd0` must precede `0x20`. The following frame must still be a
+structurally valid `0xb2` TLS image envelope. Unknown commands, failure status,
+duplicates, reversed order, malformed packets, or more than two preludes remain
+fatal. Further hardware use remains separately review- and user-gated.
 
 ## Community post-TLS sequence under review
 
