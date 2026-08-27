@@ -82,13 +82,14 @@ That changes persistent MCU state.
 
 ## Ranked options
 
-1. **Complete the read-only rollback set:** back up the R-family verification
-   record and map every selector modified by official provisioning.
+1. **Complete the readable evidence set:** back up `0xbb020007` and retain the
+   proven-unavailable result for write-only `0xbb010003`; exact old-pairing
+   rollback is not possible.
 2. **Recover original per-user DPAPI state:** valid in theory but unavailable on
    this machine.
-3. **Complete a no-firmware PSK reprovisioning tool with verified rollback:**
-   technically practical, but intentionally persistent and requires a separate
-   risk decision.
+3. **Complete a no-firmware PSK reprovisioning tool with verified retry-based
+   recovery:** technically practical, but intentionally persistent; it cannot
+   restore the exact old pairing and requires a separate risk decision.
 
 Not feasible:
 
@@ -126,16 +127,22 @@ be used on hardware until its independent review passes. It fails closed unless
 most 4096 bytes, reports only length and SHA-256, and overwrites its mutable copy
 after hashing. The protected selector is excluded from the public raw-response
 `request()` whitelist and is reachable only through a scoped metadata method.
-The rollback-set backup reads exactly three fixed R-family selectors:
+The rollback evidence backup reads the two records exposed by the R-family MCU:
 
 - `0xbb010002`: DPAPI-protected host record;
-- `0xbb010003`: white-box record consumed by the MCU;
 - `0xbb020007`: 32-byte verification record.
 
-`PresetPskWriteKey` constructs the first two TLVs before invoking the RTSEC write
-transport; the R-family validation path reads the third. The generic selector-only
-R read opcode is used for all three, while the public raw-response API continues
-to reject the two sensitive selectors.
+A live read of `0xbb010003` returned MCU status `0x01`. Static analysis explains
+the asymmetry: `PresetPskWriteKey` constructs `0xbb010002` and a white-box
+`0xbb010003` TLV before invoking the RTSEC write transport, but R-family read
+cache/validation supports `0xbb010002`, `0xbb020001` and `0xbb020007`, not
+`0xbb010003`. The white-box TLV is a write-time provisioning input consumed by
+the MCU rather than a readable rollback record.
+
+Consequently, the old verification state can be preserved and checked, but the
+original MCU-side PSK cannot be fully restored after reprovisioning without the
+unavailable white-box input or plaintext PSK. Reprovisioning is recoverable by
+retrying with a new known PSK, not by restoring the exact old pairing.
 
 Backup files are written to Git-ignored `artifacts/device-backup/` using mode
 `0600` temporary files, file and directory fsync, and exclusive hard-link commits.

@@ -60,7 +60,6 @@ MAX_PROTECTED_RECORD_LENGTH: Final = 4096
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[2]
 BACKUP_DIRECTORY: Final = PROJECT_ROOT / "artifacts" / "device-backup"
 PROTECTED_RECORD_BACKUP: Final = BACKUP_DIRECTORY / "psk-record-bb010002.bin"
-WHITEBOX_RECORD_BACKUP: Final = BACKUP_DIRECTORY / "psk-record-bb010003.bin"
 VERIFICATION_RECORD_BACKUP: Final = BACKUP_DIRECTORY / "psk-record-bb020007.bin"
 
 
@@ -322,7 +321,7 @@ class ReadOnlyUsbSession:
             protected[:] = b"\x00" * len(protected)
 
     def backup_rollback_set(self) -> dict[str, dict[str, int | str]]:
-        """Read and securely persist all records needed for PSK rollback."""
+        """Persist all readable PSK records and report the write-only gap."""
         _disable_core_dumps()
         records: list[tuple[int, Path, bytearray]] = []
         try:
@@ -331,13 +330,6 @@ class ReadOnlyUsbSession:
                     OFFICIAL_PROTECTED_PSK_SELECTOR,
                     PROTECTED_RECORD_BACKUP,
                     self.__read_record(OFFICIAL_PROTECTED_PSK_SELECTOR),
-                )
-            )
-            records.append(
-                (
-                    OFFICIAL_WHITEBOX_PSK_SELECTOR,
-                    WHITEBOX_RECORD_BACKUP,
-                    self.__read_record(OFFICIAL_WHITEBOX_PSK_SELECTOR),
                 )
             )
             records.append(
@@ -353,7 +345,11 @@ class ReadOnlyUsbSession:
             self.close()
             _drop_sudo_privileges()
             _disable_core_dumps()
-            result: dict[str, dict[str, int | str]] = {}
+            result: dict[str, dict[str, int | str]] = {
+                f"0x{OFFICIAL_WHITEBOX_PSK_SELECTOR:08x}": {
+                    "status": "not-read-write-only-unavailable"
+                }
+            }
             for selector, path, record in records:
                 status = _write_or_verify_secure_backup(path, record)
                 result[f"0x{selector:08x}"] = {
@@ -652,7 +648,7 @@ def main() -> int:
     protected_group.add_argument(
         "--backup-rollback-set",
         action="store_true",
-        help="save or verify all three R-family PSK rollback records",
+        help="save readable R-family PSK records and report the write-only record",
     )
     parser.add_argument("--timeout", type=float, default=5.0)
     args = parser.parse_args()

@@ -16,6 +16,7 @@ Protected record SHA-256: 062cb94a5805bf27bc05d519eaaaaa5fdc20ac17063d352cda9a5a
 Protected record backup: artifacts/device-backup/psk-record-bb010002.bin
 Backup validation: owner duro:duro, directory 0700, file 0600, 324 bytes,
                    SHA-256 matches the live metadata read
+White-box record 0xbb010003: MCU status 0x01; not readable/backed up
 ```
 
 ## Interpretation
@@ -47,6 +48,8 @@ is therefore required to decrypt it; the enclave alternative is not the format
 stored on this device.
 
 TLS image capture now depends on recovering the lost per-user DPAPI state or,
-after a complete rollback set and explicit risk decision, reprovisioning PSK
-state without changing firmware. Until then, this project will not write a new
-PSK.
+after preserving all readable evidence and an explicit risk decision,
+reprovisioning PSK state without changing firmware. Exact restoration of the old
+pairing is impossible because `0xbb010003` is not readable; failure recovery must
+retry provisioning with a known new PSK. Until that path is reviewed, this
+project will not write a new PSK.

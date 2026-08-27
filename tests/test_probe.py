@@ -191,7 +191,6 @@ class PacketTests(unittest.TestCase):
     def test_rollback_set_reads_fixed_selectors_and_wipes_records(self):
         values = {
             OFFICIAL_PROTECTED_PSK_SELECTOR: b"protected",
-            OFFICIAL_WHITEBOX_PSK_SELECTOR: b"whitebox",
             OFFICIAL_R_PSK_HASH_SELECTOR: b"h" * 32,
         }
         session = object.__new__(ReadOnlyUsbSession)
@@ -233,15 +232,18 @@ class PacketTests(unittest.TestCase):
             [item[1] for item in calls],
             [
                 OFFICIAL_PROTECTED_PSK_SELECTOR,
-                OFFICIAL_WHITEBOX_PSK_SELECTOR,
                 OFFICIAL_R_PSK_HASH_SELECTOR,
             ],
         )
         self.assertEqual(
             order,
-            ["harden", "close", "drop", "harden", "write", "write", "write"],
+            ["harden", "close", "drop", "harden", "write", "write"],
         )
         self.assertEqual(set(result), {"0xbb010002", "0xbb010003", "0xbb020007"})
+        self.assertEqual(
+            result["0xbb010003"]["status"],
+            "not-read-write-only-unavailable",
+        )
         self.assertTrue(all(not any(record) for record in written_records))
 
     def test_secure_backup_refuses_root_filesystem_access(self):
