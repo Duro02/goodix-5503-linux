@@ -48,13 +48,13 @@ The following must not be copied from the 5110 log or community 10062 script:
 - field meanings of the B2 nine-byte prefix and plaintext four-byte trailer;
 - full official failure cleanup and sensor restoration sequence.
 
-Most importantly, the current command-36 literal is the community 10062 value.
-The official constructor proves that these bytes are dynamic caller input; the
-literal was not found in the pinned DLL. Another hardware run is blocked until
-that dynamic Milan input and the surrounding call chain are recovered or the
-command is removed from the first-frame path with official evidence. The prior
-D4/`0000` step has also been removed: it came from the 5110 log, while pinned
-Milan uses a dynamic wire-92 TLS-status operation and exposes no immediate D4.
+The current command-36 literal is the community 10062 value. Corrected GF3258
+analysis proves the official local payload is also 22 bytes, but its fields are
+dynamic and the literal is not the official zero-base first request. Another
+hardware run is blocked until those local values and the surrounding call chain
+are implemented. The prior D4/`0000` step has also been removed: it came from
+the 5110 log, while pinned Milan uses a dynamic wire-92 TLS-status operation and
+exposes no immediate D4.
 
 ## Current narrow candidate versus proof
 
@@ -107,3 +107,30 @@ capability. D6 has a one-byte output whose content its constructor does not
 interpret; D2 is output-bearing POV data, not a boolean; C4 is ACK-only and only
 one shared direct state-1 caller was found. The community duplicate C4 and fixed
 D2 invocation remain unsupported.
+
+## Corrected GF3258 command 36 layout
+
+The local `+0x78` target is `HUMilanFSerMcuGetFdtManualBase` at `0x18006cdb0`,
+not the GF3288 function `0x180065810`. It calls the HU constructor
+`0x18006dcc0`. For selector 3 and a 12-byte base, the exact layout is:
+
+```text
+(mode_nibble << 4 | 0x0d) 01
+<four little-endian 16-bit live DAC values: 8 bytes>
+<six transformed base words: 12 bytes>
+```
+
+The DAC values are initialized from four selected OTP bytes by
+`milan_hu_series_update_dac_register_from_otp` at `0x18006f1c0` and may later
+be updated from live registers. Each base word is transformed as
+`(word & 0xff00) | 0x0080`. On the fresh calloc-zero branch, the suffix is
+therefore six repetitions of wire bytes `80 00`. The exact official first
+request is:
+
+```text
+0d 01 || <8 unit/runtime-specific DAC bytes> || (80 00) * 6
+```
+
+The community literal has the right 22-byte length, but embeds unverified DAC
+values and nonzero saved/acquired-base high bytes. It is neither derivable from
+the 256-byte config nor valid as the proven fresh zero-base request.

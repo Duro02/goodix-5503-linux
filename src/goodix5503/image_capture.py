@@ -78,6 +78,10 @@ CLEAR_CAPTURE_CONFIRMATION: Final = (
 # former community-derived candidate unreachable even with confirmation.
 OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE: Final = False
 
+# Historical community candidate. The official GF3258 request has this length,
+# but both its DAC words and base high bytes are runtime-derived. This constant
+# is deliberately unreachable while OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE
+# is false and must be removed when the official state machine replaces it.
 FDT_CLEAR_MODE: Final = bytes.fromhex(
     "0d018b0084008c0088008096809180928085808c8086"
 )

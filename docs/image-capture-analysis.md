@@ -97,6 +97,13 @@ so they must not be labelled as status, length or checksum. The parser retains
 both in mutable buffers, enforces exact 9/4-byte boundaries, and wipes them
 without printing or saving their content.
 
+Corrected GF3258 analysis also shows that command 36 is 22 bytes but dynamic:
+a two-byte header, four little-endian DAC values initialized from selected OTP
+bytes, and six base words transformed as `(word & 0xff00) | 0x0080`. The fresh
+calloc-zero branch ends in `(80 00) * 6`. The community literal is length-correct
+but contains unverified DAC values and nonzero base high bytes, so it is not the
+official first request and remains unreachable behind the capture safety gate.
+
 Official 10063 `_FpMcuGetImage` at `0x180058610` constructs the exact two-byte
 request `01 00` and submits command `0x20` through `IoHubMcuSendCmd2`
 (`0x18007b930`). The community 10062 script instead sends ten bytes
