@@ -11,14 +11,11 @@ later), pinned reference commit cc43bb3b3154a0bccc0412ae024013c7e1923139.
 from __future__ import annotations
 
 import argparse
-import ctypes
-import errno
 import hashlib
 import hmac
 import json
 import math
 import os
-import resource
 import stat
 import struct
 import tempfile
@@ -28,6 +25,8 @@ from typing import Final
 
 import usb.core
 import usb.util
+
+from .security import disable_core_dumps as _disable_core_dumps
 
 VENDOR_ID: Final = 0x27C6
 PRODUCT_ID: Final = 0x5503
@@ -548,29 +547,6 @@ def _write_or_verify_secure_backup(path: Path, protected: bytearray) -> str:
     except FileExistsError:
         _verify_secure_backup(path, protected)
         return "verified-existing"
-
-
-def _disable_core_dumps() -> None:
-    """Fail closed unless Linux marks the process non-dumpable."""
-    pr_set_dumpable = 4
-    pr_get_dumpable = 3
-    libc = ctypes.CDLL(None, use_errno=True)
-    prctl = libc.prctl
-    prctl.argtypes = [
-        ctypes.c_int,
-        ctypes.c_ulong,
-        ctypes.c_ulong,
-        ctypes.c_ulong,
-        ctypes.c_ulong,
-    ]
-    prctl.restype = ctypes.c_int
-
-    if prctl(pr_set_dumpable, 0, 0, 0, 0) != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, errno.errorcode.get(error, "prctl failed"))
-    if prctl(pr_get_dumpable, 0, 0, 0, 0) != 0:
-        raise RuntimeError("failed to verify that the process is non-dumpable")
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
 def probe(

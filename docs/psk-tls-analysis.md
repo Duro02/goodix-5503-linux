@@ -75,10 +75,43 @@ The official driver generates key material and constructs records tagged:
 - `0xbb010002`
 - `0xbb010003`
 
-It then chooses a device-family write path; RTSEC firmware uses a distinct
-transport function. The community project writes the public white-box record
-with tag `0xbb010003`, after which it knows the corresponding plaintext PSK.
-That changes persistent MCU state.
+Each record has an eight-byte little-endian `selector, value_length` header.
+`PresetPskWriteKey` concatenates the complete `0xbb010002` TLV and the complete
+96-byte `0xbb010003` white-box TLV, then submits the combined buffer once. With
+this device's observed 324-byte protected-record length, that official request
+would be 436 bytes. It then chooses a device-family write path; RTSEC calls
+`PresetPskWriteR` at `0x1800aff60`. That transport first submits opcode `0xe0`
+and falls back to opcode `0xe4` only if the transport call itself reports
+failure. A successful response must have status byte zero. There is no effective
+retry loop in this routine.
+
+The community project instead submits only the 104-byte `0xbb010003` TLV using
+opcode `0xe0`, after which it knows the corresponding plaintext PSK. This avoids
+replacing the opaque host-recovery record, but still changes persistent MCU PSK
+state.
+
+The official arbitrary-key white-box encoder is now reproducible without running
+Windows. `PresetPskWriteKey` calls `SecWhiteEncrypt` at `Wbdi.dll`
+`0x180001090`. A local Unicorn harness maps only the pinned Lenovo
+`Wbdi.dll` 3.1.581.610 (SHA-256
+`567b5af3f2c51eca058172aaa0d0403d82680c75e77d2d073cfd403b1180fb8a`),
+hooks only allocation/free/logging/cookie helpers, and executes that function.
+For a 32-byte zero PSK it produces the exact 96-byte community white-box vector.
+That known-answer test validates the pinned entry point and emulation setup for
+the zero input; by itself it is not an arbitrary-key proof. Static inspection
+shows that `SecWhiteEncrypt` branches on pointers, fixed input/output lengths,
+cipher status and fixed-size block state, not on the 32 input byte values. As a
+corroborating test, zero, all-`ff`, and incrementing-byte inputs each execute the
+same 127,592 guest instruction addresses (trace SHA-256
+`baf436c5c0c979c9dee4f1f586e2a6d8713b75e54ac8547b36bf0c7c66476a2e`)
+and the same helper-call sequence while producing distinct outputs. An
+independent nonzero Windows-generated known-answer vector is still unavailable.
+No proprietary binary is committed or redistributed.
+
+The emulator marks its process non-dumpable, sets `RLIMIT_CORE=0`, accepts only
+a caller-wipeable `bytearray`, avoids `bytes(psk)`, and clears/unmaps its entire
+32 MiB guest heap and 2 MiB guest stack on both success and failure. The caller
+must still wipe the returned mutable 96-byte record and its input PSK.
 
 ## Ranked options
 
