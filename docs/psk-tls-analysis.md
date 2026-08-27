@@ -156,6 +156,28 @@ returned success, and immediate `0xbb020007` readback exactly matched the
 prepared verification record. No firmware, register or configuration write was
 performed.
 
+## TLS handshake test path
+
+The candidate non-persistent TLS test follows the 5503 community flight order
+without running its firmware-changing driver: fixed runtime reset command
+`0xa2` with payload `05 14`, fixed TLS request `0xd0` with payload `0000`, one
+MCU ClientHello outer frame (`0xb0`), one server flight back to the MCU, three
+MCU TLS frames to the server, then the final server flight back to the MCU. The
+server is an in-process Python/OpenSSL TLS 1.2 PSK endpoint over `socketpair`, so
+the PSK is never placed in a process command line or exposed on a network port.
+The exact official-driver suite string
+`TLS-PSK-WITH-AES-128-CBC-SHA256` maps to OpenSSL
+`PSK-AES128-CBC-SHA256` and is the only enabled TLS 1.2 suite.
+
+Before opening USB, the test feature-gates Python/OpenSSL PSK callback and exact
+cipher support. Before reset, it repeats unique-device and firmware/IAP checks,
+drops sudo before reading the owner-only PSK, recomputes the R verification
+record from that PSK, and requires both the saved and live records to match.
+Server-flight collection uses complete TLS record and handshake-message
+boundaries with a five-second overall deadline, not timing-based idle grouping.
+It performs no PSK, firmware, register or configuration write. The
+implementation remains unexecuted pending independent review.
+
 ## Ranked options
 
 1. **Complete the readable evidence set:** back up `0xbb020007` and retain the
