@@ -141,9 +141,17 @@ class ReadOnlyUsbSession:
         self.timeout_ms = max(1, round(timeout_seconds * 1000))
         self._claimed = False
         self._rx_buffer = bytearray()
-        self.device = usb.core.find(idVendor=VENDOR_ID, idProduct=PRODUCT_ID)
-        if self.device is None:
+        found = usb.core.find(
+            idVendor=VENDOR_ID, idProduct=PRODUCT_ID, find_all=True
+        )
+        devices = list(found) if found is not None else []
+        if not devices:
             raise RuntimeError("Goodix 27c6:5503 was not found")
+        if len(devices) != 1:
+            raise RuntimeError(
+                f"expected exactly one Goodix 27c6:5503, found {len(devices)}"
+            )
+        self.device = devices[0]
 
         config = self.device.get_active_configuration()
         interface = usb.util.find_descriptor(

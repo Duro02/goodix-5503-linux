@@ -123,7 +123,7 @@ nonzero behavior differs from the community expression `(BE16(length) || PSK) *
 2`, whose published test PSK is all zero and therefore cannot reveal the
 difference.
 
-An offline-only preparation command now generates a random key directly into a
+An offline-only preparation command generates a random key directly into a
 mutable buffer from `/dev/urandom`, runs the pinned white-box known-answer test,
 encodes the key, computes the expected R verification record, and stores all
 three values in Git-ignored files. It refuses root, disables dumps before key
@@ -132,8 +132,26 @@ material, supports idempotent recovery after a partial file commit, and wipes
 mutable buffers. Python's digest APIs still create short-lived immutable objects
 for the derived PMK digest and the readable verification record; no immutable
 plaintext-PSK copy is created, and non-dumpable/core-limit hardening contains
-this allocator-residue limitation. This command contains no USB transport. It
-must pass a separate review before first use with a real random key.
+this allocator-residue limitation. The reviewed command contains no USB
+transport and has now generated and reverified this machine's local material.
+
+The candidate hardware path is deliberately not exposed as a CLI or public
+session mutator. It refuses zero or multiple matching devices, opens the sole
+confirmed `27c6:5503`, checks exact firmware `10063` and IAP `10027`, reads
+the live old R verification record, permanently drops sudo privileges while
+retaining the claimed USB handle, and only then reads local secrets. It refuses
+to continue unless the live record equals the preserved old backup and unless
+freshly recomputed white-box and verification values equal all prepared files.
+Its sole mutation is one opcode `0xe0` request containing exactly
+`LE32(0xbb010003) || LE32(96) || whitebox[96]`; there is no raw command,
+selector, payload, fallback, or retry parameter. It immediately reads
+`0xbb020007` and requires an exact match with the prepared verification record.
+If a write response or immediate readback is lost, the result is reported as
+ambiguous and no automatic retry occurs. A later invocation performs the same
+preflight and recognizes either the preserved old hash or the exact prepared
+new hash; an already-matching new hash returns success without another write.
+This path remains unexecuted and requires independent review plus explicit
+hardware-write authorization.
 
 ## Ranked options
 

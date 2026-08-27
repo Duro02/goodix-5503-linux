@@ -48,6 +48,13 @@ def reader_session(*chunks):
 
 
 class PacketTests(unittest.TestCase):
+    def test_session_refuses_ambiguous_identical_devices(self):
+        with (
+            patch("goodix5503.probe.usb.core.find", return_value=[object(), object()]),
+            self.assertRaisesRegex(RuntimeError, "expected exactly one"),
+        ):
+            ReadOnlyUsbSession()
+
     def test_packet_round_trip(self):
         packet = _encode_packet(COMMAND_FIRMWARE_VERSION, b"\x00\x00")
         self.assertEqual(
