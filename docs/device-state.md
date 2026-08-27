@@ -57,8 +57,14 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   claiming USB. The separately reviewed one-shot completed with zero bulk-IN
   transfers during that window. This disproves an independently queued wake
   response as the cause of the earlier stale-frame hypothesis. It does not
-  reveal the bytes returned only after the subsequent A8 request; no retry or
-  additional command was issued and the diagnostic source gate remains false.
+  reveal the bytes returned only after the subsequent A8 request. A second
+  separately reviewed one-shot sent exactly one checksummed A8 after the wake
+  and likewise observed zero bulk-IN completions in the following 500 ms. No
+  parser, retry, reset, or additional command was used. This means the earlier
+  invalid frame cannot yet be reproduced by post-write synchronous reads. The
+  remaining proven host difference is that Windows keeps an IN request pending
+  through WakeUp/A8, whereas both observations submitted their first IN read
+  only after the OUT write; the diagnostic source gates remain false.
 ```
 
 ## Interpretation

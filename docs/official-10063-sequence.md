@@ -89,10 +89,13 @@ persistent asynchronous receive dispatcher: `IoHubNotifyDataIn2 @ 0x18007be40`,
 ignore notifications when no matching command is pending. The free synchronous
 reader does not yet reproduce that transport-level filtering. The failed run did not record the offending bytes. A later separately gated
 `e5`-only observation saw zero bulk-IN completions for 500 ms after the settle,
-so there is no independently queued wake response to drain. The unknown bytes
-are triggered or delivered only after the subsequent A8 request; their
-signature and length remain unknown, and blind draining or A8 retry is
-prohibited.
+so there is no independently queued wake response to drain. A second fixed
+one-shot sent exactly one checksummed A8 and also saw zero bulk-IN completions
+for 500 ms. Thus the prior invalid frame is not reproducible with a read first
+submitted after A8. The Windows IoHub has a receive request pending continuously
+through wake and command submission; reproducing that queue-before-OUT property
+is now required before further interpretation. The unknown bytes remain
+unobserved, and blind draining or A8 retry is prohibited.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
