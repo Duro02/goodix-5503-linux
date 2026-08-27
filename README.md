@@ -9,7 +9,7 @@
 - `NOP`：唤醒/同步设备；
 - `FIRMWARE_VERSION`：读取应用固件版本；
 - `GET_IAP_VERSION`：读取 IAP 版本；
-- `PRESET_PSK_READ`：可选，仅允许官方 R-family 的两个固定只读选择器：`0xbb020007` 比较 32 字节校验哈希；`0xbb010002` 在检查模式只报告长度和 SHA-256，在显式备份模式将不透明受保护记录保存到本地，但绝不输出记录内容或明文密钥。
+- `PRESET_PSK_READ`：可选，仅允许官方 R-family 的三个固定只读选择器：`0xbb020007` 校验记录、`0xbb010002` DPAPI 记录和 `0xbb010003` MCU 白盒记录。检查模式只报告元数据；显式备份模式保存不透明原始记录，但绝不把记录内容或明文密钥输出到终端。
 
 下列功能没有实现，并会被命令白名单阻止：
 
@@ -45,9 +45,10 @@ sudo .venv/bin/goodix-5503-probe
 sudo .venv/bin/goodix-5503-probe --check-psk-state
 sudo .venv/bin/goodix-5503-probe --inspect-protected-record
 sudo .venv/bin/goodix-5503-probe --backup-protected-record
+sudo .venv/bin/goodix-5503-probe --backup-rollback-set
 ```
 
-默认不会查询任何 PSK 状态。受保护记录操作会先设置并验证 `PR_SET_DUMPABLE=0`，同时设置 `RLIMIT_CORE=0`；任一步失败都会在 USB 访问前终止。检查模式只输出长度和 SHA-256。备份模式读取完成后会先关闭 USB 会话，再永久放弃 sudo root 权限；降权后会重新设置并验证 non-dumpable 状态，随后才以原用户身份执行文件系统操作。root 身份的文件写入会被拒绝。记录通过 `0600` 临时文件、`fsync` 和排他硬链接提交为 `artifacts/device-backup/psk-record-bb010002.bin`，已有备份不会被覆盖。该目录权限为 `0700` 且已被 Git 忽略。记录的可变内存副本在使用后会被覆盖。备份选项仍应在独立安全审查通过后首次运行。
+默认不会查询任何 PSK 状态。受保护记录操作会先设置并验证 `PR_SET_DUMPABLE=0`，同时设置 `RLIMIT_CORE=0`；任一步失败都会在 USB 访问前终止。检查模式只输出长度和 SHA-256。备份模式读取完成后会先关闭 USB 会话，再永久放弃 sudo root 权限；降权后会重新设置并验证 non-dumpable 状态，随后才以原用户身份执行文件系统操作。root 身份的文件写入会被拒绝。记录通过 `0600` 临时文件、`fsync` 和排他硬链接提交，已有文件只允许逐字节验证一致，绝不会覆盖。完整回滚集包含 `0xbb010002`、`0xbb010003` 和 `0xbb020007` 三个文件。备份目录权限为 `0700` 且已被 Git 忽略，所有可变内存副本在使用后覆盖。`--backup-rollback-set` 仍须通过独立审查后才能首次运行。
 
 ## 上游参考与许可证
 

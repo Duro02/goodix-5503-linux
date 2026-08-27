@@ -12,12 +12,15 @@ from goodix5503.probe import (
     COMMAND_PRESET_PSK_READ,
     OFFICIAL_PROTECTED_PSK_SELECTOR,
     OFFICIAL_R_PSK_HASH_SELECTOR,
+    OFFICIAL_WHITEBOX_PSK_SELECTOR,
     ProtocolError,
     ReadOnlyUsbSession,
     UnsafeCommandError,
     _decode_r_read_response,
     _decode_packet,
     _encode_packet,
+    _verify_secure_backup,
+    _write_or_verify_secure_backup,
     _write_secure_backup,
 )
 
@@ -88,7 +91,7 @@ class PacketTests(unittest.TestCase):
             struct.pack("<IIII", 32, 0, 0xBB020001, 0),
             struct.pack("<II", OFFICIAL_PROTECTED_PSK_SELECTOR, 0),
             struct.pack("<II", OFFICIAL_PROTECTED_PSK_SELECTOR, 1),
-            struct.pack("<II", 0xBB010003, 0),
+            struct.pack("<II", OFFICIAL_WHITEBOX_PSK_SELECTOR, 0),
         ):
             with self.subTest(payload=payload), self.assertRaises(
                 UnsafeCommandError
@@ -175,7 +178,7 @@ class PacketTests(unittest.TestCase):
                 side_effect=lambda: order.append("drop"),
             ),
             patch(
-                "goodix5503.probe._write_secure_backup",
+                "goodix5503.probe._write_or_verify_secure_backup",
                 side_effect=lambda _path, _data: order.append("write"),
             ),
         ):
@@ -184,6 +187,62 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(
             order, ["harden", "close", "drop", "harden", "write"]
         )
+
+    def test_rollback_set_reads_fixed_selectors_and_wipes_records(self):
+        values = {
+            OFFICIAL_PROTECTED_PSK_SELECTOR: b"protected",
+            OFFICIAL_WHITEBOX_PSK_SELECTOR: b"whitebox",
+            OFFICIAL_R_PSK_HASH_SELECTOR: b"h" * 32,
+        }
+        session = object.__new__(ReadOnlyUsbSession)
+        calls = []
+
+        def exchange(command, payload, *, checksum=True):
+            selector, reserved = struct.unpack("<II", payload)
+            calls.append((command, selector, reserved, checksum))
+            value = values[selector]
+            return b"\x00" + struct.pack("<II", selector, len(value)) + value
+
+        session._ReadOnlyUsbSession__exchange = exchange
+        order = []
+        session.close = lambda: order.append("close")
+        written_records = []
+
+        def save(_path, record):
+            order.append("write")
+            written_records.append(record)
+            return "created"
+
+        with (
+            patch(
+                "goodix5503.probe._disable_core_dumps",
+                side_effect=lambda: order.append("harden"),
+            ),
+            patch(
+                "goodix5503.probe._drop_sudo_privileges",
+                side_effect=lambda: order.append("drop"),
+            ),
+            patch(
+                "goodix5503.probe._write_or_verify_secure_backup",
+                side_effect=save,
+            ),
+        ):
+            result = session.backup_rollback_set()
+
+        self.assertEqual(
+            [item[1] for item in calls],
+            [
+                OFFICIAL_PROTECTED_PSK_SELECTOR,
+                OFFICIAL_WHITEBOX_PSK_SELECTOR,
+                OFFICIAL_R_PSK_HASH_SELECTOR,
+            ],
+        )
+        self.assertEqual(
+            order,
+            ["harden", "close", "drop", "harden", "write", "write", "write"],
+        )
+        self.assertEqual(set(result), {"0xbb010002", "0xbb010003", "0xbb020007"})
+        self.assertTrue(all(not any(record) for record in written_records))
 
     def test_secure_backup_refuses_root_filesystem_access(self):
         with patch("goodix5503.probe.os.geteuid", return_value=0):
@@ -206,6 +265,21 @@ class PacketTests(unittest.TestCase):
                     _write_secure_backup(path, bytearray(b"replacement"))
             self.assertEqual(path.read_bytes(), bytes(protected))
             self.assertEqual(list(directory.glob(".psk-record-*")), [])
+
+    def test_existing_secure_backup_is_verified_without_overwrite(self):
+        protected = bytearray(b"opaque-protected-record")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "backup.bin"
+            path.write_bytes(protected)
+            path.chmod(0o600)
+            _verify_secure_backup(path, protected)
+            self.assertEqual(
+                _write_or_verify_secure_backup(path, protected),
+                "verified-existing",
+            )
+            with self.assertRaisesRegex(RuntimeError, "content differs"):
+                _verify_secure_backup(path, bytearray(b"Xpaque-protected-record"))
+            self.assertEqual(path.read_bytes(), bytes(protected))
 
     def test_padded_64_byte_response_returns_one_frame(self):
         frame = _encode_packet(COMMAND_ACK, bytes((COMMAND_FIRMWARE_VERSION, 1)))

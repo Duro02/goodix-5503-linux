@@ -126,15 +126,25 @@ be used on hardware until its independent review passes. It fails closed unless
 most 4096 bytes, reports only length and SHA-256, and overwrites its mutable copy
 after hashing. The protected selector is excluded from the public raw-response
 `request()` whitelist and is reachable only through a scoped metadata method.
-A separate backup mode writes the same protected response to the Git-ignored
-`artifacts/device-backup/` directory using a mode-`0600` temporary file, file
-and directory fsync, and an exclusive hard-link commit that cannot overwrite an
-existing backup. After the USB read, the session is closed and a sudo run
-permanently drops to the invoking UID/GID before every filesystem operation.
-Because `setresuid` may reset Linux dumpability, the process immediately sets
-and verifies `PR_SET_DUMPABLE=0` again after the drop. Filesystem access as root
-is rejected.
-New child directories are durably committed by fsyncing each parent. The raw
-record is never returned by a public method or printed. The unavoidable residual
-is a short-lived immutable USB response object in Python memory. No reader may
-expose a general raw-command interface.
+The rollback-set backup reads exactly three fixed R-family selectors:
+
+- `0xbb010002`: DPAPI-protected host record;
+- `0xbb010003`: white-box record consumed by the MCU;
+- `0xbb020007`: 32-byte verification record.
+
+`PresetPskWriteKey` constructs the first two TLVs before invoking the RTSEC write
+transport; the R-family validation path reads the third. The generic selector-only
+R read opcode is used for all three, while the public raw-response API continues
+to reject the two sensitive selectors.
+
+Backup files are written to Git-ignored `artifacts/device-backup/` using mode
+`0600` temporary files, file and directory fsync, and exclusive hard-link commits.
+An existing file is accepted only if owner, mode, length and every byte match the
+live record; it is never overwritten. After all USB reads, the session is closed
+and a sudo run permanently drops to the invoking UID/GID before filesystem work.
+Because `setresuid` may reset Linux dumpability, the process immediately sets and
+verifies `PR_SET_DUMPABLE=0` again after the drop. Filesystem access as root is
+rejected. New child directories are durably committed by fsyncing each parent.
+All mutable record copies are overwritten in `finally` blocks. The unavoidable
+residual is a short-lived immutable USB response object in Python memory. No
+reader may expose a general raw-command interface.

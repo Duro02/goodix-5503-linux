@@ -14,6 +14,7 @@ import argparse
 import ctypes
 import errno
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -53,12 +54,14 @@ KNOWN_5503_PMK_HASH: Final = bytes.fromhex(
     "81b8ff490612022a121a9449ee3aad2792f32b9f3141182cd01019945ee50361"
 )
 OFFICIAL_PROTECTED_PSK_SELECTOR: Final = 0xBB010002
+OFFICIAL_WHITEBOX_PSK_SELECTOR: Final = 0xBB010003
 OFFICIAL_R_PSK_HASH_SELECTOR: Final = 0xBB020007
 MAX_PROTECTED_RECORD_LENGTH: Final = 4096
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[2]
-PROTECTED_RECORD_BACKUP: Final = (
-    PROJECT_ROOT / "artifacts" / "device-backup" / "psk-record-bb010002.bin"
-)
+BACKUP_DIRECTORY: Final = PROJECT_ROOT / "artifacts" / "device-backup"
+PROTECTED_RECORD_BACKUP: Final = BACKUP_DIRECTORY / "psk-record-bb010002.bin"
+WHITEBOX_RECORD_BACKUP: Final = BACKUP_DIRECTORY / "psk-record-bb010003.bin"
+VERIFICATION_RECORD_BACKUP: Final = BACKUP_DIRECTORY / "psk-record-bb020007.bin"
 
 
 class ProtocolError(RuntimeError):
@@ -81,6 +84,7 @@ class ProbeResult:
     protected_record_length: int | None
     protected_record_sha256: str | None
     protected_record_backup: str | None
+    rollback_set: dict[str, dict[str, int | str]] | None
 
 
 def _encode_packet(command: int, payload: bytes = b"", *, checksum: bool = True) -> bytes:
@@ -269,19 +273,30 @@ class ReadOnlyUsbSession:
         self._validate_request(command, payload, checksum)
         return self.__exchange(command, payload, checksum=checksum)
 
-    def __read_protected_record(self) -> bytearray:
-        payload = struct.pack("<II", OFFICIAL_PROTECTED_PSK_SELECTOR, 0)
-        protected = _decode_r_read_response(
-            self.__exchange(COMMAND_PRESET_PSK_READ, payload),
-            OFFICIAL_PROTECTED_PSK_SELECTOR,
+    def __read_record(
+        self, selector: int, *, exact_length: int | None = None
+    ) -> bytearray:
+        payload = struct.pack("<II", selector, 0)
+        record = _decode_r_read_response(
+            self.__exchange(COMMAND_PRESET_PSK_READ, payload), selector
         )
-        if not 0 < len(protected) <= MAX_PROTECTED_RECORD_LENGTH:
-            protected[:] = b"\x00" * len(protected)
-            raise ProtocolError(
-                f"protected PSK record length is outside the accepted range "
-                f"1..{MAX_PROTECTED_RECORD_LENGTH}"
+        valid_length = (
+            len(record) == exact_length
+            if exact_length is not None
+            else 0 < len(record) <= MAX_PROTECTED_RECORD_LENGTH
+        )
+        if not valid_length:
+            record[:] = b"\x00" * len(record)
+            expected = (
+                f"exactly {exact_length}"
+                if exact_length is not None
+                else f"1..{MAX_PROTECTED_RECORD_LENGTH}"
             )
-        return protected
+            raise ProtocolError(f"record length is not {expected} bytes")
+        return record
+
+    def __read_protected_record(self) -> bytearray:
+        return self.__read_record(OFFICIAL_PROTECTED_PSK_SELECTOR)
 
     def protected_record_metadata(self) -> tuple[int, str]:
         """Hash the exact protected record without returning its raw response."""
@@ -301,10 +316,56 @@ class ReadOnlyUsbSession:
             self.close()
             _drop_sudo_privileges()
             _disable_core_dumps()
-            _write_secure_backup(PROTECTED_RECORD_BACKUP, protected)
+            _write_or_verify_secure_backup(PROTECTED_RECORD_BACKUP, protected)
             return len(protected), digest, PROTECTED_RECORD_BACKUP
         finally:
             protected[:] = b"\x00" * len(protected)
+
+    def backup_rollback_set(self) -> dict[str, dict[str, int | str]]:
+        """Read and securely persist all records needed for PSK rollback."""
+        _disable_core_dumps()
+        records: list[tuple[int, Path, bytearray]] = []
+        try:
+            records.append(
+                (
+                    OFFICIAL_PROTECTED_PSK_SELECTOR,
+                    PROTECTED_RECORD_BACKUP,
+                    self.__read_record(OFFICIAL_PROTECTED_PSK_SELECTOR),
+                )
+            )
+            records.append(
+                (
+                    OFFICIAL_WHITEBOX_PSK_SELECTOR,
+                    WHITEBOX_RECORD_BACKUP,
+                    self.__read_record(OFFICIAL_WHITEBOX_PSK_SELECTOR),
+                )
+            )
+            records.append(
+                (
+                    OFFICIAL_R_PSK_HASH_SELECTOR,
+                    VERIFICATION_RECORD_BACKUP,
+                    self.__read_record(
+                        OFFICIAL_R_PSK_HASH_SELECTOR, exact_length=32
+                    ),
+                )
+            )
+
+            self.close()
+            _drop_sudo_privileges()
+            _disable_core_dumps()
+            result: dict[str, dict[str, int | str]] = {}
+            for selector, path, record in records:
+                status = _write_or_verify_secure_backup(path, record)
+                result[f"0x{selector:08x}"] = {
+                    "length": len(record),
+                    "sha256": hashlib.sha256(record).hexdigest(),
+                    "path": str(path),
+                    "status": status,
+                }
+            return result
+        finally:
+            for _selector, _path, record in records:
+                record[:] = b"\x00" * len(record)
 
 
 def _decode_c_string(payload: bytes) -> str:
@@ -441,6 +502,58 @@ def _write_secure_backup(path: Path, protected: bytearray) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _verify_secure_backup(path: Path, expected: bytearray) -> None:
+    if os.geteuid() == 0:
+        raise RuntimeError("refusing protected-record filesystem access as root")
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    existing = bytearray(len(expected))
+    extra = bytearray(1)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise RuntimeError("existing protected-record backup is not regular")
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise RuntimeError("existing protected-record backup ownership/mode is unsafe")
+        if info.st_size != len(expected):
+            raise RuntimeError("existing protected-record backup length differs")
+
+        view = memoryview(existing)
+        read_count = 0
+        while read_count < len(view):
+            count = os.readv(descriptor, [view[read_count:]])
+            if count == 0:
+                break
+            read_count += count
+        trailing = os.readv(descriptor, [extra])
+        if (
+            read_count != len(expected)
+            or trailing != 0
+            or not hmac.compare_digest(existing, expected)
+        ):
+            raise RuntimeError("existing protected-record backup content differs")
+    finally:
+        try:
+            os.close(descriptor)
+        finally:
+            existing[:] = b"\x00" * len(existing)
+            extra[:] = b"\x00"
+
+
+def _write_or_verify_secure_backup(path: Path, protected: bytearray) -> str:
+    try:
+        _verify_secure_backup(path, protected)
+        return "verified-existing"
+    except FileNotFoundError:
+        pass
+
+    try:
+        _write_secure_backup(path, protected)
+        return "created"
+    except FileExistsError:
+        _verify_secure_backup(path, protected)
+        return "verified-existing"
+
+
 def _disable_core_dumps() -> None:
     """Fail closed unless Linux marks the process non-dumpable."""
     pr_set_dumpable = 4
@@ -469,11 +582,12 @@ def probe(
     check_psk_state: bool = False,
     inspect_protected_record: bool = False,
     backup_protected_record: bool = False,
+    backup_rollback_set: bool = False,
     timeout_seconds: float = 5.0,
 ) -> ProbeResult:
-    if inspect_protected_record or backup_protected_record:
+    if inspect_protected_record or backup_protected_record or backup_rollback_set:
         _disable_core_dumps()
-    if backup_protected_record:
+    if backup_protected_record or backup_rollback_set:
         _sudo_owner()
     with ReadOnlyUsbSession(timeout_seconds) as session:
         session.request(COMMAND_NOP, checksum=False)
@@ -487,6 +601,7 @@ def probe(
         protected_record_length = None
         protected_record_sha256 = None
         protected_record_backup = None
+        rollback_set = None
         if inspect_protected_record:
             protected_record_length, protected_record_sha256 = (
                 session.protected_record_metadata()
@@ -496,6 +611,8 @@ def probe(
             protected_record_length = length
             protected_record_sha256 = digest
             protected_record_backup = str(path)
+        elif backup_rollback_set:
+            rollback_set = session.backup_rollback_set()
 
         return ProbeResult(
             vendor_id=f"{VENDOR_ID:04x}",
@@ -508,6 +625,7 @@ def probe(
             protected_record_length=protected_record_length,
             protected_record_sha256=protected_record_sha256,
             protected_record_backup=protected_record_backup,
+            rollback_set=rollback_set,
         )
 
 
@@ -531,6 +649,11 @@ def main() -> int:
         action="store_true",
         help="atomically save the opaque protected PSK record in artifacts/device-backup",
     )
+    protected_group.add_argument(
+        "--backup-rollback-set",
+        action="store_true",
+        help="save or verify all three R-family PSK rollback records",
+    )
     parser.add_argument("--timeout", type=float, default=5.0)
     args = parser.parse_args()
 
@@ -538,6 +661,7 @@ def main() -> int:
         check_psk_state=args.check_psk_state,
         inspect_protected_record=args.inspect_protected_record,
         backup_protected_record=args.backup_protected_record,
+        backup_rollback_set=args.backup_rollback_set,
         timeout_seconds=args.timeout,
     )
     print(json.dumps(asdict(result), indent=2, sort_keys=True))
