@@ -94,8 +94,12 @@ one-shot sent exactly one checksummed A8 and also saw zero bulk-IN completions
 for 500 ms. Thus the prior invalid frame is not reproducible with a read first
 submitted after A8. The Windows IoHub has a receive request pending continuously
 through wake and command submission; reproducing that queue-before-OUT property
-is now required before further interpretation. The unknown bytes remain
-unobserved, and blind draining or A8 retry is prohibited.
+was then approximated by a third gated one-shot using one queued 32 KiB PyUSB
+read, a 25 ms host barrier, `e5`, 50 ms and A8. It still observed zero
+completions under a 600 ms absolute deadline. The queue-after-OUT gap is
+therefore not the obvious cause, although PyUSB cannot acknowledge actual URB
+submission and the official A8 wait budget still requires exact recovery. The
+unknown bytes remain unobserved, and blind draining or A8 retry is prohibited.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8

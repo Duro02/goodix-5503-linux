@@ -62,9 +62,13 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   and likewise observed zero bulk-IN completions in the following 500 ms. No
   parser, retry, reset, or additional command was used. This means the earlier
   invalid frame cannot yet be reproduced by post-write synchronous reads. The
-  remaining proven host difference is that Windows keeps an IN request pending
-  through WakeUp/A8, whereas both observations submitted their first IN read
-  only after the OUT write; the diagnostic source gates remain false.
+  remaining proven host difference was that Windows keeps one 32 KiB IN request
+  pending through WakeUp/A8. A third reviewed one-shot approximated that model
+  with one queued `read(0x8000)`, a 25 ms host barrier, then `e5`, 50 ms, and A8;
+  it also observed zero completions under its 600 ms absolute deadline. This
+  rules out the obvious post-write submission gap but not a longer official
+  A8 timeout or PyUSB's unobservable URB-submission race. All diagnostic source
+  gates remain false.
 ```
 
 ## Interpretation
