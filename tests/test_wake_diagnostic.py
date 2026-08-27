@@ -5,10 +5,13 @@ from unittest.mock import patch
 
 import usb.core
 
+from goodix5503.probe import COMMAND_FIRMWARE_VERSION, _encode_packet
 from goodix5503.wake_diagnostic import (
+    WAKE_A8_DIAGNOSTIC_CONFIRMATION,
     WAKE_DIAGNOSTIC_CONFIRMATION,
     WakeDiagnosticError,
     observe_one_wake,
+    observe_one_wake_a8,
 )
 
 
@@ -17,6 +20,12 @@ class WakeDiagnosticTests(unittest.TestCase):
         with patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession") as session:
             with self.assertRaisesRegex(WakeDiagnosticError, "review is not complete"):
                 observe_one_wake(WAKE_DIAGNOSTIC_CONFIRMATION)
+            session.assert_not_called()
+
+    def test_a8_gate_prevents_usb_open(self):
+        with patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession") as session:
+            with self.assertRaisesRegex(WakeDiagnosticError, "review is not complete"):
+                observe_one_wake_a8(WAKE_A8_DIAGNOSTIC_CONFIRMATION)
             session.assert_not_called()
 
     def test_observes_complete_transfer_boundaries_and_no_commands(self):
@@ -83,6 +92,49 @@ class WakeDiagnosticTests(unittest.TestCase):
         self.assertEqual(session.endpoint_in.calls, [(64, 500)] * 3)
         self.assertTrue(all(not any(buffer) for buffer in session.endpoint_in.returned))
         self.assertTrue(session.closed)
+
+    def test_a8_observation_writes_one_exact_framed_read_after_wake(self):
+        events = []
+
+        class Endpoint:
+            def read(self, _size, timeout):
+                events.append(("read", timeout))
+                raise usb.core.USBTimeoutError("done")
+
+        class Session:
+            endpoint_in = Endpoint()
+            _max_packet_size = 64
+
+            def wake_up(self, **kwargs):
+                events.append(("wake", kwargs["timeout_ms"]))
+
+            def _ReadOnlyUsbSession__write_packet(self, packet):
+                events.append(("write", packet))
+
+            def close(self):
+                events.append(("close",))
+
+        with (
+            patch("goodix5503.wake_diagnostic.WAKE_A8_DIAGNOSTIC_REVIEW_COMPLETE", True),
+            patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession", return_value=Session()),
+            patch("goodix5503.wake_diagnostic._drop_sudo_privileges", side_effect=lambda: events.append(("drop",))),
+            patch("goodix5503.wake_diagnostic.time.sleep", side_effect=lambda delay: events.append(("sleep", delay))),
+            patch("goodix5503.wake_diagnostic.time.monotonic", return_value=10.0),
+        ):
+            result = observe_one_wake_a8(WAKE_A8_DIAGNOSTIC_CONFIRMATION)
+        self.assertEqual(
+            events,
+            [
+                ("drop",),
+                ("wake", 1000),
+                ("sleep", 0.050),
+                ("write", _encode_packet(COMMAND_FIRMWARE_VERSION)),
+                ("read", 500),
+                ("close",),
+            ],
+        )
+        self.assertEqual(result["transfer_count"], 0)
+        self.assertEqual(result["operation"], "runtime-only-memory-geneva-wake-a8-observation")
 
     def test_wrong_confirmation_prevents_usb_and_core_dump_calls(self):
         with (
