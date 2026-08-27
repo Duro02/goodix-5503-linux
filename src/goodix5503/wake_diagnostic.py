@@ -28,6 +28,7 @@ QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION: Final = (
 QUEUED_WAKE_A8_DIAGNOSTIC_REVIEW_COMPLETE: Final = False
 _MAX_TRANSFERS: Final = 8
 _OBSERVATION_SECONDS: Final = 0.5
+_QUEUED_OBSERVATION_SECONDS: Final = 3.250
 
 
 class WakeDiagnosticError(RuntimeError):
@@ -124,12 +125,18 @@ def observe_one_queued_wake_a8(
     session: ReadOnlyUsbSession | None = None
     captured: list[bytearray] = []
     worker_errors: list[BaseException] = []
+    worker_completed_at: list[float] = []
+    captured_elapsed_ms: list[int] = []
     worker: threading.Thread | None = None
     try:
         session = ReadOnlyUsbSession(usb_timeout_seconds)
         _drop_sudo_privileges()
         disable_core_dumps()
-        deadline = time.monotonic() + 0.600
+        sequence_started = time.monotonic()
+        deadline = sequence_started + _QUEUED_OBSERVATION_SECONDS
+        wake_completed = sequence_started
+        a8_started = sequence_started
+        a8_completed = sequence_started
         entered_read = threading.Event()
 
         def receive_worker() -> None:
@@ -153,8 +160,13 @@ def observe_one_queued_wake_a8(
                         transfer[:] = b"\x00" * len(transfer)
                         raise WakeDiagnosticError("queued observation transfer capacity reached")
                     captured.append(transfer)
+                    captured_elapsed_ms.append(
+                        round((time.monotonic() - sequence_started) * 1000)
+                    )
             except BaseException as error:
                 worker_errors.append(error)
+            finally:
+                worker_completed_at.append(time.monotonic())
 
         worker = threading.Thread(
             target=receive_worker,
@@ -173,21 +185,50 @@ def observe_one_queued_wake_a8(
         if remaining_ms <= 0:
             raise WakeDiagnosticError("queued observation deadline expired before wake")
         session.wake_up(timeout_ms=remaining_ms)
+        wake_completed = time.monotonic()
+        if not worker.is_alive() or worker_errors:
+            raise WakeDiagnosticError("queued USB reader stopped during wake")
+        if deadline - wake_completed <= 0.050:
+            raise WakeDiagnosticError("queued observation deadline cannot cover settle")
         time.sleep(0.050)
+        if not worker.is_alive() or worker_errors:
+            raise WakeDiagnosticError("queued USB reader stopped before A8")
+        remaining_ms = math.ceil((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            raise WakeDiagnosticError("queued observation deadline expired before A8")
+        a8_started = time.monotonic()
         session._ReadOnlyUsbSession__write_packet(  # type: ignore[attr-defined]
-            _encode_packet(COMMAND_FIRMWARE_VERSION)
+            _encode_packet(COMMAND_FIRMWARE_VERSION),
+            timeout_ms=remaining_ms,
         )
+        a8_completed = time.monotonic()
+        if a8_completed > deadline:
+            raise WakeDiagnosticError("A8 write exceeded queued observation deadline")
         worker.join(timeout=max(0.0, deadline - time.monotonic()) + 0.250)
         if worker.is_alive():
             raise WakeDiagnosticError("queued USB reader did not stop after its deadline")
         if worker_errors:
             raise WakeDiagnosticError("queued USB reader failed") from worker_errors[0]
+        if len(worker_completed_at) != 1:
+            raise WakeDiagnosticError("queued USB reader completion was not recorded")
+        if worker_completed_at[0] < deadline:
+            raise WakeDiagnosticError("queued USB reader stopped before its deadline")
         return {
             "operation": "runtime-only-memory-geneva-queued-wake-a8-observation",
             "transfer_count": len(captured),
+            "timing_ms": {
+                "wake_completed": round((wake_completed - sequence_started) * 1000),
+                "a8_started": round((a8_started - sequence_started) * 1000),
+                "a8_completed": round((a8_completed - sequence_started) * 1000),
+                "deadline": round(_QUEUED_OBSERVATION_SECONDS * 1000),
+            },
             "transfers": [
-                {"length": len(transfer), "hex": bytes(transfer).hex()}
-                for transfer in captured
+                {
+                    "elapsed": elapsed,
+                    "length": len(transfer),
+                    "hex": bytes(transfer).hex(),
+                }
+                for transfer, elapsed in zip(captured, captured_elapsed_ms, strict=True)
             ],
         }
     except ProtocolError as error:

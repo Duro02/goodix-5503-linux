@@ -145,14 +145,35 @@ class WakeDiagnosticTests(unittest.TestCase):
         self.assertEqual(result["transfer_count"], 0)
         self.assertEqual(result["operation"], "runtime-only-memory-geneva-wake-a8-observation")
 
-    def test_queued_a8_starts_one_32k_reader_before_wake_and_write(self):
+    def test_queued_a8_keeps_reader_live_and_decreases_all_deadlines(self):
         events = []
         release = threading.Event()
+
+        class Clock:
+            def __init__(self):
+                self.value = 10.0
+                self.lock = threading.Lock()
+
+            def __call__(self):
+                with self.lock:
+                    return self.value
+
+            def advance(self, seconds):
+                with self.lock:
+                    self.value += seconds
+
+            def set(self, value):
+                with self.lock:
+                    self.value = value
+
+        clock = Clock()
 
         class Endpoint:
             def read(self, size, timeout):
                 events.append(("read", size, timeout))
                 release.wait(timeout=1.0)
+                threading.Event().wait(0.020)
+                clock.set(13.250)
                 raise usb.core.USBTimeoutError("done")
 
         class Session:
@@ -160,29 +181,35 @@ class WakeDiagnosticTests(unittest.TestCase):
 
             def wake_up(self, **kwargs):
                 events.append(("wake", kwargs["timeout_ms"]))
+                clock.advance(0.100)
 
-            def _ReadOnlyUsbSession__write_packet(self, packet):
-                events.append(("write", packet))
+            def _ReadOnlyUsbSession__write_packet(self, packet, **kwargs):
+                events.append(("write", packet, kwargs["timeout_ms"]))
+                clock.advance(0.200)
                 release.set()
 
             def close(self):
                 events.append(("close",))
 
+        def sleep(delay):
+            events.append(("sleep", delay))
+            clock.advance(delay)
+
         with (
             patch("goodix5503.wake_diagnostic.QUEUED_WAKE_A8_DIAGNOSTIC_REVIEW_COMPLETE", True),
             patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession", return_value=Session()),
             patch("goodix5503.wake_diagnostic._drop_sudo_privileges", side_effect=lambda: events.append(("drop",))),
-            patch("goodix5503.wake_diagnostic.time.sleep", side_effect=lambda delay: events.append(("sleep", delay))),
-            patch("goodix5503.wake_diagnostic.time.monotonic", return_value=10.0),
+            patch("goodix5503.wake_diagnostic.time.sleep", side_effect=sleep),
+            patch("goodix5503.wake_diagnostic.time.monotonic", side_effect=clock),
         ):
             result = observe_one_queued_wake_a8(QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION)
         self.assertEqual(events[0], ("drop",))
-        self.assertEqual(events[1], ("read", 0x8000, 600))
+        self.assertEqual(events[1], ("read", 0x8000, 3250))
         self.assertEqual(events[2:], [
             ("sleep", 0.025),
-            ("wake", 600),
+            ("wake", 3225),
             ("sleep", 0.050),
-            ("write", _encode_packet(COMMAND_FIRMWARE_VERSION)),
+            ("write", _encode_packet(COMMAND_FIRMWARE_VERSION), 3075),
             ("close",),
         ])
         self.assertEqual(result["transfer_count"], 0)
@@ -190,6 +217,184 @@ class WakeDiagnosticTests(unittest.TestCase):
             result["operation"],
             "runtime-only-memory-geneva-queued-wake-a8-observation",
         )
+        self.assertEqual(
+            result["timing_ms"],
+            {
+                "wake_completed": 125,
+                "a8_started": 175,
+                "a8_completed": 375,
+                "deadline": 3250,
+            },
+        )
+
+    def test_queued_slow_wake_cannot_consume_settle_budget(self):
+        clock = [10.0]
+        events = []
+
+        class Endpoint:
+            def read(self, _size, _timeout=None, **_kwargs):
+                threading.Event().wait(0.050)
+                raise usb.core.USBTimeoutError("done")
+
+        class Session:
+            endpoint_in = Endpoint()
+
+            def wake_up(self, **_kwargs):
+                events.append("wake")
+                clock[0] += 3.225
+
+            def _ReadOnlyUsbSession__write_packet(self, _packet, **_kwargs):
+                events.append("a8")
+
+            def close(self):
+                events.append("close")
+
+        with (
+            patch("goodix5503.wake_diagnostic.QUEUED_WAKE_A8_DIAGNOSTIC_REVIEW_COMPLETE", True),
+            patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession", return_value=Session()),
+            patch("goodix5503.wake_diagnostic._drop_sudo_privileges"),
+            patch("goodix5503.wake_diagnostic.time.sleep"),
+            patch("goodix5503.wake_diagnostic.time.monotonic", side_effect=lambda: clock[0]),
+        ):
+            with self.assertRaisesRegex(WakeDiagnosticError, "cannot cover settle"):
+                observe_one_queued_wake_a8(QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION)
+        self.assertEqual(events, ["wake", "close"])
+
+    def test_queued_settle_deadline_expiry_prevents_a8(self):
+        clock = [10.0]
+        events = []
+
+        class Endpoint:
+            def read(self, _size, _timeout=None, **_kwargs):
+                threading.Event().wait(0.100)
+                raise usb.core.USBTimeoutError("done")
+
+        class Session:
+            endpoint_in = Endpoint()
+
+            def wake_up(self, **_kwargs):
+                events.append("wake")
+                clock[0] += 3.100
+
+            def _ReadOnlyUsbSession__write_packet(self, _packet, **_kwargs):
+                events.append("a8")
+
+            def close(self):
+                events.append("close")
+
+        def sleep(delay):
+            if delay == 0.050:
+                clock[0] += 0.200
+
+        with (
+            patch("goodix5503.wake_diagnostic.QUEUED_WAKE_A8_DIAGNOSTIC_REVIEW_COMPLETE", True),
+            patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession", return_value=Session()),
+            patch("goodix5503.wake_diagnostic._drop_sudo_privileges"),
+            patch("goodix5503.wake_diagnostic.time.sleep", side_effect=sleep),
+            patch("goodix5503.wake_diagnostic.time.monotonic", side_effect=lambda: clock[0]),
+        ):
+            with self.assertRaisesRegex(WakeDiagnosticError, "expired before A8"):
+                observe_one_queued_wake_a8(QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION)
+        self.assertEqual(events, ["wake", "close"])
+
+    def test_queued_reader_timeout_before_absolute_deadline_is_fatal(self):
+        release = threading.Event()
+        clock = [10.0]
+
+        class Endpoint:
+            def read(self, _size, _timeout=None, **_kwargs):
+                release.wait(timeout=1.0)
+                threading.Event().wait(0.020)
+                raise usb.core.USBTimeoutError("early")
+
+        class Session:
+            endpoint_in = Endpoint()
+
+            def wake_up(self, **_kwargs):
+                pass
+
+            def _ReadOnlyUsbSession__write_packet(self, _packet, **_kwargs):
+                release.set()
+
+            def close(self):
+                pass
+
+        with (
+            patch("goodix5503.wake_diagnostic.QUEUED_WAKE_A8_DIAGNOSTIC_REVIEW_COMPLETE", True),
+            patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession", return_value=Session()),
+            patch("goodix5503.wake_diagnostic._drop_sudo_privileges"),
+            patch("goodix5503.wake_diagnostic.time.sleep"),
+            patch("goodix5503.wake_diagnostic.time.monotonic", side_effect=lambda: clock[0]),
+        ):
+            with self.assertRaisesRegex(WakeDiagnosticError, "stopped before its deadline"):
+                observe_one_queued_wake_a8(QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION)
+
+    def test_queued_a8_write_overrun_is_fatal(self):
+        release = threading.Event()
+        clock = [10.0]
+
+        class Endpoint:
+            def read(self, _size, _timeout=None, **_kwargs):
+                release.wait(timeout=1.0)
+                threading.Event().wait(0.020)
+                raise usb.core.USBTimeoutError("done")
+
+        class Session:
+            endpoint_in = Endpoint()
+
+            def wake_up(self, **_kwargs):
+                pass
+
+            def _ReadOnlyUsbSession__write_packet(self, _packet, **_kwargs):
+                clock[0] += 3.300
+                release.set()
+
+            def close(self):
+                pass
+
+        with (
+            patch("goodix5503.wake_diagnostic.QUEUED_WAKE_A8_DIAGNOSTIC_REVIEW_COMPLETE", True),
+            patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession", return_value=Session()),
+            patch("goodix5503.wake_diagnostic._drop_sudo_privileges"),
+            patch("goodix5503.wake_diagnostic.time.sleep"),
+            patch("goodix5503.wake_diagnostic.time.monotonic", side_effect=lambda: clock[0]),
+        ):
+            with self.assertRaisesRegex(WakeDiagnosticError, "A8 write exceeded"):
+                observe_one_queued_wake_a8(QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION)
+
+    def test_queued_reader_stopping_early_during_a8_is_fatal(self):
+        release = threading.Event()
+        stopped = threading.Event()
+
+        class Endpoint:
+            def read(self, _size, _timeout=None, **_kwargs):
+                release.wait(timeout=1.0)
+                stopped.set()
+                raise usb.core.USBTimeoutError("done")
+
+        class Session:
+            endpoint_in = Endpoint()
+
+            def wake_up(self, **_kwargs):
+                pass
+
+            def _ReadOnlyUsbSession__write_packet(self, _packet, **_kwargs):
+                release.set()
+                self_test.assertTrue(stopped.wait(timeout=1.0))
+                threading.Event().wait(0.020)
+
+            def close(self):
+                pass
+
+        self_test = self
+        with (
+            patch("goodix5503.wake_diagnostic.QUEUED_WAKE_A8_DIAGNOSTIC_REVIEW_COMPLETE", True),
+            patch("goodix5503.wake_diagnostic.ReadOnlyUsbSession", return_value=Session()),
+            patch("goodix5503.wake_diagnostic._drop_sudo_privileges"),
+            patch("goodix5503.wake_diagnostic.time.sleep"),
+        ):
+            with self.assertRaisesRegex(WakeDiagnosticError, "stopped before its deadline"):
+                observe_one_queued_wake_a8(QUEUED_WAKE_A8_DIAGNOSTIC_CONFIRMATION)
 
     def test_queued_reader_failure_prevents_wake_and_a8(self):
         failed = threading.Event()
@@ -236,6 +441,7 @@ class WakeDiagnosticTests(unittest.TestCase):
                 if self.calls == 1:
                     return raw
                 release.wait(timeout=1.0)
+                threading.Event().wait(0.020)
                 raise usb.core.USBTimeoutError("done")
 
         class Session:
@@ -244,7 +450,7 @@ class WakeDiagnosticTests(unittest.TestCase):
             def wake_up(self, **_kwargs):
                 pass
 
-            def _ReadOnlyUsbSession__write_packet(self, _packet):
+            def _ReadOnlyUsbSession__write_packet(self, _packet, **_kwargs):
                 release.set()
 
             def close(self):

@@ -232,11 +232,14 @@ class ReadOnlyUsbSession:
             if completed == 4:
                 raise ProtocolError("initial USB drain transfer capacity reached")
 
-    def __write_packet(self, packet: bytes) -> None:
+    def __write_packet(self, packet: bytes, *, timeout_ms: int | None = None) -> None:
+        timeout = self.timeout_ms if timeout_ms is None else timeout_ms
+        if timeout <= 0:
+            raise ProtocolError("USB packet write timeout must be positive")
         padded = packet + b"\x00" * ((-len(packet)) % 0x40)
         for offset in range(0, len(padded), 0x40):
             chunk = padded[offset : offset + 0x40]
-            written = self.endpoint_out.write(chunk, self.timeout_ms)
+            written = self.endpoint_out.write(chunk, timeout)
             if written != len(chunk):
                 raise ProtocolError("USB packet chunk was not fully written")
 

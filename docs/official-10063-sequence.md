@@ -101,6 +101,14 @@ therefore not the obvious cause, although PyUSB cannot acknowledge actual URB
 submission and the official A8 wait budget still requires exact recovery. The
 unknown bytes remain unobserved, and blind draining or A8 retry is prohibited.
 
+Static recovery of the Geneva `DevIoParam` and `_IoHubExec` waits corrected the
+observation budget: ACK and data each have a separate 1,500 ms timeout, applied
+sequentially, so a legal A8 completion can approach 3,000 ms after submission.
+The earlier 500/600 ms windows were therefore insufficient. The queued
+diagnostic now uses a 3,250 ms absolute envelope, rechecks the deadline and live
+reader after wake and settle, caps the A8 OUT timeout to remaining time, and
+records write/completion timing. This remains diagnostic only and source-gated.
+
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
 APP identity read and the R verification read `E4/bb020007`, then compares the

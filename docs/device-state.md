@@ -66,9 +66,12 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   pending through WakeUp/A8. A third reviewed one-shot approximated that model
   with one queued `read(0x8000)`, a 25 ms host barrier, then `e5`, 50 ms, and A8;
   it also observed zero completions under its 600 ms absolute deadline. This
-  rules out the obvious post-write submission gap but not a longer official
-  A8 timeout or PyUSB's unobservable URB-submission race. All diagnostic source
-  gates remain false.
+  rules out the obvious post-write submission gap but not PyUSB's unobservable
+  URB-submission race. Static follow-up proved that official Geneva waits 1,500
+  ms for ACK and then separately 1,500 ms for data; all three observation
+  windows were too short. The queued diagnostic has been corrected to a 3,250
+  ms absolute envelope with post-wake/post-settle deadline checks and timing
+  output. All diagnostic source gates remain false.
 ```
 
 ## Interpretation

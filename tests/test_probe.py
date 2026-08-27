@@ -114,14 +114,19 @@ class PacketTests(unittest.TestCase):
         class Endpoint:
             def __init__(self, written):
                 self.written = written
+                self.timeouts = []
 
-            def write(self, _payload, _timeout):
+            def write(self, _payload, timeout):
+                self.timeouts.append(timeout)
                 return self.written
 
         session = object.__new__(ReadOnlyUsbSession)
         session.timeout_ms = 5000
         session.endpoint_out = Endpoint(64)
-        session._ReadOnlyUsbSession__write_packet(b"packet")
+        session._ReadOnlyUsbSession__write_packet(b"packet", timeout_ms=321)
+        self.assertEqual(session.endpoint_out.timeouts, [321])
+        with self.assertRaisesRegex(ProtocolError, "positive"):
+            session._ReadOnlyUsbSession__write_packet(b"packet", timeout_ms=0)
         session.endpoint_out = Endpoint(63)
         with self.assertRaisesRegex(ProtocolError, "not fully"):
             session._ReadOnlyUsbSession__write_packet(b"packet")
