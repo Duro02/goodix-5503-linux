@@ -44,6 +44,7 @@ from .probe import (
     ProtocolError,
     ReadOnlyUsbSession,
     _check_ack,
+    _decode_chip_id_register,
     _decode_c_string,
     _decode_packet,
     _disable_core_dumps,
@@ -58,6 +59,7 @@ from .tls_check import (
     _decode_outer,
     _preflight_tls_runtime,
     COMMAND_REQUEST_TLS,
+    COMMAND_RESET,
     _receive_tls,
     _request_tls_client_hello,
     _reset_sensor,
@@ -81,6 +83,7 @@ PIXEL_COUNT: Final = 5120
 IMAGE_WIDTH: Final = 80
 IMAGE_HEIGHT: Final = 64
 MAX_FRESH_BASE_ATTEMPTS: Final = 3
+EXPECTED_CHIP_ID: Final = 0x220F
 EXPECTED_RUNTIME_CONFIG_SHA256: Final = LOCAL_RUNTIME_CONFIG_SHA256
 CLEAR_CAPTURE_CONFIRMATION: Final = (
     "I AUTHORIZE ONE RUNTIME-ONLY MEMORY CLEAR FRAME"
@@ -175,6 +178,19 @@ def _chip_config_exchange(
     # McuParseChipConfig removes the packet checksum at a lower layer. The
     # checksum-free payload returned by our decoder must remain intact.
     return body
+
+
+def _read_chip_id_bounded(
+    session: ReadOnlyUsbSession,
+    operation_deadline: float,
+) -> int:
+    body = _exchange_raw_command_body(
+        session,
+        COMMAND_READ_REGISTER,
+        b"\x00\x00\x00\x04\x00",
+        operation_deadline,
+    )
+    return _decode_chip_id_register(body)
 
 
 def _read_register_exchange(
@@ -279,6 +295,13 @@ def _validate_cold_pov_result(result: bytes) -> int:
     return discriminator
 
 
+def _validate_dn2_chip_id(chip_id: int) -> None:
+    if chip_id != EXPECTED_CHIP_ID:
+        raise ImageCaptureError(
+            f"unexpected MCU chip ID 0x{chip_id:04x}; refusing DN2 sequence"
+        )
+
+
 def _validate_config_result(result: bytes) -> None:
     if not 1 <= len(result) <= 2 or result[0] != 1:
         raise ImageCaptureError("runtime configuration upload was rejected")
@@ -333,9 +356,19 @@ class _ResetGuard:
         self.session = session
         self.attempted = False
 
-    def start(self) -> None:
+    def start(self, operation_deadline: float | None = None) -> None:
         self.attempted = True
-        _reset_sensor(self.session)
+        if operation_deadline is None:
+            _reset_sensor(self.session)
+            return
+        response = _exchange_raw_command_body(
+            self.session,
+            COMMAND_RESET,
+            b"\x05\x14",
+            operation_deadline,
+        )
+        if len(response) > 4:
+            raise ProtocolError("sensor reset response exceeds four bytes")
 
     def cleanup(self) -> None:
         if self.attempted:
@@ -728,7 +761,10 @@ def run_prepared_clear_frame_capture(
             120.0, max(30.0, timeout_seconds * 8)
         )
 
-        reset_guard.start()
+        reset_guard.start(operation_deadline)
+        time.sleep(0.010)
+        chip_id = _read_chip_id_bounded(session, operation_deadline)
+        _validate_dn2_chip_id(chip_id)
         _ack_only(
             session,
             COMMAND_COLD_PRECHECK,

@@ -17,10 +17,12 @@ from goodix5503.image_capture import (
     _chip_config_exchange,
     _fixed_exchange,
     _milan_parse_other_body,
+    _read_chip_id_bounded,
     _read_register_exchange,
     _request_encrypted_clear_image,
     _validate_cold_pov_result,
     _validate_config_result,
+    _validate_dn2_chip_id,
     _validate_prepared_config,
     _validate_tls_records,
     decode_packed_image,
@@ -57,6 +59,13 @@ class ImageDecodeTests(unittest.TestCase):
             with self.subTest(result=result):
                 with self.assertRaises(ImageCaptureError):
                     _validate_cold_pov_result(result)
+
+    def test_dn2_profile_refuses_zero_and_wn2_chip_ids(self):
+        _validate_dn2_chip_id(0x220F)
+        for chip_id in (0, 0x2503):
+            with self.subTest(chip_id=chip_id):
+                with self.assertRaisesRegex(ImageCaptureError, "refusing DN2"):
+                    _validate_dn2_chip_id(chip_id)
 
     def test_config_completion_requires_status_one_in_decoded_payload(self):
         _validate_config_result(b"\x01")
@@ -137,6 +146,31 @@ class ImageEnvelopeTests(unittest.TestCase):
                     _chip_config_exchange(session, b"config", TEST_DEADLINE),
                     body,
                 )
+
+    def test_bounded_chip_id_exchange_preserves_deadline_and_normalizes_words(self):
+        session = object.__new__(ReadOnlyUsbSession)
+        frames = iter(
+            (
+                _encode_packet(COMMAND_ACK, bytes((COMMAND_READ_REGISTER, 1))),
+                _encode_packet(COMMAND_READ_REGISTER, bytes.fromhex("0f000022")),
+            )
+        )
+        writes = []
+        timeouts = []
+        session._ReadOnlyUsbSession__write_packet = writes.append
+
+        def read_frame(**kwargs):
+            timeouts.append(kwargs["timeout_ms"])
+            return next(frames)
+
+        session._read_frame = read_frame
+        self.assertEqual(_read_chip_id_bounded(session, TEST_DEADLINE), 0x220F)
+        self.assertEqual(
+            writes,
+            [_encode_packet(COMMAND_READ_REGISTER, b"\x00\x00\x00\x04\x00")],
+        )
+        self.assertEqual(len(timeouts), 2)
+        self.assertTrue(all(timeout > 0 for timeout in timeouts))
 
     def test_register_exchange_uses_exact_milan_read_parser(self):
         session = object.__new__(ReadOnlyUsbSession)
@@ -568,6 +602,30 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
         self.assertEqual(image_count, 3)
         self.assertEqual(exchange_count, 6)
 
+    def test_deadline_reset_uses_exact_payload_and_rejects_oversized_result(self):
+        guard = _ResetGuard(object())
+        with patch(
+            "goodix5503.image_capture._exchange_raw_command_body",
+            return_value=b"\x08\x00\x01\x00",
+        ) as exchange:
+            guard.start(TEST_DEADLINE)
+        self.assertTrue(guard.attempted)
+        exchange.assert_called_once_with(
+            guard.session,
+            0xA2,
+            b"\x05\x14",
+            TEST_DEADLINE,
+        )
+
+        oversized = _ResetGuard(object())
+        with patch(
+            "goodix5503.image_capture._exchange_raw_command_body",
+            return_value=b"\x00" * 5,
+        ):
+            with self.assertRaisesRegex(ProtocolError, "exceeds four"):
+                oversized.start(TEST_DEADLINE)
+        self.assertTrue(oversized.attempted)
+
     def test_timeout_cleanup_wipes_an_unclaimed_late_plaintext_result(self):
         class FakeBridge:
             def settimeout(self, _value):
@@ -824,7 +882,23 @@ class CaptureOrchestratorTests(unittest.TestCase):
             patch("goodix5503.image_capture._validate_prepared_config"),
             patch("goodix5503.image_capture.calculate_r_verification_record", return_value=bytearray(b"K" * 32)),
             patch("goodix5503.image_capture._build_tls_context", return_value=object()),
+            patch(
+                "goodix5503.image_capture._exchange_raw_command_body",
+                side_effect=lambda _s, command, payload, _deadline: (
+                    events.append(("reset",)) or b""
+                    if command == 0xA2
+                    else self.fail(f"unexpected raw command 0x{command:02x}")
+                ),
+            ),
+            patch(
+                "goodix5503.image_capture._read_chip_id_bounded",
+                side_effect=lambda _s, _d: events.append(("read-chip-id",)) or 0x220F,
+            ),
             patch("goodix5503.image_capture._reset_sensor", side_effect=lambda _s: events.append(("reset",))),
+            patch(
+                "goodix5503.image_capture.time.sleep",
+                side_effect=lambda duration: events.append(("sleep", duration)),
+            ) as sleep,
             patch("goodix5503.image_capture._fixed_exchange", side_effect=fixed_exchange),
             patch(
                 "goodix5503.image_capture._chip_config_exchange",
@@ -844,6 +918,11 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertEqual(result["pixel_sum"], 0)
         self.assertEqual(result["fdt_response_lengths"], "1,1,1")
         self.assertEqual(events.count(("reset",)), 2)
+        self.assertEqual(events.count(("read-chip-id",)), 1)
+        self.assertLess(events.index(("reset",)), events.index(("sleep", 0.010)))
+        self.assertLess(events.index(("sleep", 0.010)), events.index(("read-chip-id",)))
+        self.assertLess(events.index(("read-chip-id",)), events.index(("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00")))
+        sleep.assert_called_once_with(0.010)
         runtime = [
             event for event in events if event[0] in ("exchange", "ack-only")
         ]

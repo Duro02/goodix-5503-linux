@@ -8,6 +8,8 @@ below; subsequent TLS and OTP/config checks made no persistent writes.
 USB ID:    27c6:5503
 Firmware:  GF3258_RTSEC_APP_10063
 IAP:       MILAN_RTSEC_IAP_10027
+MCU chip ID: 0x220f after pinned reset + 10 ms + register-read flow; selects
+             GF3258 DN2 profile (the earlier no-reset zero read was invalid)
 PSK hash:  reprovisioned with the locally prepared random PSK; R-family
            selector 0xbb020007 exactly matches the prepared verification record
 G selector: 0xbb020001 returned MCU status 0x01 (unavailable)

@@ -85,9 +85,12 @@ MCU chip-ID register read (`82/0000000400`), not from PID, firmware or OTP:
 - chip ID `0x220f`: `GF3258 DN2` at `0x180257a70`, ops `0x180257ac0`;
 - chip ID `0x2503`: `GF3258 WN2` at `0x180256b80`, ops `0x180256bd0`.
 
-The retained local observations did not include this chip ID, so the unit's
-profile remains unclassified. The prepared DN2 config is circular evidence
-because its derivation deliberately chose DN2's `GetChipConfig`. The table
+A reviewed fixed read performed without reset returned zero and was discarded;
+the pinned loader sequence was then reproduced as reset `A2/0514`, 10 ms delay,
+and fixed register read `82/0000000400`. After per-word byte swapping and the
+loader's `LE32 >> 8`, the local unit returned **`0x220f`**, conclusively selecting
+DN2. The prepared DN2 config is now independently profile-attested rather than
+being circular evidence. The table
 `0x180258110` belongs to GF3288 and remains inapplicable. DN2-only slots used by
 the dormant implementation are:
 
@@ -103,7 +106,9 @@ different, its navigation base is 80x16 rather than 80x12, and its expected
 image sample is 10,564 rather than 7,684 bytes. A DN2 upload may be accepted at
 the command layer without proving that the hardware is DN2.
 
-`LogicMilanFSeries::Start` at `0x180087890` proves the high-level cold order:
+Before `LogicMilanFSeries::Start`, pinned `McuDevLoader::Load` performs reset
+`A2/0514`, waits 10 ms, reads and validates the chip ID, and constructs the
+selected profile. `Start` at `0x180087890` then proves the high-level cold order:
 cold command-00 precheck, one D6 POV discriminator, D0/TLS start, validated
 config generation/upload, one pinned-default post-config C4/state-1 hook,
 FDT/OTP host initialization, then `UpdateAllBase` at

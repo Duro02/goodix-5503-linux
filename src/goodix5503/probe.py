@@ -131,6 +131,13 @@ def _decode_packet(data: bytes, expected_command: int, *, checksum: bool = True)
     return packed[3:body_end]
 
 
+def _decode_chip_id_register(body: bytes) -> int:
+    if len(body) != 4:
+        raise ProtocolError("chip-ID register response is not exactly 4 bytes")
+    normalized = bytes((body[1], body[0], body[3], body[2]))
+    return struct.unpack("<I", normalized)[0] >> 8
+
+
 def _check_ack(payload: bytes, command: int) -> None:
     if len(payload) < 2 or payload[0] != command or not (payload[1] & 0x01):
         raise ProtocolError(f"device rejected command 0x{command:02x}")
@@ -295,12 +302,9 @@ class ReadOnlyUsbSession:
     def read_chip_id(self) -> int:
         """Read the fixed four-byte MCU chip-ID register used for profile selection."""
         body = self.request(COMMAND_READ_REGISTER, b"\x00\x00\x00\x04\x00")
-        if len(body) != 4:
-            raise ProtocolError("chip-ID register response is not exactly 4 bytes")
         # The pinned _McuReadRegister path swaps each returned 16-bit word before
         # DeviceLoader shifts the resulting DWORD by eight for profile lookup.
-        normalized = bytes((body[1], body[0], body[3], body[2]))
-        return struct.unpack("<I", normalized)[0] >> 8
+        return _decode_chip_id_register(body)
 
     def read_otp(self) -> bytearray:
         """Read fixed calibration data; the caller must wipe the result."""
