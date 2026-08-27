@@ -78,6 +78,14 @@ cleanup reset. This exposed a second 10062/10063 mismatch: the request still use
 the community ten-byte image payload, while official `_FpMcuGetImage` constructs
 exactly `01 00`. The offline path now uses only the official two-byte payload.
 
+The next standing-authorized attempt still timed out after D0 with the corrected
+two-byte request. Official logs reveal an earlier missing 10063 handshake-final
+step: immediately after TLS reaches state 16, the host sends command `0xd4` with
+payload `0000` and receives its ACK before querying MCU TLS state. The community
+5503/10062 path omits D4, although other community families implement it as
+`tls_successfully_established()`. The fixed 10063 path now sends exact D4/`0000`
+after the in-process TLS handshake and before configuration/image initialization.
+
 ## Community post-TLS sequence under review
 
 The reference sequence performs runtime reset, chip-ID/OTP/POV reads, TLS,

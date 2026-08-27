@@ -58,6 +58,7 @@ from .tls_check import (
 COMMAND_UPLOAD_CONFIG: Final = 0x90
 COMMAND_SET_DRIVER_STATE: Final = 0xC4
 COMMAND_GET_POV_IMAGE: Final = 0xD2
+COMMAND_TLS_ESTABLISHED: Final = 0xD4
 COMMAND_POV_IMAGE_CHECK: Final = 0xD6
 COMMAND_SWITCH_FDT_MODE: Final = 0x36
 COMMAND_GET_IMAGE: Final = 0x20
@@ -402,6 +403,9 @@ def run_prepared_clear_frame_capture(
 
         tls_server = _TlsImageServer(context)
         cipher = tls_server.establish(session)
+        # Official 10063 sends D4 after the server-side TLS handshake before
+        # querying MCU TLS state or requesting image data. Community 10062 omits it.
+        _ack_only(session, COMMAND_TLS_ESTABLISHED, b"\x00\x00")
         uploaded = _fixed_exchange(session, COMMAND_UPLOAD_CONFIG, bytes(config))
         if not uploaded or uploaded[0] != 1:
             raise ImageCaptureError("runtime configuration upload was rejected")

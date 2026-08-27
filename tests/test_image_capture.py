@@ -26,6 +26,7 @@ from goodix5503.image_capture import (
     COMMAND_POV_IMAGE_CHECK,
     COMMAND_SET_DRIVER_STATE,
     COMMAND_SWITCH_FDT_MODE,
+    COMMAND_TLS_ESTABLISHED,
     COMMAND_UPLOAD_CONFIG,
 )
 from goodix5503.pairing import PSK_PATH, VERIFICATION_PATH
@@ -367,17 +368,20 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertEqual(events.count(("reset",)), 2)
         runtime = [event for event in events if event[0] in ("exchange", "ack-only")]
         self.assertEqual(runtime[0], ("exchange", COMMAND_POV_IMAGE_CHECK, b"\x00\x00"))
-        self.assertEqual(runtime[1][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
-        self.assertEqual(len(runtime[1][2]), 256)
         self.assertEqual(
-            runtime[2:4],
+            runtime[1], ("ack-only", COMMAND_TLS_ESTABLISHED, b"\x00\x00")
+        )
+        self.assertEqual(runtime[2][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
+        self.assertEqual(len(runtime[2][2]), 256)
+        self.assertEqual(
+            runtime[3:5],
             [
                 ("ack-only", COMMAND_SET_DRIVER_STATE, b"\x01\x00"),
                 ("ack-only", COMMAND_SET_DRIVER_STATE, b"\x01\x00"),
             ],
         )
-        self.assertEqual(runtime[4], ("exchange", COMMAND_GET_POV_IMAGE, b"\x00\x00"))
-        self.assertEqual(runtime[5], ("exchange", COMMAND_SWITCH_FDT_MODE, FDT_CLEAR_MODE))
+        self.assertEqual(runtime[5], ("exchange", COMMAND_GET_POV_IMAGE, b"\x00\x00"))
+        self.assertEqual(runtime[6], ("exchange", COMMAND_SWITCH_FDT_MODE, FDT_CLEAR_MODE))
         self.assertIn(("tls-close",), events)
         self.assertEqual(events[-1], ("close",))
 

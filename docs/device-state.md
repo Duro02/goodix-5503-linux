@@ -37,8 +37,9 @@ Runtime clear-frame attempts: all reached image command after TLS/config/init
   opaque data body is not status `1`, matching the official null-output D0 path.
   The fourth consumed bounded D0 then timed out before B2, revealing that the
   community 10062 ten-byte image request differs from official 10063 `01 00`.
-  No attempt decoded/saved an image; each attempted cleanup reset. No further
-  attempt is authorized.
+  A standing-authorized run with `01 00` still timed out after D0; official logs
+  then exposed the missing post-handshake D4/`0000` notification. No attempt has
+  decoded/saved an image; each attempted cleanup reset.
 ```
 
 ## Interpretation
