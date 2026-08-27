@@ -102,11 +102,13 @@ class ImageEnvelopeTests(unittest.TestCase):
         session._ReadOnlyUsbSession__write_packet = writes.append
         session._read_frame = lambda: next(frames)
 
-        result = _request_encrypted_clear_image(session)
+        prefix, result = _request_encrypted_clear_image(session)
         try:
+            self.assertEqual(prefix, bytearray(b"123456789"))
             self.assertEqual(result, bytearray(ciphertext))
             self.assertEqual(writes, [_encode_packet(COMMAND_GET_IMAGE, GET_IMAGE_CLEAR)])
         finally:
+            prefix[:] = b"\x00" * len(prefix)
             result[:] = b"\x00" * len(result)
 
     def test_image_request_accepts_only_exact_success_prelude_before_b2(self):
@@ -121,10 +123,12 @@ class ImageEnvelopeTests(unittest.TestCase):
         )
         session._ReadOnlyUsbSession__write_packet = lambda _packet: None
         session._read_frame = lambda: next(frames)
-        result = _request_encrypted_clear_image(session)
+        prefix, result = _request_encrypted_clear_image(session)
         try:
+            self.assertEqual(prefix, bytearray(b"123456789"))
             self.assertEqual(result, bytearray(ciphertext))
         finally:
+            prefix[:] = b"\x00" * len(prefix)
             result[:] = b"\x00" * len(result)
 
         for command, status in ((COMMAND_GET_IMAGE, 0), (0x36, 1)):
@@ -157,10 +161,12 @@ class ImageEnvelopeTests(unittest.TestCase):
                 iterator = iter(frames)
                 session._ReadOnlyUsbSession__write_packet = lambda _packet: None
                 session._read_frame = lambda: next(iterator)
-                result = _request_encrypted_clear_image(session)
+                prefix, result = _request_encrypted_clear_image(session)
                 try:
+                    self.assertEqual(prefix, bytearray(b"123456789"))
                     self.assertEqual(result, bytearray(ciphertext))
                 finally:
+                    prefix[:] = b"\x00" * len(prefix)
                     result[:] = b"\x00" * len(result)
 
         session = object.__new__(ReadOnlyUsbSession)
@@ -319,7 +325,10 @@ class CaptureOrchestratorTests(unittest.TestCase):
             patch("goodix5503.image_capture._fixed_exchange", side_effect=fixed_exchange),
             patch("goodix5503.image_capture._ack_only", side_effect=ack_only),
             patch("goodix5503.image_capture._TlsImageServer", FakeTlsServer),
-            patch("goodix5503.image_capture._request_encrypted_clear_image", return_value=bytearray(b"cipher")),
+            patch(
+                "goodix5503.image_capture._request_encrypted_clear_image",
+                return_value=(bytearray(9), bytearray(b"cipher")),
+            ),
         ):
             result = run_prepared_clear_frame_capture(CLEAR_CAPTURE_CONFIRMATION)
 

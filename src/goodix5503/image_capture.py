@@ -119,7 +119,9 @@ def _validate_tls_records(ciphertext: bytes | bytearray) -> None:
         raise ImageCaptureError("invalid image TLS record boundary")
 
 
-def _request_encrypted_clear_image(session: ReadOnlyUsbSession) -> bytearray:
+def _request_encrypted_clear_image(
+    session: ReadOnlyUsbSession,
+) -> tuple[bytearray, bytearray]:
     session._ReadOnlyUsbSession__write_packet(  # type: ignore[attr-defined]
         _encode_packet(COMMAND_GET_IMAGE, GET_IMAGE_CLEAR)
     )
@@ -151,11 +153,13 @@ def _request_encrypted_clear_image(session: ReadOnlyUsbSession) -> bytearray:
     payload = _decode_outer(frame, FLAGS_TLS_IMAGE)
     if len(payload) <= 9:
         raise ImageCaptureError("encrypted image envelope is too short")
+    opaque_prefix = bytearray(payload[:9])
     ciphertext = bytearray(payload[9:])
     try:
         _validate_tls_records(ciphertext)
-        return ciphertext
+        return opaque_prefix, ciphertext
     except BaseException:
+        opaque_prefix[:] = b"\x00" * len(opaque_prefix)
         ciphertext[:] = b"\x00" * len(ciphertext)
         raise
 
@@ -350,8 +354,10 @@ def run_prepared_clear_frame_capture(
     derived = bytearray()
     psk = bytearray()
     config = bytearray()
+    opaque_prefix = bytearray()
     ciphertext = bytearray()
     plaintext = bytearray()
+    opaque_trailer = bytearray()
     pixels = bytearray()
     reset_guard: _ResetGuard | None = None
     try:
@@ -396,10 +402,13 @@ def run_prepared_clear_frame_capture(
             raise ImageCaptureError("MCU POV-image initialization returned empty data")
         _fixed_exchange(session, COMMAND_SWITCH_FDT_MODE, FDT_CLEAR_MODE)
 
-        ciphertext = _request_encrypted_clear_image(session)
+        opaque_prefix, ciphertext = _request_encrypted_clear_image(session)
         plaintext = tls_server.decrypt(ciphertext)
         if len(plaintext) != PLAINTEXT_IMAGE_LENGTH:
             raise ImageCaptureError("decrypted clear image has an invalid length")
+        opaque_trailer = bytearray(memoryview(plaintext)[PACKED_IMAGE_LENGTH:])
+        if len(opaque_prefix) != 9 or len(opaque_trailer) != 4:
+            raise ImageCaptureError("image opaque metadata has an invalid length")
         pixels = decode_packed_image(memoryview(plaintext)[:PACKED_IMAGE_LENGTH])
         metrics = _pixel_metrics(pixels)
         return {
@@ -411,6 +420,8 @@ def run_prepared_clear_frame_capture(
             "width": IMAGE_WIDTH,
             "height": IMAGE_HEIGHT,
             "packed_length": PACKED_IMAGE_LENGTH,
+            "opaque_prefix_length": len(opaque_prefix),
+            "opaque_trailer_length": len(opaque_trailer),
             **metrics,
         }
     finally:
@@ -433,7 +444,18 @@ def run_prepared_clear_frame_capture(
             except BaseException as error:
                 if primary_cleanup_error is None:
                     primary_cleanup_error = error
-        for buffer in (live, expected, derived, psk, config, ciphertext, plaintext, pixels):
+        for buffer in (
+            live,
+            expected,
+            derived,
+            psk,
+            config,
+            opaque_prefix,
+            ciphertext,
+            plaintext,
+            opaque_trailer,
+            pixels,
+        ):
             buffer[:] = b"\x00" * len(buffer)
         if primary_cleanup_error is not None and not had_primary_error:
             raise ImageCaptureError("clear-frame cleanup failed") from primary_cleanup_error

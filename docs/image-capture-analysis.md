@@ -63,9 +63,20 @@ fatal. Further hardware use remains separately review- and user-gated.
 
 The reference sequence performs runtime reset, chip-ID/OTP/POV reads, TLS,
 configuration upload, two driver-state commands, POV initialization, FDT mode,
-and encrypted image retrieval. Clear and finger images are 80 by 64 pixels. The
-encrypted application stream is 7,684 bytes including a four-byte trailer; the
-packed 12-bit image decoder consumes the remaining 7,680 bytes.
+and encrypted image retrieval. The B2 outer payload contains nine opaque bytes
+followed by complete TLS records; those bytes are not part of the four-byte
+Goodix outer header. TLS decrypts to 7,684 bytes: 7,680 packed image bytes plus
+four opaque trailing bytes. Neither opaque region's field semantics are proven,
+so they must not be labelled as status, length or checksum. The parser retains
+both in mutable buffers, enforces exact 9/4-byte boundaries, and wipes them
+without printing or saving their content.
+
+Official `_FpMcuGetImage` at `0x180058610` constructs a two-byte request beginning
+with `1` and submits command `0x20` through `IoHubMcuSendCmd2` (`0x18007b930`).
+Official IoHub strings distinguish ACK, data-in and data-processed callbacks,
+supporting separate routing for A0 completions and B2 encrypted data. Clear and
+finger images are 80 by 64 pixels; their packed 12-bit decoder consumes exactly
+7,680 bytes.
 
 No firmware operation from the community script is permitted. Runtime register,
 configuration and sensor-mode writes will be represented only by fixed methods
