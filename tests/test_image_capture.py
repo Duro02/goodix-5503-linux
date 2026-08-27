@@ -327,11 +327,12 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
                 side_effect=receive,
             ),
         ):
-            prefix, plaintext = _acquire_hu_fresh_base_frame(
+            prefix, plaintext, lengths = _acquire_hu_fresh_base_frame(
                 object(), object(), bytearray(HU_DAC_FIELD), HU_IMAGE_REQUEST, TEST_DEADLINE
             )
         try:
             self.assertEqual(prefix, bytearray(9))
+            self.assertEqual(lengths, (12, 12, 12))
             self.assertEqual(plaintext, bytearray([2]) * 7684)
             self.assertEqual(image_count, 2)
             self.assertEqual(
@@ -353,27 +354,25 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
             prefix[:] = b"\x00" * len(prefix)
             plaintext[:] = b"\x00" * len(plaintext)
 
-    def test_rejects_short_empty_and_oversized_command36_bodies(self):
-        for length in (0, 11, 13):
-            with self.subTest(length=length):
-                with (
-                    patch(
-                        "goodix5503.image_capture._fixed_exchange",
-                        return_value=bytes(length),
-                    ),
-                    patch(
-                        "goodix5503.image_capture._receive_hu_plaintext_image"
-                    ) as receive,
-                ):
-                    with self.assertRaisesRegex(ImageCaptureError, "exactly 12"):
-                        _acquire_hu_fresh_base_frame(
-                            object(),
-                            object(),
-                            bytearray(HU_DAC_FIELD),
-                            HU_IMAGE_REQUEST,
-                            TEST_DEADLINE,
-                        )
-                receive.assert_not_called()
+    def test_rejects_oversized_command36_body_before_image(self):
+        with (
+            patch(
+                "goodix5503.image_capture._fixed_exchange",
+                return_value=bytes(13),
+            ),
+            patch(
+                "goodix5503.image_capture._receive_hu_plaintext_image"
+            ) as receive,
+        ):
+            with self.assertRaisesRegex(ImageCaptureError, "exceeds 12"):
+                _acquire_hu_fresh_base_frame(
+                    object(),
+                    object(),
+                    bytearray(HU_DAC_FIELD),
+                    HU_IMAGE_REQUEST,
+                    TEST_DEADLINE,
+                )
+        receive.assert_not_called()
 
     def test_retries_an_inconsistent_first_pair_then_succeeds(self):
         responses = iter(
@@ -405,11 +404,12 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
                 side_effect=receive,
             ),
         ):
-            prefix, plaintext = _acquire_hu_fresh_base_frame(
+            prefix, plaintext, lengths = _acquire_hu_fresh_base_frame(
                 object(), object(), bytearray(HU_DAC_FIELD), HU_IMAGE_REQUEST, TEST_DEADLINE
             )
         try:
             self.assertEqual(image_count, 3)
+            self.assertEqual(lengths, (12, 12, 12, 12, 12))
         finally:
             prefix[:] = b"\x00" * len(prefix)
             plaintext[:] = b"\x00" * len(plaintext)
@@ -680,7 +680,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
         def acquire_fresh(_session, _tls, dac, payload, _deadline):
             self.assertEqual(dac, HU_DAC_FIELD)
             self.assertEqual(payload, HU_IMAGE_REQUEST)
-            return bytearray(9), bytearray(7684)
+            return bytearray(9), bytearray(7684), (1, 1, 1)
 
         with (
             patch(
@@ -713,6 +713,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertEqual(result["pixel_min"], 0)
         self.assertEqual(result["pixel_max"], 0)
         self.assertEqual(result["pixel_sum"], 0)
+        self.assertEqual(result["fdt_response_lengths"], "1,1,1")
         self.assertEqual(events.count(("reset",)), 2)
         runtime = [event for event in events if event[0] == "exchange"]
         self.assertEqual(runtime[0][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))

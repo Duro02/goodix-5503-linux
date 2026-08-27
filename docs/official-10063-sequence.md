@@ -173,8 +173,11 @@ the same decode and crop and retains the result through the later acquisitions
 before wiping it; no proprietary enclave implementation is required.
 
 Each command-36 call requests a bounded 12-byte data body after its separate
-ACK. The official transport accepts 0..12 and zero-pads, but the free path must
-require exactly 12. Output1 is the raw six-word response. Output2 transforms each
+ACK. The official transport accepts 0..12, writes into a pre-zeroed 12-byte
+buffer, and then processes all six words. The first controlled hardware run
+confirmed that this firmware can return a short body, so the free path now
+reproduces the bounded zero-padding behavior and still rejects anything over
+12 bytes. Output1 is the padded raw six-word response. Output2 transforms each
 raw LE16 word `x` to `((x >> 1) << 8) | 0x80`; accepted output2 becomes the base
 for later requests. The DLL retries inconsistent pairs without a numeric bound;
 the free implementation must instead use the existing operation deadline and a

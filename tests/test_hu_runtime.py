@@ -141,7 +141,7 @@ class HuRuntimeTests(unittest.TestCase):
             bytes.fromhex("0d018b0084008c008800800080008000800080008000"),
         )
 
-    def test_manual_fdt_response_requires_exact_body_and_builds_both_forms(self):
+    def test_manual_fdt_response_builds_raw_and_transformed_forms(self):
         response = bytes.fromhex("349678915592aa85008cfe86")
         raw, transformed = parse_hu_manual_fdt_response(response)
         try:
@@ -153,8 +153,16 @@ class HuRuntimeTests(unittest.TestCase):
         finally:
             raw[:] = b"\x00" * len(raw)
             transformed[:] = b"\x00" * len(transformed)
-        with self.assertRaisesRegex(HuRuntimeError, "exactly 12"):
-            parse_hu_manual_fdt_response(bytes(11))
+        for short in (b"", b"\x34", bytes.fromhex("349678915592aa85008cfe")):
+            padded, transformed = parse_hu_manual_fdt_response(short)
+            try:
+                self.assertEqual(padded[: len(short)], short)
+                self.assertEqual(padded[len(short) :], bytes(12 - len(short)))
+            finally:
+                padded[:] = b"\x00" * len(padded)
+                transformed[:] = b"\x00" * len(transformed)
+        with self.assertRaisesRegex(HuRuntimeError, "exceeds 12"):
+            parse_hu_manual_fdt_response(bytes(13))
 
     def test_fdt_delta_comparison_is_inclusive_for_all_six_words(self):
         first = bytes.fromhex("100020003000400050006000")

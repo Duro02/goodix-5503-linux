@@ -506,8 +506,9 @@ def _acquire_hu_fresh_base_frame(
     dac_field: bytearray,
     image_request: bytes,
     operation_deadline: float,
-) -> tuple[bytearray, bytearray]:
+) -> tuple[bytearray, bytearray, tuple[int, ...]]:
     zero_base = bytearray(12)
+    fdt_response_lengths: list[int] = []
     try:
         fdt_request = build_hu_manual_fdt_request(dac_field, zero_base)
         for _attempt in range(MAX_FRESH_BASE_ATTEMPTS):
@@ -519,14 +520,14 @@ def _acquire_hu_fresh_base_frame(
             candidate_prefix = candidate_plaintext = bytearray()
             keep_candidate = False
             try:
-                raw0, transformed0 = _parse_hu_fdt_body(
-                    _fixed_exchange(
-                        session,
-                        COMMAND_SWITCH_FDT_MODE,
-                        fdt_request,
-                        operation_deadline,
-                    )
+                response0 = _fixed_exchange(
+                    session,
+                    COMMAND_SWITCH_FDT_MODE,
+                    fdt_request,
+                    operation_deadline,
                 )
+                fdt_response_lengths.append(len(response0))
+                raw0, transformed0 = _parse_hu_fdt_body(response0)
                 nav_prefix, nav_plaintext = _receive_hu_plaintext_image(
                     session, tls_server, image_request, operation_deadline
                 )
@@ -534,14 +535,14 @@ def _acquire_hu_fresh_base_frame(
                     memoryview(nav_plaintext)[:PACKED_IMAGE_LENGTH]
                 )
                 nav_base = build_hu_nav_base(nav_decoded)
-                raw1, transformed1 = _parse_hu_fdt_body(
-                    _fixed_exchange(
-                        session,
-                        COMMAND_SWITCH_FDT_MODE,
-                        fdt_request,
-                        operation_deadline,
-                    )
+                response1 = _fixed_exchange(
+                    session,
+                    COMMAND_SWITCH_FDT_MODE,
+                    fdt_request,
+                    operation_deadline,
                 )
+                fdt_response_lengths.append(len(response1))
+                raw1, transformed1 = _parse_hu_fdt_body(response1)
                 _ack_only(
                     session,
                     COMMAND_SWITCH_IDLE,
@@ -567,18 +568,22 @@ def _acquire_hu_fresh_base_frame(
                         session, tls_server, image_request, operation_deadline
                     )
                 )
-                raw2, transformed2 = _parse_hu_fdt_body(
-                    _fixed_exchange(
-                        session,
-                        COMMAND_SWITCH_FDT_MODE,
-                        fdt_request,
-                        operation_deadline,
-                    )
+                response2 = _fixed_exchange(
+                    session,
+                    COMMAND_SWITCH_FDT_MODE,
+                    fdt_request,
+                    operation_deadline,
                 )
+                fdt_response_lengths.append(len(response2))
+                raw2, transformed2 = _parse_hu_fdt_body(response2)
                 if not hu_fdt_bases_within_delta(raw1, raw2, delta):
                     continue
                 keep_candidate = True
-                return candidate_prefix, candidate_plaintext
+                return (
+                    candidate_prefix,
+                    candidate_plaintext,
+                    tuple(fdt_response_lengths),
+                )
             finally:
                 for buffer in (
                     raw0,
@@ -671,7 +676,7 @@ def run_prepared_clear_frame_capture(
         if not uploaded or uploaded[0] != 1:
             raise ImageCaptureError("runtime configuration upload was rejected")
 
-        opaque_prefix, plaintext = _acquire_hu_fresh_base_frame(
+        opaque_prefix, plaintext, fdt_response_lengths = _acquire_hu_fresh_base_frame(
             session,
             tls_server,
             dac_field,
@@ -694,6 +699,9 @@ def run_prepared_clear_frame_capture(
             "packed_length": PACKED_IMAGE_LENGTH,
             "opaque_prefix_length": len(opaque_prefix),
             "opaque_trailer_length": len(opaque_trailer),
+            "fdt_response_lengths": ",".join(
+                str(length) for length in fdt_response_lengths
+            ),
             **metrics,
         }
     finally:
