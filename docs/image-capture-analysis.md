@@ -29,11 +29,17 @@ output bytes, validates the guest output pointer, and clears guest registers,
 heap and stack. The all-zero OTP output is pinned as an offline regression
 vector.
 
-The next hardware step is a fixed read-only opcode `0xa6` OTP query. Its 64-byte
-response will remain in mutable non-dumpable memory and feed the official
-configuration derivation. Only after the resulting configuration and exact
-runtime command sequence pass review will any configuration upload or image
-request be attempted.
+The reviewed fixed read-only opcode `0xa6` query returned exactly 64 OTP bytes.
+The raw OTP remained in mutable non-dumpable memory, was not printed or saved,
+and was cleared after official derivation. The resulting 256-byte configuration
+has SHA-256 `54e6cd4c0d18b4472e7ec066a11aabcc55389779e426562a9c2bcfd2e188eba6`,
+a valid independently checked official checksum, FDT delta `0x15`, and an
+OTP-derived image tcode change from the default 256 to 224. It is stored owner-only at `artifacts/device-backup/runtime-config-5503.bin`. Its hash
+differs from the zero-OTP regression output, confirming that real nonzero OTP
+processing did not simply return the all-default vector.
+
+No configuration has yet been uploaded. The next hardware stage remains gated
+on review of the exact runtime-only clear-frame sequence.
 
 ## Community post-TLS sequence under review
 

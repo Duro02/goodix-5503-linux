@@ -1,7 +1,8 @@
 # Local 27c6:5503 device state
 
-Observed using the project's allowlisted, non-persistent USB probe. No firmware
-or PSK write, configuration upload, register write or reset command was issued.
+Observed through the project's staged, reviewed fixed-command paths. Firmware
+has never been written. The PSK was explicitly reprovisioned once as documented
+below; subsequent TLS and OTP/config checks made no persistent writes.
 
 ```text
 USB ID:    27c6:5503
@@ -25,6 +26,11 @@ Offline new-pairing material: generated and idempotently reverified; no USB used
   artifacts/device-backup/new-pairing-psk.bin                  32 bytes, 0600
   artifacts/device-backup/new-pairing-whitebox-bb010003.bin    96 bytes, 0600
   artifacts/device-backup/new-pairing-verification-bb020007.bin 32 bytes, 0600
+Read-only OTP/config derivation:
+  OTP response length: 64 bytes; raw OTP was neither printed nor saved
+  artifacts/device-backup/runtime-config-5503.bin              256 bytes, 0600
+  config SHA-256: 54e6cd4c0d18b4472e7ec066a11aabcc55389779e426562a9c2bcfd2e188eba6
+  official checksum: valid; FDT delta: 21 (0x15); image tcode: 224 (0x00e0)
 ```
 
 ## Interpretation
