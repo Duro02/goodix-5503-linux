@@ -64,3 +64,5 @@ sudo .venv/bin/goodix-5503-probe --check-psk-state
 静态分析结论见 [`docs/windows-driver-analysis.md`](docs/windows-driver-analysis.md)。分析确认该设备会把 TLS 加密的指纹图像传给主机，并由主机侧算法完成特征提取和匹配。
 
 本机只读探测结果见 [`docs/device-state.md`](docs/device-state.md)：设备已运行官方 `10063` 固件，并存在与社区开发密钥不同的 PSK 状态。因此不会刷写固件或覆盖 PSK。
+
+PSK/TLS 逆向结论见 [`docs/psk-tls-analysis.md`](docs/psk-tls-analysis.md)：官方驱动通过 Windows DPAPI 解封 MCU 中的受保护 PSK 记录；原 Windows DPAPI 上下文已不存在，因此当前随机 PSK 无法仅凭设备哈希恢复。
