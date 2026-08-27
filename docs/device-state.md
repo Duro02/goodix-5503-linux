@@ -10,6 +10,7 @@ IAP:       MILAN_RTSEC_IAP_10027
 PSK hash:  R-family selector 0xbb020007 is present, but differs from the
            public community-development hash
 G selector: 0xbb020001 returned MCU status 0x01 (unavailable)
+R recheck: succeeded through the reviewed official R-family parser
 ```
 
 ## Interpretation
