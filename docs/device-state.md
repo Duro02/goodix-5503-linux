@@ -65,5 +65,6 @@ write path sent one `0xbb010003` white-box TLV without changing firmware. The
 MCU returned success and the immediate `0xbb020007` readback exactly matched the
 prepared verification record. The original pairing is no longer active; the
 known new PSK and its white-box record remain in owner-only Git-ignored files so
-the same pairing can be recognized or retried. TLS handshake validation is the
-next step.
+the same pairing can be recognized or retried. A separately reviewed,
+non-persistent runtime check then completed a TLS 1.2 handshake with cipher
+`PSK-AES128-CBC-SHA256`; firmware and IAP remained unchanged.

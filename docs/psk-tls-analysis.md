@@ -175,8 +175,9 @@ drops sudo before reading the owner-only PSK, recomputes the R verification
 record from that PSK, and requires both the saved and live records to match.
 Server-flight collection uses complete TLS record and handshake-message
 boundaries with a five-second overall deadline, not timing-based idle grouping.
-It performs no PSK, firmware, register or configuration write. The
-implementation remains unexecuted pending independent review.
+It performs no PSK, firmware, register or configuration write. After independent
+review, one explicitly invoked hardware run completed successfully with cipher
+`PSK-AES128-CBC-SHA256`; firmware remained `10063` and IAP remained `10027`.
 
 ## Ranked options
 
