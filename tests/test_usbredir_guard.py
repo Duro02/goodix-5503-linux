@@ -187,7 +187,9 @@ class PolicyTests(unittest.TestCase):
         for reset_index in range(3):
             self.assertEqual(authorize_guest(packet(RESET), self.state), "bounded-enumeration-usb-reset")
             get_status = struct.pack("<BBBBHHH", 0x80, 0, 0x80, 0, 0, 0, 2)
-            self.assertEqual(authorize_guest(packet(CONTROL_PACKET, get_status, ident=100 + reset_index), self.state), "standard-enumeration-control")
+            control_id = 100 + reset_index
+            self.assertEqual(authorize_guest(packet(CONTROL_PACKET, get_status, ident=control_id), self.state), "standard-enumeration-control")
+            self.assertEqual(authorize_upstream(packet(CONTROL_PACKET, get_status + b"\0\0", ident=control_id), self.state), "standard-control-response")
             authorize_upstream(packet(INTERFACE_INFO, _expected_interface_info()), self.state)
             authorize_upstream(packet(EP_INFO, _expected_ep_info()), self.state)
             authorize_upstream(packet(DEVICE_CONNECT, connect), self.state)

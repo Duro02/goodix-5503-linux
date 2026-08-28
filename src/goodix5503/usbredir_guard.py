@@ -402,6 +402,8 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         state.identity_pinned = True
         state.awaiting_connect = False
         return "goodix-27c6-5503"
+    if packet.type == CONTROL_PACKET and state.identity_pinned:
+        return _authorize_control_response(packet, state)
     if not state.device_connected:
         raise GuardViolation("packet before device identity")
     status_types = {CONFIGURATION_STATUS: "configuration", ALT_SETTING_STATUS: "alternate",
@@ -411,8 +413,6 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         if pending != (status_types[packet.type], packet.body):
             raise GuardViolation("unmatched or failed protocol status")
         return "matched-protocol-status"
-    if packet.type == CONTROL_PACKET:
-        return _authorize_control_response(packet, state)
     if packet.type == BULK_PACKET:
         endpoint, status, length, _, data = _bulk_fields(packet, state)
         if endpoint == 0x82:
