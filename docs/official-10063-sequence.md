@@ -63,9 +63,11 @@ uses dynamic HU command-20/36 payloads, exact command-36 bodies, command
 three complete attempts. Pinned image defaults additionally require cold
 command `00/00000000`, one D6/`0000` discriminator, and exactly one post-config
 C4/`0100`; D2 and duplicate C4 remain absent. The TLS bridge supports multiple
-command-20 images on one session. Runtime validation has completed the
-memory-only clear-frame path; the optional finger-frame path remains bounded,
-interactive, and non-persistent.
+command-20 images on one session. Runtime validation has completed both the
+memory-only clear-frame path and an FDT-down-triggered finger frame. The latter
+received the unsolicited command-32 event and then a structurally valid
+80x64 B2/TLS image without retaining image bytes or derived statistics. The
+interactive validation remains bounded and non-persistent.
 
 No firmware, PSK or persistent operation is required for this work.
 
