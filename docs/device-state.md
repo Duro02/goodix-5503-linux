@@ -125,6 +125,12 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   official branch would require a new device-resident DPAPI `bb010002` record
   recoverable by this VM user and matched to the existing PSK; preparing it can
   be offline, but writing it is a separately authorized persistent operation.
+  One reviewed Linux runtime attempt at commit `16750f5` still emitted raw `e5`
+  before command 00 and failed closed on that command's first read with
+  `invalid outer frame length`. It reached no A8, reset, TLS, config, FDT, or
+  image operation and was not retried. The pinned Windows USB trace had already
+  proved that the selected runtime emits no preceding `e5`; clear-frame capture
+  now starts directly with command 00 while wake diagnostics remain isolated.
 ```
 
 ## Interpretation

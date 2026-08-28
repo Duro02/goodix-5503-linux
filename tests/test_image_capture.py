@@ -1081,7 +1081,8 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertEqual(events.count(("verification-read",)), 1)
         self.assertEqual(events.count(("reset",)), 2)
         self.assertEqual(events.count(("read-chip-id",)), 1)
-        self.assertLess(events.index(("wake", ANY)), events.index(("sleep", 0.050)))
+        self.assertNotIn(("wake", ANY), events)
+        self.assertNotIn(("sleep", 0.050), events)
         update_firmware_event = ("exchange", 0xA8, b"\x00\x00")
         self.assertEqual(events.count(update_firmware_event), 3)
         third_a8_index = max(
@@ -1090,7 +1091,6 @@ class CaptureOrchestratorTests(unittest.TestCase):
         )
         self.assertLess(events.index(("verification-read",)), third_a8_index)
         self.assertLess(third_a8_index, events.index(("reset",)))
-        self.assertLess(events.index(("sleep", 0.050)), events.index(("reset",)))
         self.assertLess(events.index(("reset",)), events.index(("sleep", 0.010)))
         self.assertLess(events.index(("sleep", 0.010)), events.index(("read-chip-id",)))
         cold_ack_indices = [
@@ -1101,7 +1101,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertLess(cold_ack_indices[0], events.index(("verification-read",)))
         self.assertLess(events.index(("read-chip-id",)), cold_ack_indices[1])
         self.assertLess(cold_ack_indices[1], events.index(("read-otp",)))
-        sleep.assert_has_calls([call(0.050), call(0.010)])
+        sleep.assert_called_once_with(0.010)
         runtime = [
             event for event in events if event[0] in ("exchange", "ack-only")
         ]

@@ -797,8 +797,8 @@ def run_prepared_clear_frame_capture(
         operation_deadline = time.monotonic() + min(
             120.0, max(30.0, timeout_seconds * 8)
         )
-        session.wake_up(timeout_ms=_remaining_timeout_ms(operation_deadline))
-        time.sleep(0.050)
+        # The pinned Windows USB trace starts directly with command 00. Although
+        # Geneva exposes a raw-wake method, no e5 OUT precedes this runtime path.
         firmware = _read_official_loader_firmware(session, operation_deadline)
         if firmware != EXPECTED_FIRMWARE:
             raise ImageCaptureError("unexpected firmware")

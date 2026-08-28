@@ -54,8 +54,8 @@ Milan exposes no immediate D4.
 
 ## Current narrow candidate versus proof
 
-The dormant runtime implementation now begins with the Geneva raw wake byte
-`e5` and 50 ms settle, performs identity/PSK checks, loader reset and chip-ID
+The dormant runtime implementation now begins directly with the dynamically
+proven command-00 transaction, performs identity/PSK checks, loader reset and chip-ID
 selection, the mandatory post-command-00 `A6/0000` CheckSensor OTP snapshot,
 TLS D0 flights, config 90, and the bounded official fresh-base coordinator. It
 uses dynamic HU command-20/36 payloads, exact command-36 bodies, command
@@ -238,6 +238,15 @@ constructing and persistently writing a new `bb010002` DPAPI record matched to
 the existing PSK (normally together with the matching `bb010003` TLV). That is a
 new persistent operation and is not authorized by this trace work.
 
+The first runtime attempt at reviewed commit `16750f5` still invoked the static
+Geneva raw-wake helper before command 00. It failed closed at the first
+command-00 ACK read with `ProtocolError: invalid outer frame length`; it did not
+reach any A8, reset, TLS, configuration, FDT, or image operation and was not
+retried. This is consistent with the already captured Windows USB evidence that
+this selected runtime path has no preceding `e5`. The coordinator now follows
+the dynamic transport trace and starts directly with command 00; diagnostic
+wake tools remain separate and cannot be reached by clear-frame capture.
+
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader. It mirrors command 00 and the
 SelfCheck and ProcessPsk A8 identity reads, substitutes a direct
@@ -287,8 +296,10 @@ the command layer without proving that the hardware is DN2.
 
 Before `LogicMilanFSeries::Start`, pinned `McuDevLoader::Load` performs reset
 `A2/0514`, waits 10 ms, reads and validates the chip ID, and constructs the
-selected profile. The earlier loader begins with raw wake byte `e5` and a 50 ms
-settle; it is not the framed command-00 NOP formerly used by the free preflight.
+selected profile. Geneva contains a raw-wake implementation using `e5` and a
+50 ms settle, but the pinned Windows USB run emitted no `e5` before its first
+application command; its first OUT was command `00/00000000`. The Linux runtime
+therefore does not invoke the dormant raw-wake method on this path.
 `Start` at `0x180087890` then proves the high-level cold order: cold command-00
 precheck, CheckSensor `A6/0000` plus host OTP/DAC validation, one D6 POV
 discriminator, D0/TLS start, validated config generation/upload, one
