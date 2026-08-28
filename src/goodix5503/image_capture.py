@@ -922,6 +922,9 @@ def run_prepared_clear_frame_capture(
         session = ReadOnlyUsbSession(timeout_seconds)
         reset_guard = _ResetGuard(session)
         finger_capture = finger_validation or quality_validation
+        if finger_capture:
+            print("KEEP FINGER OFF SENSOR DURING CALIBRATION", flush=True)
+            time.sleep(3.0)
         operation_deadline = time.monotonic() + min(
             180.0 if finger_capture else 120.0,
             max(120.0 if finger_capture else 30.0, timeout_seconds * 12),

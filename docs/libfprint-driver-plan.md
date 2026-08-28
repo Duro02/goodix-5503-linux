@@ -54,7 +54,11 @@ uses the real asynchronous NBIS path, an explicit provisional 500-dpi ppmm
 value, absolute clear-frame subtraction and linear 8-bit normalization. It
 passes the processed frame through a pipe, reports only `usable`/`unusable`,
 and wipes controllable image buffers; it does not create a biometric fixture.
-The 500-dpi value and final orientation remain hypotheses until repeated
+One initial run returned `usable`, but the operator had held a finger on the
+sensor during clear-frame calibration, so that result is invalid and must not
+be used as quality evidence. A valid run requires the finger to remain off
+until the explicit placement prompt. The provisional 500-dpi value, quality,
+final orientation and enrollment reliability still require repeated
 capture/enroll/verify validation. No raw image, image hash, opaque metadata or
 pixel dump should be logged by default.
 
