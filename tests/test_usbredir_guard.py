@@ -12,6 +12,7 @@ from pathlib import Path
 from goodix5503.usbredir_guard import (
     ALT_SETTING_STATUS, AuditLog, BULK_PACKET, CAP_32BIT_BULK_LENGTH,
     CAP_64BIT_IDS, CONFIGURATION_STATUS, CONTROL_PACKET, DEVICE_CONNECT,
+    SET_CONFIGURATION,
     EP_INFO, FILTER_FILTER, GOODIX_A8, GuardState, GuardViolation, HELLO, RESET,
     INTERFACE_INFO, MAX_FRAME, Packet, UsbRedirGuard, _expected_ep_info,
     _expected_interface_info, authorize_guest, authorize_upstream, read_packet,
@@ -190,6 +191,9 @@ class PolicyTests(unittest.TestCase):
             control_id = 100 + reset_index
             self.assertEqual(authorize_guest(packet(CONTROL_PACKET, get_status, ident=control_id), self.state), "standard-enumeration-control")
             self.assertEqual(authorize_upstream(packet(CONTROL_PACKET, get_status + b"\0\0", ident=control_id), self.state), "standard-control-response")
+            if reset_index == 0:
+                self.assertEqual(authorize_guest(packet(SET_CONFIGURATION, b"\x01", ident=200), self.state), "set-configuration-1")
+                self.assertEqual(authorize_upstream(packet(CONFIGURATION_STATUS, b"\x00\x01", ident=200), self.state), "matched-protocol-status")
             authorize_upstream(packet(INTERFACE_INFO, _expected_interface_info()), self.state)
             authorize_upstream(packet(EP_INFO, _expected_ep_info()), self.state)
             authorize_upstream(packet(DEVICE_CONNECT, connect), self.state)

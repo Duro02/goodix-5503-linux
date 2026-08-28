@@ -316,8 +316,10 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
         return "bounded-enumeration-usb-reset"
     if packet.type == CONTROL_PACKET and state.identity_pinned:
         return _authorize_control_request(packet, state)
-    if not state.device_connected or not state.interface_valid or not state.endpoints_valid:
-        raise GuardViolation("guest operation before pinned topology")
+    safe_admin = {SET_CONFIGURATION, GET_CONFIGURATION, SET_ALT_SETTING,
+                  GET_ALT_SETTING, START_BULK_RECEIVING, STOP_BULK_RECEIVING}
+    if packet.type in safe_admin and not state.identity_pinned:
+        raise GuardViolation("guest operation before pinned identity")
     if packet.type == SET_CONFIGURATION:
         if packet.body != b"\x01" or packet.packet_id in state.pending_status:
             raise GuardViolation("configuration denied")
@@ -352,6 +354,8 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
         state.pending_status[packet.packet_id] = ("bulk-receiving", struct.pack("<IBB", 0, 0x82, 0))
         return "stop-bulk-in-receiver"
     if packet.type == BULK_PACKET:
+        if not state.device_connected or not state.interface_valid or not state.endpoints_valid:
+            raise GuardViolation("bulk operation before pinned topology")
         endpoint, status, length, _, data = _bulk_fields(packet, state)
         if endpoint == 0x82:
             if status != 0 or data or not 0 < length <= 0x8000 or packet.packet_id in state.pending_in or len(state.pending_in) >= 8:
@@ -404,15 +408,15 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         return "goodix-27c6-5503"
     if packet.type == CONTROL_PACKET and state.identity_pinned:
         return _authorize_control_response(packet, state)
-    if not state.device_connected:
-        raise GuardViolation("packet before device identity")
     status_types = {CONFIGURATION_STATUS: "configuration", ALT_SETTING_STATUS: "alternate",
                     BULK_RECEIVING_STATUS: "bulk-receiving"}
-    if packet.type in status_types:
+    if packet.type in status_types and state.identity_pinned:
         pending = state.pending_status.pop(packet.packet_id, None)
         if pending != (status_types[packet.type], packet.body):
             raise GuardViolation("unmatched or failed protocol status")
         return "matched-protocol-status"
+    if not state.device_connected:
+        raise GuardViolation("packet before device identity")
     if packet.type == BULK_PACKET:
         endpoint, status, length, _, data = _bulk_fields(packet, state)
         if endpoint == 0x82:
