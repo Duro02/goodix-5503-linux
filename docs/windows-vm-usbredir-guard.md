@@ -44,7 +44,7 @@ and must never be used beyond the audited prefix.
 Use new owner-only output paths and disable usbredir streams:
 
 ```sh
-sudo usbredirect --device 27c6:5503 --as 127.0.0.1:40501 --keepalive
+sudo usbredirect --device 27c6:5503 --as 127.0.0.1:40501
 
 goodix-5503-usbredir-guard \
   --listen 127.0.0.1:40502 \
