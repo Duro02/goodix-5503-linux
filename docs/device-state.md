@@ -131,6 +131,15 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   image operation and was not retried. The pinned Windows USB trace had already
   proved that the selected runtime emits no preceding `e5`; clear-frame capture
   now starts directly with command 00 while wake diagnostics remain isolated.
+  The separately reviewed no-wake attempt at commit `c0db2a4` then sent command
+  00 first but timed out waiting for any IN completion. It also reached no A8,
+  sensor reset, TLS, config, FDT, or image operation and was not retried. In the
+  successful Windows trace, command 00 followed exactly three standard USB
+  enumeration resets; Linux currently claims the existing device without a
+  libusb reset. The dormant clear-frame-only opener now mirrors exactly three
+  pre-claim enumeration resets with evidence-derived minimum delays, a 600 ms
+  post-third-reset floor, descriptor reacquisition, and identity/topology/owner
+  checks. Generic sessions are unchanged; hardware remains gated pending review.
 ```
 
 ## Interpretation

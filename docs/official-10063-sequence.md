@@ -247,6 +247,24 @@ this selected runtime path has no preceding `e5`. The coordinator now follows
 the dynamic transport trace and starts directly with command 00; diagnostic
 wake tools remain separate and cannot be reached by clear-frame capture.
 
+The next separately reviewed no-wake observation at commit `c0db2a4` sent
+command 00 first, as intended, but received no IN completion before its bounded
+read expired with `USBTimeoutError`. It again reached no A8, sensor reset, TLS,
+configuration, FDT, or image operation and was not retried. The Windows trace's
+command-00 success occurred only after its attach/enumeration phase had issued
+exactly three standard USB resets while retaining identity and topology. Linux
+currently claims and drains the already-present device without any libusb reset.
+This host-enumeration difference is now the leading bounded hypothesis. The
+dormant clear-frame opener now mirrors the ten retained Windows traces with an
+opt-in sequence of exactly three pre-claim libusb resets: at least 42 ms after
+reset 1, at least 3 ms after reset 2, descriptor reacquisition after reset 3,
+and no command 00 before 600 ms after reset 3. It pins VID/PID, bus, device
+address and port topology across every reset; requires the exact observed device,
+interface and endpoint descriptors; refuses a driver owner; and aborts before
+command 00 on any drift or reset failure. Generic probe/provision sessions are
+unchanged. This code change still requires independent review and a new one-shot
+authorization before hardware.
+
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader. It mirrors command 00 and the
 SelfCheck and ProcessPsk A8 identity reads, substitutes a direct

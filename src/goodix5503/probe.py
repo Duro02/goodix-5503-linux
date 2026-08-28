@@ -143,33 +143,101 @@ def _check_ack(payload: bytes, command: int) -> None:
         raise ProtocolError(f"device rejected command 0x{command:02x}")
 
 
+_OFFICIAL_LOADER_INITIALIZATION = object()
+_OFFICIAL_RESET_DELAYS = (0.042, 0.003)
+_OFFICIAL_POST_RESET_SETTLE = 0.600
+
+
+def _find_unique_device():
+    found = usb.core.find(
+        idVendor=VENDOR_ID, idProduct=PRODUCT_ID, find_all=True
+    )
+    devices = list(found) if found is not None else []
+    if not devices:
+        raise RuntimeError("Goodix 27c6:5503 was not found")
+    if len(devices) != 1:
+        raise RuntimeError(
+            f"expected exactly one Goodix 27c6:5503, found {len(devices)}"
+        )
+    return devices[0]
+
+
+def _usb_identity(device) -> tuple[int, int, int, int, tuple[int, ...]]:
+    ports = tuple(int(port) for port in (device.port_numbers or ()))
+    if not ports:
+        raise RuntimeError("fingerprint USB port topology is unavailable")
+    return (
+        int(device.idVendor),
+        int(device.idProduct),
+        int(device.bus),
+        int(device.address),
+        ports,
+    )
+
+
+def _official_loader_usb_reset_sequence(device):
+    """Mirror the three pre-command enumeration resets in the pinned trace."""
+    try:
+        expected_identity = _usb_identity(device)
+    except BaseException:
+        usb.util.dispose_resources(device)
+        raise
+    for index in range(3):
+        try:
+            device.reset()
+        finally:
+            usb.util.dispose_resources(device)
+        if index < len(_OFFICIAL_RESET_DELAYS):
+            time.sleep(_OFFICIAL_RESET_DELAYS[index])
+        device = _find_unique_device()
+        if _usb_identity(device) != expected_identity:
+            usb.util.dispose_resources(device)
+            raise RuntimeError("fingerprint USB identity/topology changed after reset")
+    return device, time.monotonic(), expected_identity
+
+
 class ReadOnlyUsbSession:
     """USB session whose public request API permits only fixed probe queries."""
 
-    def __init__(self, timeout_seconds: float = 5.0):
+    @classmethod
+    def _for_official_loader(cls, timeout_seconds: float = 5.0):
+        return cls(
+            timeout_seconds,
+            _initialization_token=_OFFICIAL_LOADER_INITIALIZATION,
+        )
+
+    def __init__(
+        self,
+        timeout_seconds: float = 5.0,
+        *,
+        _initialization_token=None,
+    ):
         if not math.isfinite(timeout_seconds) or not 0.05 <= timeout_seconds <= 30.0:
             raise ValueError("timeout must be a finite value between 0.05 and 30 seconds")
         self.timeout_ms = max(1, round(timeout_seconds * 1000))
         self._claimed = False
         self._rx_buffer = bytearray()
-        found = usb.core.find(
-            idVendor=VENDOR_ID, idProduct=PRODUCT_ID, find_all=True
-        )
-        devices = list(found) if found is not None else []
-        if not devices:
-            raise RuntimeError("Goodix 27c6:5503 was not found")
-        if len(devices) != 1:
-            raise RuntimeError(
-                f"expected exactly one Goodix 27c6:5503, found {len(devices)}"
+        if _initialization_token not in (None, _OFFICIAL_LOADER_INITIALIZATION):
+            raise ValueError("invalid USB initialization mode")
+        self.device = _find_unique_device()
+        official_reset_at = None
+        official_identity = None
+        if _initialization_token is _OFFICIAL_LOADER_INITIALIZATION:
+            self.device, official_reset_at, official_identity = (
+                _official_loader_usb_reset_sequence(self.device)
             )
-        self.device = devices[0]
 
-        config = self.device.get_active_configuration()
+        try:
+            config = self.device.get_active_configuration()
+        except BaseException:
+            usb.util.dispose_resources(self.device)
+            raise
         interface = usb.util.find_descriptor(
             config,
             custom_match=lambda item: item.bInterfaceClass in (0x0A, 0xFF),
         )
         if interface is None:
+            usb.util.dispose_resources(self.device)
             raise RuntimeError("vendor/data USB interface was not found")
 
         self.interface_number = interface.bInterfaceNumber
@@ -186,9 +254,28 @@ class ReadOnlyUsbSession:
             and usb.util.endpoint_type(ep.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK,
         )
         if self.endpoint_in is None or self.endpoint_out is None:
+            usb.util.dispose_resources(self.device)
             raise RuntimeError("bulk USB endpoints were not found")
 
+        if _initialization_token is _OFFICIAL_LOADER_INITIALIZATION:
+            descriptor = (
+                int(self.device.bDeviceClass),
+                int(self.device.bDeviceSubClass),
+                int(self.device.bDeviceProtocol),
+                int(interface.bInterfaceClass),
+                int(interface.bInterfaceSubClass),
+                int(interface.bInterfaceProtocol),
+                int(self.endpoint_out.bEndpointAddress),
+                int(self.endpoint_in.bEndpointAddress),
+                int(self.endpoint_out.wMaxPacketSize) & 0x7FF,
+                int(self.endpoint_in.wMaxPacketSize) & 0x7FF,
+            )
+            if descriptor != (0xEF, 0x02, 0x01, 0xFF, 0x00, 0x00, 0x01, 0x82, 512, 512):
+                usb.util.dispose_resources(self.device)
+                raise RuntimeError("official-loader USB descriptors changed")
+
         if self.device.is_kernel_driver_active(self.interface_number):
+            usb.util.dispose_resources(self.device)
             raise RuntimeError("a kernel driver owns the fingerprint interface; refusing to detach it")
 
         self._max_packet_size = max(8, int(self.endpoint_in.wMaxPacketSize) & 0x7FF)
@@ -196,6 +283,25 @@ class ReadOnlyUsbSession:
             usb.util.claim_interface(self.device, self.interface_number)
             self._claimed = True
             self._drain_input()
+            if official_reset_at is not None:
+                remaining = _OFFICIAL_POST_RESET_SETTLE - (
+                    time.monotonic() - official_reset_at
+                )
+                if remaining > 0:
+                    time.sleep(remaining)
+                observed = _find_unique_device()
+                try:
+                    if _usb_identity(observed) != official_identity:
+                        raise RuntimeError(
+                            "fingerprint USB identity/topology changed before command 00"
+                        )
+                finally:
+                    if observed is not self.device:
+                        usb.util.dispose_resources(observed)
+                if self.device.is_kernel_driver_active(self.interface_number):
+                    raise RuntimeError(
+                        "a kernel driver claimed the fingerprint interface after reset"
+                    )
         except BaseException:
             self.close()
             raise

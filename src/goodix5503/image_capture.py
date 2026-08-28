@@ -792,7 +792,7 @@ def run_prepared_clear_frame_capture(
     pixels = bytearray()
     reset_guard: _ResetGuard | None = None
     try:
-        session = ReadOnlyUsbSession(timeout_seconds)
+        session = ReadOnlyUsbSession._for_official_loader(timeout_seconds)
         reset_guard = _ResetGuard(session)
         operation_deadline = time.monotonic() + min(
             120.0, max(30.0, timeout_seconds * 8)
