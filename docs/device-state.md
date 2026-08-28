@@ -52,7 +52,7 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   no-pending and mismatched notifications; the synchronous free reader assumes
   the next IN bytes are the A8 ACK. Because the failed bytes were not recorded,
   their signature and length remain unknown and no safe filter is yet proven.
-  A separate source-gated diagnostic now exists to perform only `e5`, settle,
+  A one-off source-gated diagnostic performed only `e5`, settle,
   and a 500 ms transfer-boundary observation; it drops root permanently after
   claiming USB. The separately reviewed one-shot completed with zero bulk-IN
   transfers during that window. This disproves an independently queued wake
@@ -69,7 +69,7 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   rules out the obvious post-write submission gap but not PyUSB's unobservable
   URB-submission race. Static follow-up proved that official Geneva waits 1,500
   ms for ACK and then separately 1,500 ms for data; all three observation
-  windows were too short. The queued diagnostic has been corrected to a 3,250
+  windows were too short. That queued diagnostic was corrected to a 3,250
   ms absolute envelope with post-wake/post-settle deadline checks and timing
   output. The reviewed 3,250 ms one-shot then captured two complete IN
   transfers at 531/533 ms: first exactly ten zero bytes, then a valid 31-byte
@@ -134,12 +134,13 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   The separately reviewed no-wake attempt at commit `c0db2a4` then sent command
   00 first but timed out waiting for any IN completion. It also reached no A8,
   sensor reset, TLS, config, FDT, or image operation and was not retried. In the
-  successful Windows trace, command 00 followed exactly three standard USB
-  enumeration resets; Linux currently claims the existing device without a
-  libusb reset. The dormant clear-frame-only opener now mirrors exactly three
-  pre-claim enumeration resets with evidence-derived minimum delays, a 600 ms
-  post-third-reset floor, descriptor reacquisition, and identity/topology/owner
-  checks. Generic sessions are unchanged; hardware remains gated pending review.
+  successful Windows trace, command 00 followed three standard USB enumeration
+  resets. A reviewed one-shot at `d613c6d` reproduced those resets but still
+  timed out with no IN completion and reached no later operation. USB reset
+  state alone is therefore insufficient, so the specialized reset/descriptor
+  code was removed instead of becoming dormant production complexity. Unlike
+  synchronous PyUSB, Windows had a 32 KiB IN request queued before command 00;
+  that ordering difference remains the next isolated question.
 ```
 
 ## Interpretation

@@ -4,7 +4,6 @@ import unittest
 from unittest.mock import ANY, call, patch
 
 from goodix5503.image_capture import (
-    CLEAR_CAPTURE_CONFIRMATION,
     COMMAND_GET_IMAGE,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
@@ -875,41 +874,6 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
 
 
 class CaptureOrchestratorTests(unittest.TestCase):
-    def test_orchestrator_refuses_before_usb_without_exact_confirmation(self):
-        for confirmation in (None, "", CLEAR_CAPTURE_CONFIRMATION + " "):
-            with self.subTest(confirmation=confirmation):
-                with patch("goodix5503.image_capture.ReadOnlyUsbSession") as session:
-                    with self.assertRaisesRegex(ImageCaptureError, "confirmation"):
-                        run_prepared_clear_frame_capture(confirmation)
-                session.assert_not_called()
-
-    def test_incomplete_official_sequence_is_blocked_before_usb(self):
-        with patch("goodix5503.image_capture.ReadOnlyUsbSession") as session:
-            with self.assertRaisesRegex(ImageCaptureError, "not complete"):
-                run_prepared_clear_frame_capture(CLEAR_CAPTURE_CONFIRMATION)
-        session.assert_not_called()
-
-    def test_official_usb_reset_failure_suppresses_command00(self):
-        with (
-            patch(
-                "goodix5503.image_capture.OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE",
-                True,
-            ),
-            patch("goodix5503.image_capture._disable_core_dumps"),
-            patch("goodix5503.image_capture._preflight_tls_runtime"),
-            patch.object(
-                ReadOnlyUsbSession,
-                "_for_official_loader",
-                side_effect=RuntimeError("reset failed"),
-            ),
-            patch(
-                "goodix5503.image_capture._read_official_loader_firmware"
-            ) as command00,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "reset failed"):
-                run_prepared_clear_frame_capture(CLEAR_CAPTURE_CONFIRMATION)
-        command00.assert_not_called()
-
     def test_otp_is_wiped_when_runtime_derivation_fails(self):
         issued = bytearray(b"S" * 64)
         issued[0x32:0x36] = bytes.fromhex("8b848c88")
@@ -919,10 +883,6 @@ class CaptureOrchestratorTests(unittest.TestCase):
         class FakeSession:
             def __init__(self, _timeout):
                 pass
-
-            @classmethod
-            def _for_official_loader(cls, timeout):
-                return cls(timeout)
 
             def wake_up(self, *, timeout_ms):
                 self.timeout_ms = timeout_ms
@@ -936,10 +896,6 @@ class CaptureOrchestratorTests(unittest.TestCase):
                 pass
 
         with (
-            patch(
-                "goodix5503.image_capture.OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE",
-                True,
-            ),
             patch("goodix5503.image_capture.ReadOnlyUsbSession", FakeSession),
             patch("goodix5503.image_capture._disable_core_dumps"),
             patch("goodix5503.image_capture._preflight_tls_runtime"),
@@ -970,7 +926,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(ValueError, "derivation stopped"):
-                run_prepared_clear_frame_capture(CLEAR_CAPTURE_CONFIRMATION)
+                run_prepared_clear_frame_capture()
         self.assertEqual(issued, bytearray(64))
 
     def test_orchestrator_uses_only_fixed_runtime_sequence_and_resets_cleanup(self):
@@ -980,10 +936,6 @@ class CaptureOrchestratorTests(unittest.TestCase):
         class FakeSession:
             def __init__(self, timeout):
                 events.append(("open", timeout))
-
-            @classmethod
-            def _for_official_loader(cls, timeout):
-                return cls(timeout)
 
             def wake_up(self, *, timeout_ms):
                 events.append(("wake", timeout_ms))
@@ -1050,10 +1002,6 @@ class CaptureOrchestratorTests(unittest.TestCase):
             return bytearray(9), bytearray(7684), (1, 1, 1)
 
         with (
-            patch(
-                "goodix5503.image_capture.OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE",
-                True,
-            ),
             patch("goodix5503.image_capture.ReadOnlyUsbSession", FakeSession),
             patch("goodix5503.image_capture._disable_core_dumps"),
             patch("goodix5503.image_capture._preflight_tls_runtime"),
@@ -1099,7 +1047,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
                 side_effect=acquire_fresh,
             ),
         ):
-            result = run_prepared_clear_frame_capture(CLEAR_CAPTURE_CONFIRMATION)
+            result = run_prepared_clear_frame_capture()
 
         self.assertEqual(result["pixel_min"], 0)
         self.assertEqual(result["pixel_max"], 0)

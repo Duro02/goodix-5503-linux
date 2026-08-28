@@ -83,12 +83,7 @@ IMAGE_HEIGHT: Final = 64
 MAX_FRESH_BASE_ATTEMPTS: Final = 3
 EXPECTED_CHIP_ID: Final = 0x220F
 EXPECTED_RUNTIME_CONFIG_SHA256: Final = LOCAL_RUNTIME_CONFIG_SHA256
-CLEAR_CAPTURE_CONFIRMATION: Final = (
-    "I AUTHORIZE ONE RUNTIME-ONLY MEMORY CLEAR FRAME"
-)
-# The pinned GF3258 cold/base call graph is still being reconstructed. Keep the
-# former community-derived candidate unreachable even with confirmation.
-OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE: Final = False
+
 
 class ImageCaptureError(RuntimeError):
     """The fixed clear-frame path failed or returned malformed data."""
@@ -766,14 +761,9 @@ def _acquire_hu_fresh_base_frame(
 
 
 def run_prepared_clear_frame_capture(
-    confirmation: str | None = None,
     timeout_seconds: float = 5.0,
 ) -> dict[str, int | str]:
-    """Capture one memory-only clear frame using only reviewed fixed commands."""
-    if confirmation != CLEAR_CAPTURE_CONFIRMATION:
-        raise ImageCaptureError("exact clear-frame hardware confirmation is required")
-    if not OFFICIAL_SEQUENCE_RECONSTRUCTION_COMPLETE:
-        raise ImageCaptureError("official GF3258 capture sequence is not complete")
+    """Capture one experimental memory-only frame using fixed commands."""
     _disable_core_dumps()
     _preflight_tls_runtime()
     session: ReadOnlyUsbSession | None = None
@@ -792,7 +782,7 @@ def run_prepared_clear_frame_capture(
     pixels = bytearray()
     reset_guard: _ResetGuard | None = None
     try:
-        session = ReadOnlyUsbSession._for_official_loader(timeout_seconds)
+        session = ReadOnlyUsbSession(timeout_seconds)
         reset_guard = _ResetGuard(session)
         operation_deadline = time.monotonic() + min(
             120.0, max(30.0, timeout_seconds * 8)

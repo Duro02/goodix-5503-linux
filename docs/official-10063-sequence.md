@@ -105,7 +105,7 @@ Static recovery of the Geneva `DevIoParam` and `_IoHubExec` waits corrected the
 observation budget: ACK and data each have a separate 1,500 ms timeout, applied
 sequentially, so a legal A8 completion can approach 3,000 ms after submission.
 The earlier 500/600 ms windows were therefore insufficient. The queued
-diagnostic now uses a 3,250 ms absolute envelope, rechecks the deadline and live
+one-off diagnostic used a 3,250 ms absolute envelope, rechecked the deadline and live
 reader after wake and settle, caps the A8 OUT timeout to remaining time, and
 records write/completion timing. The reviewed one-shot observed the **free
 outer-A8** OUT complete at 528 ms, an exact ten-zero-byte IN completion at 531
@@ -245,7 +245,7 @@ reach any A8, reset, TLS, configuration, FDT, or image operation and was not
 retried. This is consistent with the already captured Windows USB evidence that
 this selected runtime path has no preceding `e5`. The coordinator now follows
 the dynamic transport trace and starts directly with command 00; diagnostic
-wake tools remain separate and cannot be reached by clear-frame capture.
+the obsolete one-off wake tools were later removed from the active codebase.
 
 The next separately reviewed no-wake observation at commit `c0db2a4` sent
 command 00 first, as intended, but received no IN completion before its bounded
@@ -254,16 +254,15 @@ configuration, FDT, or image operation and was not retried. The Windows trace's
 command-00 success occurred only after its attach/enumeration phase had issued
 exactly three standard USB resets while retaining identity and topology. Linux
 currently claims and drains the already-present device without any libusb reset.
-This host-enumeration difference is now the leading bounded hypothesis. The
-dormant clear-frame opener now mirrors the ten retained Windows traces with an
-opt-in sequence of exactly three pre-claim libusb resets: at least 42 ms after
-reset 1, at least 3 ms after reset 2, descriptor reacquisition after reset 3,
-and no command 00 before 600 ms after reset 3. It pins VID/PID, bus, device
-address and port topology across every reset; requires the exact observed device,
-interface and endpoint descriptors; refuses a driver owner; and aborts before
-command 00 on any drift or reset failure. Generic probe/provision sessions are
-unchanged. This code change still requires independent review and a new one-shot
-authorization before hardware.
+That reset-only hypothesis was tested once at `d613c6d`: all three resets
+completed and command 00 was sent first, but no IN completion arrived before the
+bounded timeout. No later operation was reached. Because the experiment
+falsified the hypothesis, its specialized reset/descriptor machinery was removed
+rather than retained as dormant production complexity. The remaining concrete
+transport difference is that Windows had a 32 KiB bulk-IN request queued before
+command 00, whereas synchronous PyUSB submits its first IN only after OUT. Any
+next diagnostic should isolate that ordering question without redesigning the
+full capture transport.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader. It mirrors command 00 and the
