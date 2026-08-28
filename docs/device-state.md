@@ -114,8 +114,8 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   `bb010002`, mode 0. A later reviewed run received ACK plus command-E4 payload
   `01 01`, not the protected record; this is a query/status transaction. The
   conservative record-envelope gate rejected and wiped it before Windows. A
-  later reviewed run forwarded the exact `01 01` result; the next denied OUT
-  hash identifies an exact second `E4/bb010002/mode0` query. This closes
+  later reviewed runs forwarded the exact `01 01` results; successive denied
+  OUT hashes identify exact second and third `E4/bb010002/mode0` queries. This closes
   command-00 and both firmware-A8 response routes while leaving any later actual
   record recovery separately gated.
 ```

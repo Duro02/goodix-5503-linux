@@ -5,7 +5,7 @@ setup needed to enumerate the pinned device and the exact padded 64-byte
 outer-A0 command-00, two firmware-A8 identity reads, and the protected-record
 mode-0 query observed from pinned QEMU/Windows. Each stage requires exact prior
 completion and ACK/data responses; afterward only control-IN and bounded bulk-IN
-reads may pass. A sixth OUT, TLS, streams, and unknown operations terminate both
+reads may pass. A seventh OUT, TLS, streams, and unknown operations terminate both
 connections. Sensitive response buffers are explicitly zeroed.
 """
 
@@ -336,7 +336,7 @@ def _is_sensitive_response_candidate(
 ) -> bool:
     return (
         direction == "upstream"
-        and state.prefix_step in (4, 5)
+        and state.prefix_step in (4, 5, 6)
         and state.protected_query_completed_count >= state.prefix_step - 3
         and state.protected_query_ack_count >= state.prefix_step - 3
         and state.protected_query_response_count < state.prefix_step - 3
@@ -457,6 +457,13 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
             state.pending_out = (packet.packet_id, "protected-query-second")
             state.prefix_step = 5
             return "goodix-usb-outer-a0-protected-query-second-64"
+        if (state.prefix_step == 5 and state.protected_query_completed_count == 2
+                and state.protected_query_ack_count == 2
+                and state.protected_query_response_count == 2
+                and data == GOODIX_PROTECTED_READ):
+            state.pending_out = (packet.packet_id, "protected-query-third")
+            state.prefix_step = 6
+            return "goodix-usb-outer-a0-protected-query-third-64"
         raise GuardViolation("bulk OUT prefix denied")
     raise GuardViolation(f"guest packet type {packet.type} denied")
 
@@ -520,7 +527,7 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
                         raise GuardViolation("exact firmware A8 data required")
                     state.firmware_a8_data_count += 1
                     return "exact-firmware-a8-data"
-            if state.prefix_step in (4, 5):
+            if state.prefix_step in (4, 5, 6):
                 expected_count = state.prefix_step - 3
                 if state.protected_query_completed_count < expected_count:
                     raise GuardViolation("protected query response before OUT completion")
@@ -567,6 +574,9 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         if kind == "protected-query-second":
             state.protected_query_completed_count = 2
             return "protected-query-second-out-completion-observe"
+        if kind == "protected-query-third":
+            state.protected_query_completed_count = 3
+            return "protected-query-third-out-completion-observe"
         raise GuardViolation("unexpected OUT completion kind")
     if packet.type == BUFFERED_BULK_PACKET:
         raise GuardViolation("buffered bulk denied")

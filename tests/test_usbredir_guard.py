@@ -383,7 +383,7 @@ class IntegrationTests(unittest.TestCase):
             thread.join(2); self.assertFalse(thread.is_alive())
             audit.close(); guest.close(); upstream.close()
 
-    def test_exact_prefix_forwards_two_protected_queries_then_denies_sixth_out(self):
+    def test_exact_prefix_forwards_three_protected_queries_then_denies_seventh_out(self):
         with tempfile.TemporaryDirectory() as directory:
             guest, upstream, audit, audit_path, thread = self._start(directory)
             self._negotiate_and_topology(guest, upstream)
@@ -450,7 +450,20 @@ class IntegrationTests(unittest.TestCase):
             second_query_response = bulk(0x82, GOODIX_PROTECTED_QUERY_RESPONSE, ident=24).raw
             upstream.sendall(second_query_response)
             self.assertEqual(recv_exact(guest, len(second_query_response)), second_query_response)
-            guest.sendall(bulk(1, b"forbidden", ident=25).raw)
+            third_query_read = bulk(0x82, requested=0x8000, ident=25).raw
+            guest.sendall(third_query_read); self.assertEqual(recv_exact(upstream, len(third_query_read)), third_query_read)
+            third_query = bulk(1, GOODIX_PROTECTED_READ, ident=26).raw
+            guest.sendall(third_query); self.assertEqual(recv_exact(upstream, len(third_query)), third_query)
+            third_query_completion = bulk(1, requested=64, ident=26).raw
+            upstream.sendall(third_query_completion); self.assertEqual(recv_exact(guest, len(third_query_completion)), third_query_completion)
+            third_query_ack = bulk(0x82, GOODIX_PROTECTED_READ_ACK, ident=25).raw
+            upstream.sendall(third_query_ack); self.assertEqual(recv_exact(guest, len(third_query_ack)), third_query_ack)
+            third_query_response_read = bulk(0x82, requested=0x8000, ident=27).raw
+            guest.sendall(third_query_response_read); self.assertEqual(recv_exact(upstream, len(third_query_response_read)), third_query_response_read)
+            third_query_response = bulk(0x82, GOODIX_PROTECTED_QUERY_RESPONSE, ident=27).raw
+            upstream.sendall(third_query_response)
+            self.assertEqual(recv_exact(guest, len(third_query_response)), third_query_response)
+            guest.sendall(bulk(1, b"forbidden", ident=28).raw)
             self.assert_closed(guest)
             self.assert_closed(upstream)
             thread.join(2); self.assertFalse(thread.is_alive())
@@ -465,7 +478,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual([event["decision"] for event in first], ["authorize", "forwarded"])
             self.assertEqual([event["decision"] for event in second], ["authorize", "forwarded"])
             query_events = [event for event in events if event.get("policy") == "exact-protected-query-response"]
-            self.assertEqual(len(query_events), 2)
+            self.assertEqual(len(query_events), 3)
             self.assertTrue(all(event["decision"] == "forwarded" for event in query_events))
             self.assertTrue(all(
                 {"type", "id", "length", "sha256"}.isdisjoint(event)

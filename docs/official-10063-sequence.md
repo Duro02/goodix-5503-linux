@@ -204,7 +204,10 @@ After the exact `01 01` response was forwarded in a reviewed run, the fifth
 OUT's complete audit hash was matched offline against the fixed candidate set.
 It is an exact second `E4/bb010002/mode0` query, including padding and packet ID,
 not a new command or write. It remained denied before hardware. Thus the pinned
-Windows path performs this same status query twice.
+Windows path performs this same status query at least twice. A subsequent
+reviewed two-query run forwarded the second exact `01 01` response; the sixth
+OUT hash again matches the identical mode-0 query. It was denied before hardware,
+proving a third query without broadening the command family.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
