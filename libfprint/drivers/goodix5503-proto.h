@@ -57,6 +57,17 @@ gboolean goodix5503_frame_buffer_take (Goodix5503FrameBuffer  *buffer,
                                         GByteArray            **frame,
                                         GError                **error);
 
+GByteArray *goodix5503_outer_encode (guint8         flags,
+                                      const guint8  *payload,
+                                      gsize          payload_len,
+                                      GError       **error);
+
+gboolean goodix5503_outer_decode (const guint8  *frame,
+                                   gsize          frame_len,
+                                   guint8         expected_flags,
+                                   GByteArray   **payload,
+                                   GError       **error);
+
 GByteArray *goodix5503_packet_encode (guint8         command,
                                       const guint8  *payload,
                                       gsize          payload_len,

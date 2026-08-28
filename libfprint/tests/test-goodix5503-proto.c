@@ -128,24 +128,6 @@ test_packet_rejects_mutations (void)
                   GOODIX5503_PROTO_ERROR_INVALID);
 }
 
-static GByteArray *
-encode_outer (guint8 flags, const guint8 *payload, gsize payload_len)
-{
-  guint8 header[4] = {
-    flags,
-    payload_len & 0xff,
-    payload_len >> 8,
-    0,
-  };
-  GByteArray *frame;
-
-  header[3] = (header[0] + header[1] + header[2]) & 0xff;
-  frame = g_byte_array_sized_new (payload_len + 4);
-  g_byte_array_append (frame, header, sizeof header);
-  g_byte_array_append (frame, payload, payload_len);
-  return frame;
-}
-
 static void
 test_capture_router_valid_and_reversed (void)
 {
@@ -168,7 +150,8 @@ test_capture_router_valid_and_reversed (void)
   delayed = goodix5503_packet_encode (0xd0, NULL, 0, TRUE, &error);
   prelude = goodix5503_packet_encode (0x20, prelude_payload,
                                       sizeof prelude_payload, TRUE, &error);
-  encrypted = encode_outer (0xb2, envelope_payload, sizeof envelope_payload);
+  encrypted = goodix5503_outer_encode (0xb2, envelope_payload,
+                                        sizeof envelope_payload, &error);
   g_assert_no_error (error);
 
   g_assert_true (goodix5503_capture_consume_frame (

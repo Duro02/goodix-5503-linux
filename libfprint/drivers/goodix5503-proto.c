@@ -241,8 +241,37 @@ length_error:
   return FALSE;
 }
 
-static gboolean
-decode_outer (const guint8  *frame,
+GByteArray *
+goodix5503_outer_encode (guint8         flags,
+                          const guint8  *payload,
+                          gsize          payload_len,
+                          GError       **error)
+{
+  GByteArray *frame;
+  guint8 header[4];
+
+  g_return_val_if_fail (error == NULL || *error == NULL, NULL);
+  if (payload_len > GOODIX5503_MAX_FRAME_SIZE - 4 ||
+      (payload_len > 0 && payload == NULL))
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_LENGTH,
+                           "invalid Goodix outer payload length");
+      return NULL;
+    }
+  header[0] = flags;
+  header[1] = payload_len & 0xff;
+  header[2] = payload_len >> 8;
+  header[3] = sum8 (header, 3);
+  frame = g_byte_array_sized_new (payload_len + 4);
+  g_byte_array_append (frame, header, sizeof header);
+  if (payload_len > 0)
+    g_byte_array_append (frame, payload, payload_len);
+  return frame;
+}
+
+gboolean
+goodix5503_outer_decode (const guint8  *frame,
               gsize          frame_len,
               guint8         expected_flags,
               GByteArray   **payload,
@@ -393,7 +422,8 @@ goodix5503_capture_consume_frame (Goodix5503CaptureState  *state,
       return FALSE;
     }
 
-  if (!decode_outer (frame, frame_len, 0xb2, encrypted_envelope, error))
+  if (!goodix5503_outer_decode (frame, frame_len, 0xb2,
+                                 encrypted_envelope, error))
     return FALSE;
   if ((*encrypted_envelope)->len <= 9)
     {
