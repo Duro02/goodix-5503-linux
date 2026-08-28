@@ -540,15 +540,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--upstream", type=_endpoint, required=True)
     parser.add_argument("--audit", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    parser.add_argument("--accept-timeout", type=float, default=60.0)
     args = parser.parse_args(argv)
-    if args.timeout <= 0 or args.listen == args.upstream:
-        parser.error("timeout must be positive and endpoints must differ")
+    if args.timeout <= 0 or args.accept_timeout <= 0 or args.listen == args.upstream:
+        parser.error("timeouts must be positive and endpoints must differ")
     audit = AuditLog(args.audit)
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(args.listen)
     listener.listen(1)
-    listener.settimeout(args.timeout)
+    listener.settimeout(args.accept_timeout)
     try:
         upstream = socket.create_connection(args.upstream, args.timeout)
         guest, _ = listener.accept()

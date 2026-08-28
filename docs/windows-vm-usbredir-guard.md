@@ -51,7 +51,8 @@ sudo usbredirect --device 27c6:5503 --as 127.0.0.1:40501
 goodix-5503-usbredir-guard \
   --listen 127.0.0.1:40502 \
   --upstream 127.0.0.1:40501 \
-  --audit /secure/capture/goodix-guard.jsonl
+  --audit /secure/capture/goodix-guard.jsonl \
+  --accept-timeout 60
 ```
 
 Configure QEMU/libvirt with a socket chardev connected to `127.0.0.1:40502` and:
