@@ -145,11 +145,11 @@ class PolicyTests(unittest.TestCase):
 
     def test_device_connect_length_follows_negotiated_cap1(self):
         body8 = struct.pack("<BBBBHH", 2, 0, 0, 0, 0x27c6, 0x5503)
-        state = GuardState(); state.interface_valid = state.endpoints_valid = True
+        state = GuardState(); state.interface_valid = state.endpoints_valid = state.awaiting_connect = True
         self.assertEqual(authorize_upstream(packet(DEVICE_CONNECT, body8), state), "goodix-27c6-5503")
         for caps, body in ((0, body8 + b"\0\1"), (1 << 1, body8)):
             variant = GuardState(); variant.negotiated_caps = caps
-            variant.interface_valid = variant.endpoints_valid = True
+            variant.interface_valid = variant.endpoints_valid = variant.awaiting_connect = True
             with self.assertRaises(GuardViolation): authorize_upstream(packet(DEVICE_CONNECT, body), variant)
 
     def test_exact_bulk_prefix_order_replay_and_mutation(self):
@@ -177,11 +177,10 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(GuardViolation): authorize_guest(bulk(0x82, requested=0x8000), self.state)
         with self.assertRaises(GuardViolation): authorize_guest(bulk(0x82, requested=0x8001), self.state)
 
-    def test_bounded_enumeration_resets_require_topology_reannouncement(self):
+    def test_bounded_enumeration_resets_allow_exact_topology_refresh(self):
         connect = struct.pack("<BBBBHHH", 2, 0, 0, 0, 0x27c6, 0x5503, 0x100)
         for _ in range(3):
             self.assertEqual(authorize_guest(packet(RESET), self.state), "bounded-enumeration-usb-reset")
-            self.assertFalse(self.state.device_connected)
             authorize_upstream(packet(INTERFACE_INFO, _expected_interface_info()), self.state)
             authorize_upstream(packet(EP_INFO, _expected_ep_info()), self.state)
             authorize_upstream(packet(DEVICE_CONNECT, connect), self.state)

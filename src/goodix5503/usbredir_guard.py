@@ -115,6 +115,7 @@ class GuardState:
         self.device_connected = False
         self.interface_valid = False
         self.endpoints_valid = False
+        self.awaiting_connect = False
         self.filter_seen = False
         self.reset_count = 0
         self.prefix_step = 0
@@ -293,14 +294,17 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
             raise GuardViolation("device filter denied")
         state.filter_seen = True
         return "exact-goodix-device-filter"
-    if not state.device_connected or not state.interface_valid or not state.endpoints_valid:
-        raise GuardViolation("guest operation before pinned topology")
     if packet.type == RESET:
+        # QEMU can issue the next enumeration reset while usbredirhost is still
+        # re-announcing topology from the previous one. The connection's exact
+        # topology was already pinned and cannot change during this exchange.
         if state.reset_count >= 3 or packet.body or state.prefix_step or state.pending_out is not None:
             raise GuardViolation("USB enumeration reset denied")
         state.reset_count += 1
-        state.device_connected = state.interface_valid = state.endpoints_valid = False
+        state.device_connected = False
         return "bounded-enumeration-usb-reset"
+    if not state.device_connected or not state.interface_valid or not state.endpoints_valid:
+        raise GuardViolation("guest operation before pinned topology")
     if packet.type == SET_CONFIGURATION:
         if packet.body != b"\x01" or packet.packet_id in state.pending_status:
             raise GuardViolation("configuration denied")
@@ -360,25 +364,29 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
     # usbredirhost sends interface and endpoint information immediately before
     # DEVICE_CONNECT so QEMU can apply its device filter at connect time.
     if packet.type == INTERFACE_INFO:
-        if state.device_connected or state.interface_valid or packet.body != _expected_interface_info():
+        if state.prefix_step or packet.body != _expected_interface_info():
             raise GuardViolation("interface 0 topology mismatch")
+        state.device_connected = False
         state.interface_valid = True
+        state.endpoints_valid = False
         return "interface0-vendor-specific"
     if packet.type == EP_INFO:
-        if state.device_connected or not state.interface_valid or state.endpoints_valid:
+        if state.prefix_step or not state.interface_valid:
             raise GuardViolation("endpoint info order denied")
         if not state.negotiated_caps & (1 << CAP_EP_MAX_PACKET) or packet.body != _expected_ep_info():
             raise GuardViolation("endpoint topology mismatch")
         state.endpoints_valid = True
+        state.awaiting_connect = True
         return "bulk-out01-in82-maxpacket512"
     if packet.type == DEVICE_CONNECT:
         expected_length = 10 if state.negotiated_caps & (1 << CAP_DEVICE_VERSION) else 8
-        if state.device_connected or not state.interface_valid or not state.endpoints_valid or len(packet.body) != expected_length:
+        if state.prefix_step or not state.interface_valid or not state.endpoints_valid or not state.awaiting_connect or len(packet.body) != expected_length:
             raise GuardViolation("invalid device connect")
         fields = struct.unpack("<BBBBHH", packet.body[:8])
         if fields[:4] != (2, 0, 0, 0) or fields[4:6] != (0x27C6, 0x5503):
             raise GuardViolation("device identity or USB topology mismatch")
         state.device_connected = True
+        state.awaiting_connect = False
         return "goodix-27c6-5503"
     if not state.device_connected:
         raise GuardViolation("packet before device identity")
