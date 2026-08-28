@@ -186,19 +186,27 @@ identity reads have identical ACK/data routing.
 The fourth denied-frame SHA-256 was matched offline against the small fixed
 read-only candidate set, including the exact usbredir packet ID. It uniquely
 matches padded command E4 with selector `bb010002` and zero length:
-`a00c00ace40900020001bb00000000ff + 48*00`. This is the protected paired-record
-read already identified statically, not a write. The candidate packet hash is
+`a00c00ace40900020001bb00000000ff + 48*00`. The candidate packet hash is
 exactly the guard audit hash
 `a58048045dd2f77f13188e783ec28856f0e3f9f04bcac940a1806597b9135b64`.
 It was denied before hardware in this run.
+
+A later reviewed run allowed that exact read-only mode-0 request. Hardware
+returned its normal E4 success ACK followed by a separate 10-byte command-E4
+frame whose decoded payload is exactly `01 01`, not a 341-byte record envelope.
+The guard's conservative backup-envelope hypothesis therefore failed closed
+without forwarding the response to Windows. This dynamically reclassifies the
+mode-0 transaction as a protected-record query/status operation; any actual
+record recovery must be a later, separately gated transaction. No fifth OUT
+reached hardware.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
 APP identity read and the R verification read `E4/bb020007`, then compares the
 owner-only local PSK-derived record. A normal successful Windows loader performs
 two total A8 reads (SelfCheck and ProcessPsk); a third occurs only after the
-SelfCheck read fails and HardResetMcu retries. Windows also reads protected
-record `bb010002` before recovering the same paired secret.
+SelfCheck read fails and HardResetMcu retries. Windows also queries selector
+`bb010002` before any later recovery of the paired secret.
 Those omitted operations are read-only and have no proven sensor-state effect;
 the local protected record was separately backed up and the PSK is independently
 verified. Claims of exact ordering below apply from loader wake/reset and the

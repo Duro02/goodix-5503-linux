@@ -8,9 +8,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
-from goodix5503.probe import _encode_packet
 from goodix5503.usbredir_guard import (
     ALT_SETTING_STATUS, AuditLog, BUFFERED_BULK_PACKET, BULK_PACKET,
     CAP_32BIT_BULK_LENGTH,
@@ -18,10 +16,11 @@ from goodix5503.usbredir_guard import (
     SET_CONFIGURATION,
     EP_INFO, FILTER_FILTER, GOODIX_COMMAND00, GOODIX_COMMAND00_ACK,
     GOODIX_FIRMWARE_A8, GOODIX_FIRMWARE_A8_ACK, GOODIX_FIRMWARE_A8_DATA,
-    GOODIX_PROTECTED_READ, GOODIX_PROTECTED_READ_ACK, GuardState,
+    GOODIX_PROTECTED_QUERY_RESPONSE, GOODIX_PROTECTED_READ,
+    GOODIX_PROTECTED_READ_ACK, GuardState,
     GuardViolation, HELLO, RESET,
     INTERFACE_INFO, MAX_FRAME, Packet, UsbRedirGuard, _expected_ep_info,
-    _expected_interface_info, _load_protected_response_digest, _wipe_packet,
+    _expected_interface_info, _wipe_packet,
     authorize_guest, authorize_upstream, read_packet,
 )
 
@@ -107,24 +106,6 @@ class FramingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             os.chmod(directory, 0o755)
             with self.assertRaises(PermissionError): AuditLog(Path(directory) / "audit.jsonl")
-
-    def test_protected_digest_loads_only_owner_backup(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); os.chmod(root, 0o700)
-            path = root / "record.bin"
-            record = bytes(index & 0xFF for index in range(324))
-            path.write_bytes(record); path.chmod(0o600)
-            expected_frame = _encode_packet(
-                0xE4, b"\x00" + struct.pack("<II", 0xBB010002, len(record)) + record
-            )
-            self.assertEqual(
-                _load_protected_response_digest(path),
-                hashlib.sha256(expected_frame).digest(),
-            )
-            for mode in (0o400, 0o644, 0o700):
-                path.chmod(mode)
-                with self.subTest(mode=oct(mode)), self.assertRaises(PermissionError):
-                    _load_protected_response_digest(path)
 
     def test_timeout_and_global_buffer_bound(self):
         left, right = socket.socketpair(); left.settimeout(0.01)
@@ -213,7 +194,6 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_FIRMWARE_A8_ACK, ident=12), self.state), "exact-firmware-a8-success-ack")
         self.assertEqual(authorize_guest(bulk(0x82, requested=0x8000, ident=13), self.state), "bounded-bulk-in-request")
         self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_FIRMWARE_A8_DATA, ident=13), self.state), "exact-firmware-a8-data")
-        self.state.protected_response_sha256 = bytes(32)
         self.assertEqual(authorize_guest(bulk(1, GOODIX_PROTECTED_READ, ident=14), self.state), "goodix-usb-outer-a0-protected-read-bb010002-64")
         self.assertEqual(authorize_upstream(bulk(1, requested=64, ident=14), self.state), "protected-read-out-completion-observe")
         for first in (b"\xe5", b"\xe4", bytes.fromhex("0a0a0a0aa80300000001") + bytes(54)):
@@ -249,7 +229,7 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(GuardViolation):
             authorize_guest(bulk(1, GOODIX_FIRMWARE_A8, ident=5), self.state)
 
-    def test_protected_response_requires_exact_ack_hash_and_is_wipeable(self):
+    def test_protected_query_requires_exact_ack_response_and_is_wipeable(self):
         self.state.prefix_step = 4
         self.state.command00_deadline = time.monotonic() + 1
         self.state.protected_read_completed = True
@@ -260,14 +240,13 @@ class PolicyTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(GuardViolation, "buffered bulk denied"):
             authorize_upstream(packet(BUFFERED_BULK_PACKET, b"opaque", ident=7), self.state)
-        sensitive = b"test-protected-frame"
-        self.state.protected_response_sha256 = hashlib.sha256(sensitive).digest()
         self.state.pending_in.add(2)
-        with patch("goodix5503.usbredir_guard.GOODIX_PROTECTED_RESPONSE_LENGTH", len(sensitive)):
-            self.assertEqual(
-                authorize_upstream(bulk(0x82, sensitive, ident=2), self.state),
-                "exact-protected-read-data-sensitive",
-            )
+        self.assertEqual(
+            authorize_upstream(
+                bulk(0x82, GOODIX_PROTECTED_QUERY_RESPONSE, ident=2), self.state
+            ),
+            "exact-protected-query-response",
+        )
         mutable = packet(BULK_PACKET, bytearray(b"secret"), ident=3)
         mutable = Packet(mutable.type, mutable.packet_id, bytearray(mutable.body), bytearray(mutable.raw))
         _wipe_packet(mutable)
@@ -352,15 +331,13 @@ class IntegrationTests(unittest.TestCase):
         except ConnectionResetError:
             pass
 
-    def _start(self, directory, timeout=1, protected_digest=None):
+    def _start(self, directory, timeout=1):
         guest_guard, guest_peer = socket.socketpair()
         upstream_guard, upstream_peer = socket.socketpair()
         guest_peer.settimeout(timeout); upstream_peer.settimeout(timeout)
         audit_path = Path(directory) / "audit.jsonl"
         audit = AuditLog(audit_path)
-        guard = UsbRedirGuard(
-            guest_guard, upstream_guard, audit, timeout, protected_digest
-        )
+        guard = UsbRedirGuard(guest_guard, upstream_guard, audit, timeout)
         thread = threading.Thread(target=guard.run); thread.start()
         return guest_peer, upstream_peer, audit, audit_path, thread
 
@@ -406,12 +383,9 @@ class IntegrationTests(unittest.TestCase):
             thread.join(2); self.assertFalse(thread.is_alive())
             audit.close(); guest.close(); upstream.close()
 
-    def test_exact_prefix_forwards_wiped_protected_data_then_denies_fifth_out(self):
+    def test_exact_prefix_forwards_wiped_protected_query_then_denies_fifth_out(self):
         with tempfile.TemporaryDirectory() as directory:
-            sensitive = b"test-protected-frame"
-            guest, upstream, audit, audit_path, thread = self._start(
-                directory, protected_digest=hashlib.sha256(sensitive).digest()
-            )
+            guest, upstream, audit, audit_path, thread = self._start(directory)
             self._negotiate_and_topology(guest, upstream)
             read_request = bulk(0x82, requested=0x8000, ident=10).raw
             guest.sendall(read_request); self.assertEqual(recv_exact(upstream, len(read_request)), read_request)
@@ -458,12 +432,11 @@ class IntegrationTests(unittest.TestCase):
             upstream.sendall(protected_completion); self.assertEqual(recv_exact(guest, len(protected_completion)), protected_completion)
             protected_ack = bulk(0x82, GOODIX_PROTECTED_READ_ACK, ident=19).raw
             upstream.sendall(protected_ack); self.assertEqual(recv_exact(guest, len(protected_ack)), protected_ack)
-            sensitive_read = bulk(0x82, requested=0x8000, ident=21).raw
-            guest.sendall(sensitive_read); self.assertEqual(recv_exact(upstream, len(sensitive_read)), sensitive_read)
-            sensitive_response = bulk(0x82, sensitive, ident=21).raw
-            with patch("goodix5503.usbredir_guard.GOODIX_PROTECTED_RESPONSE_LENGTH", len(sensitive)):
-                upstream.sendall(sensitive_response)
-                self.assertEqual(recv_exact(guest, len(sensitive_response)), sensitive_response)
+            query_read = bulk(0x82, requested=0x8000, ident=21).raw
+            guest.sendall(query_read); self.assertEqual(recv_exact(upstream, len(query_read)), query_read)
+            query_response = bulk(0x82, GOODIX_PROTECTED_QUERY_RESPONSE, ident=21).raw
+            upstream.sendall(query_response)
+            self.assertEqual(recv_exact(guest, len(query_response)), query_response)
             guest.sendall(bulk(1, b"forbidden", ident=22).raw)
             self.assert_closed(guest)
             self.assert_closed(upstream)
@@ -478,10 +451,10 @@ class IntegrationTests(unittest.TestCase):
             second = [event for event in events if event.get("policy") == "goodix-usb-outer-a0-firmware-a8-second-64"]
             self.assertEqual([event["decision"] for event in first], ["authorize", "forwarded"])
             self.assertEqual([event["decision"] for event in second], ["authorize", "forwarded"])
-            sensitive_events = [event for event in events if event.get("policy") == "exact-protected-read-data-sensitive"]
-            self.assertEqual(len(sensitive_events), 1)
-            self.assertEqual(sensitive_events[0]["decision"], "forwarded")
-            self.assertTrue({"type", "id", "length", "sha256"}.isdisjoint(sensitive_events[0]))
+            query_events = [event for event in events if event.get("policy") == "exact-protected-query-response"]
+            self.assertEqual(len(query_events), 1)
+            self.assertEqual(query_events[0]["decision"], "forwarded")
+            self.assertTrue({"type", "id", "length", "sha256"}.isdisjoint(query_events[0]))
 
     def test_rejected_sensitive_response_is_wiped_and_audited_without_packet_hash(self):
         with tempfile.TemporaryDirectory() as directory:

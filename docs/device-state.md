@@ -111,8 +111,11 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   statically mapped to SelfCheck and ProcessPsk. A reviewed three-OUT run
   captured identical success ACK and firmware data for the second read. The
   fourth denied OUT hash uniquely matches fixed read-only command E4 selector
-  `bb010002`, zero length: the protected paired-record read. It remained blocked
-  before hardware. This closes command-00 and both firmware-A8 response routes.
+  `bb010002`, mode 0. A later reviewed run received ACK plus command-E4 payload
+  `01 01`, not the protected record; this is a query/status transaction. The
+  conservative record-envelope gate rejected and wiped it before Windows. This
+  closes command-00 and both firmware-A8 response routes while leaving any later
+  actual record recovery separately gated.
 ```
 
 ## Interpretation

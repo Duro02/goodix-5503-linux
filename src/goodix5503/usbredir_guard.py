@@ -3,7 +3,7 @@
 This proxy is intentionally not a general USB firewall. It forwards only USB
 setup needed to enumerate the pinned device and the exact padded 64-byte
 outer-A0 command-00, two firmware-A8 identity reads, and the protected-record
-read observed from pinned QEMU/Windows. Each stage requires exact prior
+mode-0 query observed from pinned QEMU/Windows. Each stage requires exact prior
 completion and ACK/data responses; afterward only control-IN and bounded bulk-IN
 reads may pass. A fifth OUT, TLS, streams, and unknown operations terminate both
 connections. Sensitive response buffers are explicitly zeroed.
@@ -13,11 +13,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import hmac
 import json
 import os
 import socket
-import stat
 import struct
 import sys
 import threading
@@ -69,9 +67,7 @@ GOODIX_PROTECTED_READ: Final = bytes.fromhex(
     "a00c00ace40900020001bb00000000ff"
 ) + bytes(48)
 GOODIX_PROTECTED_READ_ACK: Final = bytes.fromhex("a00600a6b00300e40112")
-GOODIX_PROTECTED_RESPONSE_LENGTH: Final = 341
-PROTECTED_RECORD_LENGTH: Final = 324
-PROTECTED_RECORD_SELECTOR: Final = 0xBB010002
+GOODIX_PROTECTED_QUERY_RESPONSE: Final = bytes.fromhex("a00600a6e403000101c1")
 
 
 class GuardViolation(RuntimeError):
@@ -93,49 +89,6 @@ def _wipe_packet(packet: Packet | None) -> None:
         packet.raw[:] = bytes(len(packet.raw))
     if isinstance(packet.body, (bytearray, memoryview)):
         packet.body[:] = bytes(len(packet.body))
-
-
-def _load_protected_response_digest(path: Path) -> bytes:
-    info = path.lstat()
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) != 0o600
-            or info.st_size != PROTECTED_RECORD_LENGTH):
-        raise PermissionError("protected record backup must be owner-only, regular, and exactly 324 bytes")
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
-    descriptor = os.open(path, flags)
-    record = bytearray(PROTECTED_RECORD_LENGTH)
-    try:
-        opened = os.fstat(descriptor)
-        if (opened.st_dev, opened.st_ino, opened.st_mode, opened.st_uid, opened.st_size) != (
-            info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_size
-        ):
-            raise PermissionError("protected record backup changed during open")
-        view = memoryview(record)
-        offset = 0
-        while offset < len(record):
-            count = os.readv(descriptor, [view[offset:]])
-            if count <= 0:
-                raise OSError("short protected record backup")
-            offset += count
-        payload_prefix = b"\x00" + struct.pack(
-            "<II", PROTECTED_RECORD_SELECTOR, PROTECTED_RECORD_LENGTH
-        )
-        protocol_prefix = bytes((0xE4,)) + struct.pack(
-            "<H", len(payload_prefix) + len(record) + 1
-        ) + payload_prefix
-        trailer = bytes(((0xAA - sum(protocol_prefix) - sum(record)) & 0xFF,))
-        protocol_length = len(protocol_prefix) + len(record) + 1
-        outer = struct.pack("<BH", 0xA0, protocol_length)
-        outer += bytes((sum(outer) & 0xFF,))
-        digest = hashlib.sha256()
-        digest.update(outer)
-        digest.update(protocol_prefix)
-        digest.update(record)
-        digest.update(trailer)
-        return digest.digest()
-    finally:
-        record[:] = bytes(len(record))
-        os.close(descriptor)
 
 
 class AuditLog:
@@ -205,7 +158,6 @@ class GuardState:
         self.protected_read_completed = False
         self.protected_read_acknowledged = False
         self.protected_read_received = False
-        self.protected_response_sha256: bytes | None = None
         self.buffered = 0
         self.stopped = False
 
@@ -494,7 +446,6 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
         if (state.prefix_step == 3 and state.firmware_a8_completed_count == 2
                 and state.firmware_a8_ack_count == 2
                 and state.firmware_a8_data_count == 2
-                and state.protected_response_sha256 is not None
                 and data == GOODIX_PROTECTED_READ):
             state.pending_out = (packet.packet_id, "protected-read")
             state.prefix_step = 4
@@ -571,14 +522,10 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
                     state.protected_read_acknowledged = True
                     return "exact-protected-read-success-ack"
                 if not state.protected_read_received:
-                    digest = hashlib.sha256(data).digest()
-                    expected_digest = state.protected_response_sha256
-                    if (len(data) != GOODIX_PROTECTED_RESPONSE_LENGTH
-                            or expected_digest is None
-                            or not hmac.compare_digest(digest, expected_digest)):
-                        raise GuardViolation("protected-read response hash mismatch")
+                    if data != GOODIX_PROTECTED_QUERY_RESPONSE:
+                        raise GuardViolation("exact protected-query response required")
                     state.protected_read_received = True
-                    return "exact-protected-read-data-sensitive"
+                    return "exact-protected-query-response"
             return "matched-bulk-in-response"
     status_types = {CONFIGURATION_STATUS: "configuration", ALT_SETTING_STATUS: "alternate",
                     BULK_RECEIVING_STATUS: "bulk-receiving"}
@@ -622,13 +569,11 @@ class UsbRedirGuard:
         upstream: socket.socket,
         audit: AuditLog,
         timeout: float,
-        protected_response_sha256: bytes | None = None,
     ):
         self.guest, self.upstream, self.audit = guest, upstream, audit
         self.state = GuardState()
         self.state.command00_timeout = timeout
         self.state.negotiation_timeout = timeout
-        self.state.protected_response_sha256 = protected_response_sha256
         self.timeout = timeout
         self.guest.settimeout(timeout)
         self.upstream.settimeout(timeout)
@@ -734,15 +679,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--listen", type=_endpoint, required=True)
     parser.add_argument("--upstream", type=_endpoint, required=True)
     parser.add_argument("--audit", type=Path, required=True)
-    parser.add_argument("--protected-record-backup", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     parser.add_argument("--accept-timeout", type=float, default=60.0)
     args = parser.parse_args(argv)
     if args.timeout <= 0 or args.accept_timeout <= 0 or args.listen == args.upstream:
         parser.error("timeouts must be positive and endpoints must differ")
-    protected_digest = _load_protected_response_digest(
-        args.protected_record_backup
-    )
     audit = AuditLog(args.audit)
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -753,9 +694,7 @@ def main(argv: list[str] | None = None) -> int:
         upstream = socket.create_connection(args.upstream, args.timeout)
         guest, _ = listener.accept()
         listener.close()  # Exactly one guest; no reconnect.
-        UsbRedirGuard(
-            guest, upstream, audit, args.timeout, protected_digest
-        ).run()
+        UsbRedirGuard(guest, upstream, audit, args.timeout).run()
     finally:
         listener.close()
         audit.close()
