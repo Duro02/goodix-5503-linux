@@ -88,7 +88,17 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   `a00800a800050000000000a5 + 52*00`; no preceding `e5` appeared. This corrects
   the direct-inner inference and makes the outer-A0 family authoritative for
   the first official Windows USB A8. No real sensor transfer occurred in that
-  VM trace; hardware and diagnostic gates remain false.
+  VM trace. A subsequent guarded real-device run finally forwarded exactly that
+  one application packet. Host `usbmon3` frame 157 recorded the 64-byte bulk
+  OUT on endpoint `01` at 92.488264 s, and frame 158 recorded successful status
+  0 completion 56 us later. A prequeued 32 KiB endpoint-`82` IN URB (frame 156)
+  was cancelled with status -2 at frame 159 when the guard fail-closed on a
+  concurrent post-A8 guest control request, so this run did not capture A8
+  response data. No second application OUT, TLS, PSK, configuration payload, or
+  firmware write was forwarded. Capture SHA-256 is
+  `aa1a3aec2bbf9a28ddc2065da4db6ca2b4ec92d98a2c8f1698eaacbb30811479`;
+  guard audit SHA-256 is
+  `6c43633fc3473064adda41624b74f0aece13117a6d549ae7f4a1670da887ed74`.
 ```
 
 ## Interpretation

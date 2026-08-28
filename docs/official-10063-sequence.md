@@ -123,8 +123,12 @@ URBs, its first application OUT was one 64-byte outer-A0 request:
 The previously inferred direct inner packet `0a0a0a0aa80300000001 + 54*00` and
 the 15-byte F0/SPB KAT are not the pinned Windows USB wire request. This dynamic
 result restores outer-A0 framing as the authoritative Windows USB transport for
-the first A8 while retaining the separate ACK/data parser question. Hardware
-use remains independently gated.
+the first A8 while retaining the separate ACK/data parser question. A later
+fail-closed hardware run attested the same bytes on endpoint `01`: usbmon frame
+157 submitted the 64-byte OUT, and frame 158 completed it with status 0 after
+56 us. The queued endpoint-`82` IN was cancelled when a concurrent post-A8 guest
+control request caused the guard to close, so no A8 response was captured and
+nothing after the single application OUT was forwarded.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
