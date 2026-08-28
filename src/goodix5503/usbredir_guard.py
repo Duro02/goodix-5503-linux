@@ -285,7 +285,9 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
     if state.prefix_step == 2:
         raise GuardViolation("awaiting A8 completion; further guest traffic denied")
     if packet.type == FILTER_FILTER:
-        expected = struct.pack("<iiiii", -1, 0x27C6, 0x5503, -1, 1)
+        # usbredir serializes filter rules as a NUL-terminated text string.
+        # This is the exact form emitted by pinned QEMU/libvirt for our rule.
+        expected = b"-1,0x27c6,0x5503,-1,1\x00"
         if state.filter_seen or packet.body != expected:
             raise GuardViolation("device filter denied")
         state.filter_seen = True

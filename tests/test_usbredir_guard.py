@@ -201,7 +201,7 @@ class PolicyTests(unittest.TestCase):
                 with self.assertRaises(GuardViolation): authorize_upstream(packet(EP_INFO, bytes(endpoint)), variant)
 
     def test_exact_device_filter_only_once(self):
-        body = struct.pack("<iiiii", -1, 0x27c6, 0x5503, -1, 1)
+        body = b"-1,0x27c6,0x5503,-1,1\x00"
         self.assertEqual(authorize_guest(packet(FILTER_FILTER, body), self.state), "exact-goodix-device-filter")
         with self.assertRaises(GuardViolation): authorize_guest(packet(FILTER_FILTER, body), self.state)
         other = GuardState()
@@ -317,8 +317,8 @@ class IntegrationTests(unittest.TestCase):
             self.assert_closed(upstream)
             thread.join(1); audit.close(); guest.close(); upstream.close()
         with tempfile.TemporaryDirectory() as directory:
-            guest, upstream, audit, _, thread = self._start(directory, timeout=0.1)
-            guest.sendall(hello())
+            guest, upstream, audit, _, thread = self._start(directory, timeout=0.5)
+            guest.sendall(hello()); upstream.settimeout(0.05)
             with self.assertRaises(TimeoutError): upstream.recv(1)
             upstream.sendall(frame(HELLO, b"bad")); upstream.settimeout(1)
             self.assert_closed(upstream)
