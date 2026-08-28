@@ -85,20 +85,19 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   produced no USB IN. A later direct-inner 64-byte one-shot likewise produced
   no IN. Finally, a no-hardware usbredir trace from pinned QEMU/Windows and the
   staged official driver observed the actual first application OUT as outer-A0
-  `a00800a800050000000000a5 + 52*00`; no preceding `e5` appeared. This corrects
-  the direct-inner inference and makes the outer-A0 family authoritative for
-  the first official Windows USB A8. No real sensor transfer occurred in that
-  VM trace. A subsequent guarded real-device run finally forwarded exactly that
-  one application packet. Host `usbmon3` frame 157 recorded the 64-byte bulk
-  OUT on endpoint `01` at 92.488264 s, and frame 158 recorded successful status
-  0 completion 56 us later. A prequeued 32 KiB endpoint-`82` IN URB (frame 156)
-  was cancelled with status -2 at frame 159 when the guard fail-closed on a
-  concurrent post-A8 guest control request, so this run did not capture A8
-  response data. No second application OUT, TLS, PSK, configuration payload, or
-  firmware write was forwarded. Capture SHA-256 is
-  `aa1a3aec2bbf9a28ddc2065da4db6ca2b4ec92d98a2c8f1698eaacbb30811479`;
+  `a00800a800050000000000a5 + 52*00`; no preceding `e5` appeared. Hardware runs
+  confirmed the exact bytes and successful 64-byte endpoint-`01` completion.
+  Crucially, `a8` at offset 3 is the outer-header checksum, not an A8 opcode:
+  the inner packet is command `00`, four zero payload bytes, checksum `a5`.
+  A response-only guarded run captured endpoint-`82` reply
+  `a00600a6b003000001f6`, which decodes as command-B0 payload `00 01`: ACK for
+  command 00, success. The ACK arrived 3.411 ms after the OUT submission. The
+  guard then denied the next 64-byte application OUT before forwarding it; no
+  TLS, PSK, configuration payload, protected-record, or firmware write reached
+  hardware. Final response capture SHA-256 is
+  `3bc86861dfea11d5838e6e0fb406151b5a60c5ee87889b184a852a08a2f80a10`;
   guard audit SHA-256 is
-  `6c43633fc3473064adda41624b74f0aece13117a6d549ae7f4a1670da887ed74`.
+  `f1908bb21fa3eb6d0589943c5adec1c36a0d4ed1edd49f7226e85befc436d998`.
 ```
 
 ## Interpretation

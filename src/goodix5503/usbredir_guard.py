@@ -1,9 +1,10 @@
 """Fail-closed usbredir guard for the fixed Goodix 27c6:5503 loader prefix.
 
 This proxy is intentionally not a general USB firewall. It forwards only USB
-setup needed to enumerate the pinned device and the exact 64-byte outer-A0 A8
-request observed from pinned QEMU/Windows. The next guest packet, TLS, streams,
-and unknown protocol operations terminate both connections.
+setup needed to enumerate the pinned device and the exact padded 64-byte
+outer-A0 command-00 request observed from pinned QEMU/Windows. Afterward only
+control-IN and bounded bulk-IN reads may pass; a second OUT, TLS, streams, and
+unknown protocol operations terminate both connections.
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ CAP_EP_MAX_PACKET: Final = 4
 CAP_64BIT_IDS: Final = 5
 CAP_32BIT_BULK_LENGTH: Final = 6
 _KNOWN_CAPS: Final = 0xFF
-GOODIX_A8: Final = bytes.fromhex("a00800a800050000000000a5") + bytes(52)
+GOODIX_COMMAND00: Final = bytes.fromhex("a00800a800050000000000a5") + bytes(52)
 
 
 class GuardViolation(RuntimeError):
@@ -124,10 +125,10 @@ class GuardState:
         self.pending_in: set[int] = set()
         self.pending_controls: dict[int, tuple[int, int, int, int, int, int]] = {}
         self.pending_status: dict[int, tuple[str, bytes]] = {}
-        self.a8_deadline: float | None = None
-        self.a8_timeout = DEFAULT_TIMEOUT
+        self.command00_deadline: float | None = None
+        self.command00_timeout = DEFAULT_TIMEOUT
         self.negotiation_timeout = DEFAULT_TIMEOUT
-        self.a8_completed = False
+        self.command00_completed = False
         self.buffered = 0
         self.stopped = False
 
@@ -296,7 +297,7 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
     if packet.type == HELLO:
         raise GuardViolation("duplicate hello")
     if state.prefix_step == 1 and packet.type not in (CONTROL_PACKET, BULK_PACKET):
-        raise GuardViolation("only read-only USB traffic is allowed after A8")
+        raise GuardViolation("only read-only USB traffic is allowed after command 00")
     if packet.type == FILTER_FILTER:
         # usbredir serializes filter rules as a NUL-terminated text string.
         # This is the exact form emitted by pinned QEMU/libvirt for our rule.
@@ -315,7 +316,7 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
         return "bounded-enumeration-usb-reset"
     if packet.type == CONTROL_PACKET and state.identity_pinned:
         if state.prefix_step == 1 and not (_control_fields(packet)[2] & 0x80):
-            raise GuardViolation("only control IN is allowed after A8")
+            raise GuardViolation("only control IN is allowed after command 00")
         return _authorize_control_request(packet, state)
     safe_admin = {SET_CONFIGURATION, GET_CONFIGURATION, SET_ALT_SETTING,
                   GET_ALT_SETTING, START_BULK_RECEIVING, STOP_BULK_RECEIVING}
@@ -367,12 +368,12 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
             raise GuardViolation("only exact bulk OUT endpoint 01 is permitted")
         if state.pending_out is not None:
             raise GuardViolation("overlapping bulk OUT denied")
-        if state.prefix_step != 0 or data != GOODIX_A8:
+        if state.prefix_step != 0 or data != GOODIX_COMMAND00:
             raise GuardViolation("bulk OUT prefix denied")
-        state.pending_out = (packet.packet_id, "a8")
+        state.pending_out = (packet.packet_id, "command00")
         state.prefix_step = 1
-        state.a8_deadline = time.monotonic() + state.a8_timeout
-        return "goodix-usb-outer-a0-a8-64"
+        state.command00_deadline = time.monotonic() + state.command00_timeout
+        return "goodix-usb-outer-a0-command00-64"
     raise GuardViolation(f"guest packet type {packet.type} denied")
 
 
@@ -427,16 +428,16 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         raise GuardViolation("packet before device identity")
     if packet.type == BULK_PACKET:
         endpoint, status, length, _, data = _bulk_fields(packet, state)
-        if endpoint != 0x01 or status != 0 or length != len(GOODIX_A8) or data:
-            raise GuardViolation("only exact successful A8 OUT completion is permitted")
+        if endpoint != 0x01 or status != 0 or length != len(GOODIX_COMMAND00) or data:
+            raise GuardViolation("only exact successful command-00 OUT completion is permitted")
         if state.pending_out is None or packet.packet_id != state.pending_out[0]:
             raise GuardViolation("unmatched bulk OUT completion")
         kind = state.pending_out[1]
         state.pending_out = None
-        if kind != "a8":
+        if kind != "command00":
             raise GuardViolation("unexpected OUT completion kind")
-        state.a8_completed = True
-        return "a8-out-completion-observe"
+        state.command00_completed = True
+        return "command00-out-completion-observe"
     if packet.type == BUFFERED_BULK_PACKET:
         if len(packet.body) < 10:
             raise GuardViolation("short buffered bulk")
@@ -451,7 +452,7 @@ class UsbRedirGuard:
     def __init__(self, guest: socket.socket, upstream: socket.socket, audit: AuditLog, timeout: float):
         self.guest, self.upstream, self.audit = guest, upstream, audit
         self.state = GuardState()
-        self.state.a8_timeout = timeout
+        self.state.command00_timeout = timeout
         self.state.negotiation_timeout = timeout
         self.timeout = timeout
         self.guest.settimeout(timeout)
@@ -494,12 +495,12 @@ class UsbRedirGuard:
     def _completion_watchdog(self) -> None:
         try:
             with self.state.condition:
-                while not self.state.stopped and self.state.a8_deadline is None:
+                while not self.state.stopped and self.state.command00_deadline is None:
                     self.state.condition.wait()
                 while not self.state.stopped:
-                    remaining = self.state.a8_deadline - time.monotonic()  # type: ignore[operator]
+                    remaining = self.state.command00_deadline - time.monotonic()  # type: ignore[operator]
                     if remaining <= 0:
-                        raise GuardViolation("A8 observation timeout")
+                        raise GuardViolation("command-00 observation timeout")
                     self.state.condition.wait(remaining)
         except BaseException as exc:
             self._failure = self._failure or exc

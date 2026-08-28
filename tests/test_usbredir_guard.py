@@ -13,7 +13,7 @@ from goodix5503.usbredir_guard import (
     ALT_SETTING_STATUS, AuditLog, BULK_PACKET, CAP_32BIT_BULK_LENGTH,
     CAP_64BIT_IDS, CONFIGURATION_STATUS, CONTROL_PACKET, DEVICE_CONNECT,
     SET_CONFIGURATION,
-    EP_INFO, FILTER_FILTER, GOODIX_A8, GuardState, GuardViolation, HELLO, RESET,
+    EP_INFO, FILTER_FILTER, GOODIX_COMMAND00, GuardState, GuardViolation, HELLO, RESET,
     INTERFACE_INFO, MAX_FRAME, Packet, UsbRedirGuard, _expected_ep_info,
     _expected_interface_info, authorize_guest, authorize_upstream, read_packet,
 )
@@ -156,10 +156,10 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(GuardViolation): authorize_upstream(packet(DEVICE_CONNECT, body), variant)
 
     def test_exact_bulk_prefix_order_replay_and_mutation(self):
-        self.assertEqual(GOODIX_A8[:12].hex(), "a00800a800050000000000a5")
-        self.assertEqual(GOODIX_A8[12:], bytes(52))
-        self.assertEqual(hashlib.sha256(GOODIX_A8).hexdigest(), "e8a1b5c35d31da88a3f96ff1995e7aee4c3d30aa9d0c31de3c5c6bdc8fe8e5aa")
-        self.assertEqual(authorize_guest(bulk(1, GOODIX_A8, ident=1), self.state), "goodix-usb-outer-a0-a8-64")
+        self.assertEqual(GOODIX_COMMAND00[:12].hex(), "a00800a800050000000000a5")
+        self.assertEqual(GOODIX_COMMAND00[12:], bytes(52))
+        self.assertEqual(hashlib.sha256(GOODIX_COMMAND00).hexdigest(), "e8a1b5c35d31da88a3f96ff1995e7aee4c3d30aa9d0c31de3c5c6bdc8fe8e5aa")
+        self.assertEqual(authorize_guest(bulk(1, GOODIX_COMMAND00, ident=1), self.state), "goodix-usb-outer-a0-command00-64")
         get_status = struct.pack("<BBBBHHH", 0x80, 0, 0x80, 0, 0, 0, 2)
         self.assertEqual(authorize_guest(packet(CONTROL_PACKET, get_status, ident=3), self.state), "standard-enumeration-control")
         self.assertEqual(authorize_guest(bulk(0x82, requested=0x8000, ident=4), self.state), "bounded-bulk-in-request")
@@ -171,16 +171,16 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(GuardViolation): authorize_guest(packet(CONTROL_PACKET, set_address, ident=6), self.state)
         vendor = struct.pack("<BBBBHHH", 0, 1, 0x40, 0, 0, 0, 0)
         with self.assertRaises(GuardViolation): authorize_guest(packet(CONTROL_PACKET, vendor, ident=6), self.state)
-        with self.assertRaises(GuardViolation): authorize_guest(bulk(1, GOODIX_A8, ident=2), self.state)
+        with self.assertRaises(GuardViolation): authorize_guest(bulk(1, GOODIX_COMMAND00, ident=2), self.state)
         with self.assertRaises(GuardViolation): authorize_upstream(bulk(1, ident=1), self.state)
-        self.assertEqual(authorize_upstream(bulk(1, requested=len(GOODIX_A8), ident=1), self.state), "a8-out-completion-observe")
+        self.assertEqual(authorize_upstream(bulk(1, requested=len(GOODIX_COMMAND00), ident=1), self.state), "command00-out-completion-observe")
         for first in (b"\xe5", b"\xe4", bytes.fromhex("0a0a0a0aa80300000001") + bytes(54)):
             state = GuardState(); state.bulk_header_size = 10
             state.device_connected = state.interface_valid = state.endpoints_valid = True
             with self.assertRaises(GuardViolation): authorize_guest(bulk(1, first), state)
         state = GuardState(); state.bulk_header_size = 10
         state.device_connected = state.interface_valid = state.endpoints_valid = True
-        changed = bytearray(GOODIX_A8); changed[-1] = 1
+        changed = bytearray(GOODIX_COMMAND00); changed[-1] = 1
         with self.assertRaises(GuardViolation): authorize_guest(bulk(1, bytes(changed), ident=2), state)
 
     def test_endpoint_stream_and_length_matrix(self):
@@ -313,22 +313,23 @@ class IntegrationTests(unittest.TestCase):
             thread.join(2); self.assertFalse(thread.is_alive())
             audit.close(); guest.close(); upstream.close()
 
-    def test_matching_a8_completion_allows_only_reads_until_next_out(self):
+    def test_matching_command00_completion_allows_only_reads_until_next_out(self):
         with tempfile.TemporaryDirectory() as directory:
             guest, upstream, audit, audit_path, thread = self._start(directory)
             self._negotiate_and_topology(guest, upstream)
             read_request = bulk(0x82, requested=0x8000, ident=10).raw
             guest.sendall(read_request); self.assertEqual(recv_exact(upstream, len(read_request)), read_request)
-            outgoing = bulk(1, GOODIX_A8, ident=11).raw
+            outgoing = bulk(1, GOODIX_COMMAND00, ident=11).raw
             guest.sendall(outgoing); self.assertEqual(recv_exact(upstream, len(outgoing)), outgoing)
             get_status = struct.pack("<BBBBHHH", 0x80, 0, 0x80, 0, 0, 0, 2)
             control = packet(CONTROL_PACKET, get_status, ident=12).raw
             guest.sendall(control); self.assertEqual(recv_exact(upstream, len(control)), control)
             control_response = packet(CONTROL_PACKET, get_status + b"\0\0", ident=12).raw
             upstream.sendall(control_response); self.assertEqual(recv_exact(guest, len(control_response)), control_response)
-            completion = bulk(1, requested=len(GOODIX_A8), ident=11).raw
+            completion = bulk(1, requested=len(GOODIX_COMMAND00), ident=11).raw
             upstream.sendall(completion); self.assertEqual(recv_exact(guest, len(completion)), completion)
-            response = bulk(0x82, bytes(10), ident=10).raw
+            ack = bytes.fromhex("a00600a6b003000001f6")
+            response = bulk(0x82, ack, ident=10).raw
             upstream.sendall(response); self.assertEqual(recv_exact(guest, len(response)), response)
             guest.sendall(bulk(1, b"forbidden", ident=13).raw)
             self.assert_closed(guest)
@@ -336,12 +337,12 @@ class IntegrationTests(unittest.TestCase):
             thread.join(2); self.assertFalse(thread.is_alive())
             audit.close(); guest.close(); upstream.close()
             events = [json.loads(line) for line in audit_path.read_text().splitlines()]
-            a8 = [event for event in events if event.get("policy") == "goodix-usb-outer-a0-a8-64"]
-            self.assertEqual([event["decision"] for event in a8], ["authorize", "forwarded"])
-            completion = [event for event in events if event.get("policy") == "a8-out-completion-observe"]
+            command00 = [event for event in events if event.get("policy") == "goodix-usb-outer-a0-command00-64"]
+            self.assertEqual([event["decision"] for event in command00], ["authorize", "forwarded"])
+            completion = [event for event in events if event.get("policy") == "command00-out-completion-observe"]
             self.assertEqual([event["decision"] for event in completion], ["authorize", "forwarded"])
 
-    def test_a8_deadline_closes_sockets_while_audit_is_blocked(self):
+    def test_command00_deadline_closes_sockets_while_audit_is_blocked(self):
         class BlockingAudit:
             def __init__(self):
                 self.entered = threading.Event()
@@ -360,7 +361,7 @@ class IntegrationTests(unittest.TestCase):
         thread = threading.Thread(target=guard.run); thread.start()
         self._negotiate_and_topology(guest, upstream)
         started = time.monotonic()
-        guest.sendall(bulk(1, GOODIX_A8, ident=11).raw)
+        guest.sendall(bulk(1, GOODIX_COMMAND00, ident=11).raw)
         self.assertTrue(audit.entered.wait(0.5))
         self.assert_closed(upstream)
         self.assertLess(time.monotonic() - started, 0.5)
@@ -368,14 +369,14 @@ class IntegrationTests(unittest.TestCase):
         thread.join(1); self.assertFalse(thread.is_alive())
         guest.close(); upstream.close()
 
-    def test_mismatched_a8_completion_and_timeout_close(self):
+    def test_mismatched_command00_completion_and_timeout_close(self):
         for mismatch in (True, False):
             with tempfile.TemporaryDirectory() as directory:
                 guest, upstream, audit, _, thread = self._start(directory, timeout=0.1)
                 self._negotiate_and_topology(guest, upstream)
-                a8 = bulk(1, GOODIX_A8, ident=11).raw
-                guest.sendall(a8); recv_exact(upstream, len(a8))
-                if mismatch: upstream.sendall(bulk(1, requested=len(GOODIX_A8), ident=12).raw)
+                command00 = bulk(1, GOODIX_COMMAND00, ident=11).raw
+                guest.sendall(command00); recv_exact(upstream, len(command00))
+                if mismatch: upstream.sendall(bulk(1, requested=len(GOODIX_COMMAND00), ident=12).raw)
                 upstream.settimeout(1)
                 self.assert_closed(upstream)
                 thread.join(1); self.assertFalse(thread.is_alive())

@@ -117,18 +117,26 @@ is legitimate firmware-version traffic from `McuGetFirmwareVersion @
 skipped by the pinned USB configuration; its SPB sequence must not be translated
 into libusb commands. Runtime USB selection does skip `_WriteSpi`, but a later no-hardware dynamic
 trace through pinned QEMU, Windows, and the staged official driver corrected the
-remaining byte-level conclusion. After enumeration and three queued 32 KiB IN
-URBs, its first application OUT was one 64-byte outer-A0 request:
+remaining byte-level conclusion. After enumeration and one queued 32 KiB IN
+URB, its first application OUT was one padded 64-byte outer-A0 request:
 `a00800a800050000000000a5 + 52*00`. No preceding `e5` appeared in that trace.
-The previously inferred direct inner packet `0a0a0a0aa80300000001 + 54*00` and
-the 15-byte F0/SPB KAT are not the pinned Windows USB wire request. This dynamic
-result restores outer-A0 framing as the authoritative Windows USB transport for
-the first A8 while retaining the separate ACK/data parser question. A later
-fail-closed hardware run attested the same bytes on endpoint `01`: usbmon frame
-157 submitted the 64-byte OUT, and frame 158 completed it with status 0 after
-56 us. The queued endpoint-`82` IN was cancelled when a concurrent post-A8 guest
-control request caused the guard to close, so no A8 response was captured and
-nothing after the single application OUT was forwarded.
+The byte `a8` at offset 3 is the outer-header checksum, not the command opcode;
+the inner command is command `00` with four zero payload bytes and checksum
+`a5`. The previously inferred direct-inner A8 packet
+`0a0a0a0aa80300000001 + 54*00` and the 15-byte F0/SPB KAT are therefore not the
+first pinned Windows USB request. Fail-closed hardware runs attested the exact
+command-00 bytes and successful 64-byte completion on endpoint `01`.
+
+A response-only guarded run then captured the full reply before denying the
+second 64-byte OUT in the proxy:
+`a00600a6b003000001f6`. This decodes normally as outer A0, command `B0`, payload
+`00 01`: ACK for command `00`, success. usbmon frames 156/157/159/161 recorded
+the prequeued 32 KiB IN, command-00 OUT, successful status-0 completion, and the
+10-byte ACK respectively. The ACK arrived 3.411 ms after OUT submission. A new
+IN was queued 40.649 ms later, but the next application OUT was denied before
+hardware and that IN was cancelled. Thus the first official transaction closes
+as ordinary command-00 ACK routing; it is not an A8 firmware response and does
+not supply a separate data frame.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
