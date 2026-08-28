@@ -177,15 +177,14 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(GuardViolation): authorize_guest(bulk(0x82, requested=0x8000), self.state)
         with self.assertRaises(GuardViolation): authorize_guest(bulk(0x82, requested=0x8001), self.state)
 
-    def test_one_enumeration_reset_requires_topology_reannouncement(self):
-        self.assertEqual(authorize_guest(packet(RESET), self.state), "one-enumeration-usb-reset")
-        self.assertFalse(self.state.device_connected)
-        with self.assertRaises(GuardViolation):
-            authorize_guest(packet(RESET), self.state)
-        authorize_upstream(packet(INTERFACE_INFO, _expected_interface_info()), self.state)
-        authorize_upstream(packet(EP_INFO, _expected_ep_info()), self.state)
+    def test_bounded_enumeration_resets_require_topology_reannouncement(self):
         connect = struct.pack("<BBBBHHH", 2, 0, 0, 0, 0x27c6, 0x5503, 0x100)
-        authorize_upstream(packet(DEVICE_CONNECT, connect), self.state)
+        for _ in range(3):
+            self.assertEqual(authorize_guest(packet(RESET), self.state), "bounded-enumeration-usb-reset")
+            self.assertFalse(self.state.device_connected)
+            authorize_upstream(packet(INTERFACE_INFO, _expected_interface_info()), self.state)
+            authorize_upstream(packet(EP_INFO, _expected_ep_info()), self.state)
+            authorize_upstream(packet(DEVICE_CONNECT, connect), self.state)
         with self.assertRaises(GuardViolation):
             authorize_guest(packet(RESET), self.state)
 

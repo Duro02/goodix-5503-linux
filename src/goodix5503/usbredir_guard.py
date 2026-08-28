@@ -116,7 +116,7 @@ class GuardState:
         self.interface_valid = False
         self.endpoints_valid = False
         self.filter_seen = False
-        self.reset_seen = False
+        self.reset_count = 0
         self.prefix_step = 0
         self.pending_out: tuple[int, str] | None = None
         self.pending_controls: dict[int, tuple[int, int, int, int, int, int]] = {}
@@ -296,11 +296,11 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
     if not state.device_connected or not state.interface_valid or not state.endpoints_valid:
         raise GuardViolation("guest operation before pinned topology")
     if packet.type == RESET:
-        if state.reset_seen or packet.body or state.prefix_step or state.pending_out is not None:
+        if state.reset_count >= 3 or packet.body or state.prefix_step or state.pending_out is not None:
             raise GuardViolation("USB enumeration reset denied")
-        state.reset_seen = True
+        state.reset_count += 1
         state.device_connected = state.interface_valid = state.endpoints_valid = False
-        return "one-enumeration-usb-reset"
+        return "bounded-enumeration-usb-reset"
     if packet.type == SET_CONFIGURATION:
         if packet.body != b"\x01" or packet.packet_id in state.pending_status:
             raise GuardViolation("configuration denied")

@@ -14,9 +14,10 @@ reader, then exactly these bulk-OUT transfers on endpoint 1:
 The guard correlates the two OUT completion IDs. It forwards the successful A8
 OUT completion and immediately closes both streams; a mismatch, failed status,
 or bounded completion timeout closes them without forwarding further traffic.
-One normal pre-command USB enumeration reset is allowed and requires the exact
-topology to be announced again. Unknown, malformed, class/vendor control,
-stream, TLS, further reset, firmware/configuration, PSK, and replay traffic closes both streams without
+At most three normal pre-command USB enumeration resets are allowed; each
+requires the exact topology to be announced again. Unknown, malformed,
+class/vendor control, stream, TLS, further reset, firmware/configuration, PSK,
+and replay traffic closes both streams without
 forwarding the denied frame or synthesizing a response.
 
 The protocol profile pins usbredirhost's actual pre-connect order: interface 0
