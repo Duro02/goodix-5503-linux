@@ -172,6 +172,8 @@ class PolicyTests(unittest.TestCase):
         vendor = struct.pack("<BBBBHHH", 0, 1, 0x40, 0, 0, 0, 0)
         with self.assertRaises(GuardViolation): authorize_guest(packet(CONTROL_PACKET, vendor, ident=6), self.state)
         with self.assertRaises(GuardViolation): authorize_guest(bulk(1, GOODIX_A8, ident=2), self.state)
+        with self.assertRaises(GuardViolation): authorize_upstream(bulk(1, ident=1), self.state)
+        self.assertEqual(authorize_upstream(bulk(1, requested=len(GOODIX_A8), ident=1), self.state), "a8-out-completion-observe")
         for first in (b"\xe5", b"\xe4", bytes.fromhex("0a0a0a0aa80300000001") + bytes(54)):
             state = GuardState(); state.bulk_header_size = 10
             state.device_connected = state.interface_valid = state.endpoints_valid = True
@@ -324,7 +326,7 @@ class IntegrationTests(unittest.TestCase):
             guest.sendall(control); self.assertEqual(recv_exact(upstream, len(control)), control)
             control_response = packet(CONTROL_PACKET, get_status + b"\0\0", ident=12).raw
             upstream.sendall(control_response); self.assertEqual(recv_exact(guest, len(control_response)), control_response)
-            completion = bulk(1, ident=11).raw
+            completion = bulk(1, requested=len(GOODIX_A8), ident=11).raw
             upstream.sendall(completion); self.assertEqual(recv_exact(guest, len(completion)), completion)
             response = bulk(0x82, bytes(10), ident=10).raw
             upstream.sendall(response); self.assertEqual(recv_exact(guest, len(response)), response)
@@ -373,7 +375,7 @@ class IntegrationTests(unittest.TestCase):
                 self._negotiate_and_topology(guest, upstream)
                 a8 = bulk(1, GOODIX_A8, ident=11).raw
                 guest.sendall(a8); recv_exact(upstream, len(a8))
-                if mismatch: upstream.sendall(bulk(1, ident=12).raw)
+                if mismatch: upstream.sendall(bulk(1, requested=len(GOODIX_A8), ident=12).raw)
                 upstream.settimeout(1)
                 self.assert_closed(upstream)
                 thread.join(1); self.assertFalse(thread.is_alive())

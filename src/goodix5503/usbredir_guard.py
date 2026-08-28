@@ -427,8 +427,8 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         raise GuardViolation("packet before device identity")
     if packet.type == BULK_PACKET:
         endpoint, status, length, _, data = _bulk_fields(packet, state)
-        if endpoint != 0x01 or status != 0 or length != 0 or data:
-            raise GuardViolation("only successful OUT completion is permitted")
+        if endpoint != 0x01 or status != 0 or length != len(GOODIX_A8) or data:
+            raise GuardViolation("only exact successful A8 OUT completion is permitted")
         if state.pending_out is None or packet.packet_id != state.pending_out[0]:
             raise GuardViolation("unmatched bulk OUT completion")
         kind = state.pending_out[1]

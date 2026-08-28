@@ -14,7 +14,8 @@ a00800a800050000000000a5 + 52 zero bytes (64 bytes total)
 
 This outer-A0 A8 packet is the first application OUT observed dynamically from
 the pinned Windows VM; no preceding `e5` appeared. The guard correlates its
-request ID and forwards the successful A8 OUT completion. After A8 it permits
+request ID and forwards only the successful A8 OUT completion reporting the
+exact 64-byte transferred length. After A8 it permits
 only the already-audited data-free standard controls and bounded endpoint-`82`
 reads needed to observe the response. Any second bulk OUT closes both streams
 before forwarding; so do a mismatched or failed completion and the bounded
