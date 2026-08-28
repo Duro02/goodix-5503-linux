@@ -461,3 +461,28 @@ There is no C4, D6, D2, AE or wire-92 preparation *between* these acquisitions.
 The pinned-default cold D6 occurs before TLS/config and the single C4 occurs
 after validated config but before host FDT initialization. Duplicate C4 and D2
 must not be introduced.
+
+## Embedded 10063 MCU package
+
+The pinned DLL embeds two identical complete `MILAN_RTSEC_APP_10063` packages.
+The descriptor-backed copy starts at file offset `0x1a1cd0`, has length `0xe01a`,
+and SHA-256
+`14e6effecbcbb5b20a5182c9f8941cd992f20b6ddb2e60a117fce424ab7e5eb5`.
+Its 57,328-byte application payload is file range
+`0x1a1ce6..0x1afcd6`, SHA-256
+`3dcb1dc483ecdb4dadcd3d4d8447dae1d5099509e03f157289cab709b8453fbf`.
+The second package at `0x20a520..0x21853a` is byte-identical. Package boundaries
+were cross-checked against the official 10062 package and the community 10062
+firmware image; no firmware was executed or written.
+
+The payload is Intel 8051 code. `at51` ranks code base `0x2000` highest, which
+also makes the `0xdff0` payload end exactly at `0xfff0`; calls into lower
+addresses are consistent with ROM services. Radare2 recovers a candidate state-selector jump table with distinct cases
+`0x0c`, `0x0d`, and `0x0e`; case `0x0d` reaches mapped address `0x49f2`.
+Static evidence does not yet tie those selector values to wire commands 32, 34,
+and 36, so they must not be labelled down, up, and manual solely from their
+ordering. A nearby `0x3f` write and 16-byte copy are likewise not evidence of
+the response layout: the copy source uses the 8051 generic-pointer code-space
+tag and points into the lower resident image. The data flow to the four leading
+response bytes remains unclosed, so none of these observations authorizes
+slicing the observed 16-byte command-36 body.
