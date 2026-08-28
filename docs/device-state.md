@@ -86,8 +86,12 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   that is the SPB branch and correctly produced no USB IN. For USB 5503 the
   pinned globals select `McuWriteRaw`; the exact official request is inner
   `0a0a0a0aa80300000001` padded to one 64-byte OUT. Official IoHub requires a
-  separately parsed inner-B ACK before firmware data. Nothing was retried and
-  all diagnostic source gates remain false.
+  separately parsed inner-B ACK before firmware data. The reviewed exact
+  64-byte USB one-shot (`inner10 + 54*00`) later completed OUT at 536 ms but
+  observed zero IN completions through 3,250 ms. Nothing was retried. Static
+  branch reconstruction and live behavior still disagree, making a Windows
+  VM/usbmon trace the preferred next authority; all diagnostic gates remain
+  false.
 ```
 
 ## Interpretation
