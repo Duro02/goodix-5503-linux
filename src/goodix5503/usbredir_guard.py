@@ -2,10 +2,10 @@
 
 This proxy is intentionally not a general USB firewall. It forwards only USB
 setup needed to enumerate the pinned device and the exact padded 64-byte
-outer-A0 command-00 and firmware-A8 requests observed from pinned QEMU/Windows.
-The second OUT requires the exact command-00 success ACK; afterward only
-control-IN and bounded bulk-IN reads may pass. A third OUT, TLS, streams, and
-unknown protocol operations terminate both connections.
+outer-A0 command-00 and two firmware-A8 identity reads observed from pinned
+QEMU/Windows. Each stage requires exact prior completion and ACK/data responses;
+afterward only control-IN and bounded bulk-IN reads may pass. A fourth OUT, TLS,
+streams, and unknown protocol operations terminate both connections.
 """
 
 from __future__ import annotations
@@ -58,6 +58,10 @@ _KNOWN_CAPS: Final = 0xFF
 GOODIX_COMMAND00: Final = bytes.fromhex("a00800a800050000000000a5") + bytes(52)
 GOODIX_COMMAND00_ACK: Final = bytes.fromhex("a00600a6b003000001f6")
 GOODIX_FIRMWARE_A8: Final = bytes.fromhex("a00600a6a803000000ff") + bytes(54)
+GOODIX_FIRMWARE_A8_ACK: Final = bytes.fromhex("a00600a6b00300a8014e")
+GOODIX_FIRMWARE_A8_DATA: Final = bytes.fromhex(
+    "a01b00bba818004746333235385f52545345435f4150505f31303036330012"
+)
 
 
 class GuardViolation(RuntimeError):
@@ -133,7 +137,9 @@ class GuardState:
         self.negotiation_timeout = DEFAULT_TIMEOUT
         self.command00_completed = False
         self.command00_acknowledged = False
-        self.firmware_a8_completed = False
+        self.firmware_a8_completed_count = 0
+        self.firmware_a8_ack_count = 0
+        self.firmware_a8_data_count = 0
         self.buffered = 0
         self.stopped = False
 
@@ -388,9 +394,16 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
             return "goodix-usb-outer-a0-command00-64"
         if (state.prefix_step == 1 and state.command00_completed
                 and state.command00_acknowledged and data == GOODIX_FIRMWARE_A8):
-            state.pending_out = (packet.packet_id, "firmware-a8")
+            state.pending_out = (packet.packet_id, "firmware-a8-first")
             state.prefix_step = 2
-            return "goodix-usb-outer-a0-firmware-a8-64"
+            return "goodix-usb-outer-a0-firmware-a8-first-64"
+        if (state.prefix_step == 2 and state.firmware_a8_completed_count == 1
+                and state.firmware_a8_ack_count == 1
+                and state.firmware_a8_data_count == 1
+                and data == GOODIX_FIRMWARE_A8):
+            state.pending_out = (packet.packet_id, "firmware-a8-second")
+            state.prefix_step = 3
+            return "goodix-usb-outer-a0-firmware-a8-second-64"
         raise GuardViolation("bulk OUT prefix denied")
     raise GuardViolation(f"guest packet type {packet.type} denied")
 
@@ -440,6 +453,20 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
                     raise GuardViolation("exact command-00 ACK required")
                 state.command00_acknowledged = True
                 return "exact-command00-success-ack"
+            if state.prefix_step in (2, 3):
+                expected_count = state.prefix_step - 1
+                if state.firmware_a8_completed_count < expected_count:
+                    raise GuardViolation("firmware A8 response before OUT completion")
+                if state.firmware_a8_ack_count < expected_count:
+                    if data != GOODIX_FIRMWARE_A8_ACK:
+                        raise GuardViolation("exact firmware A8 ACK required")
+                    state.firmware_a8_ack_count += 1
+                    return "exact-firmware-a8-success-ack"
+                if state.firmware_a8_data_count < expected_count:
+                    if data != GOODIX_FIRMWARE_A8_DATA:
+                        raise GuardViolation("exact firmware A8 data required")
+                    state.firmware_a8_data_count += 1
+                    return "exact-firmware-a8-data"
             return "matched-bulk-in-response"
     status_types = {CONFIGURATION_STATUS: "configuration", ALT_SETTING_STATUS: "alternate",
                     BULK_RECEIVING_STATUS: "bulk-receiving"}
@@ -461,9 +488,12 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         if kind == "command00":
             state.command00_completed = True
             return "command00-out-completion-observe"
-        if kind == "firmware-a8":
-            state.firmware_a8_completed = True
-            return "firmware-a8-out-completion-observe"
+        if kind == "firmware-a8-first":
+            state.firmware_a8_completed_count = 1
+            return "firmware-a8-first-out-completion-observe"
+        if kind == "firmware-a8-second":
+            state.firmware_a8_completed_count = 2
+            return "firmware-a8-second-out-completion-observe"
         raise GuardViolation("unexpected OUT completion kind")
     if packet.type == BUFFERED_BULK_PACKET:
         if len(packet.body) < 10:

@@ -14,7 +14,8 @@ from goodix5503.usbredir_guard import (
     CAP_64BIT_IDS, CONFIGURATION_STATUS, CONTROL_PACKET, DEVICE_CONNECT,
     SET_CONFIGURATION,
     EP_INFO, FILTER_FILTER, GOODIX_COMMAND00, GOODIX_COMMAND00_ACK,
-    GOODIX_FIRMWARE_A8, GuardState, GuardViolation, HELLO, RESET,
+    GOODIX_FIRMWARE_A8, GOODIX_FIRMWARE_A8_ACK, GOODIX_FIRMWARE_A8_DATA,
+    GuardState, GuardViolation, HELLO, RESET,
     INTERFACE_INFO, MAX_FRAME, Packet, UsbRedirGuard, _expected_ep_info,
     _expected_interface_info, authorize_guest, authorize_upstream, read_packet,
 )
@@ -176,9 +177,15 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(GuardViolation): authorize_upstream(bulk(1, ident=1), self.state)
         self.assertEqual(authorize_upstream(bulk(1, requested=len(GOODIX_COMMAND00), ident=1), self.state), "command00-out-completion-observe")
         self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_COMMAND00_ACK, ident=4), self.state), "exact-command00-success-ack")
-        self.assertEqual(authorize_guest(bulk(1, GOODIX_FIRMWARE_A8, ident=7), self.state), "goodix-usb-outer-a0-firmware-a8-64")
+        self.assertEqual(authorize_guest(bulk(1, GOODIX_FIRMWARE_A8, ident=7), self.state), "goodix-usb-outer-a0-firmware-a8-first-64")
         with self.assertRaises(GuardViolation): authorize_guest(bulk(1, GOODIX_FIRMWARE_A8, ident=8), self.state)
-        self.assertEqual(authorize_upstream(bulk(1, requested=len(GOODIX_FIRMWARE_A8), ident=7), self.state), "firmware-a8-out-completion-observe")
+        self.assertEqual(authorize_upstream(bulk(1, requested=len(GOODIX_FIRMWARE_A8), ident=7), self.state), "firmware-a8-first-out-completion-observe")
+        self.assertEqual(authorize_guest(bulk(0x82, requested=0x8000, ident=9), self.state), "bounded-bulk-in-request")
+        self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_FIRMWARE_A8_ACK, ident=9), self.state), "exact-firmware-a8-success-ack")
+        self.assertEqual(authorize_guest(bulk(0x82, requested=0x8000, ident=10), self.state), "bounded-bulk-in-request")
+        self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_FIRMWARE_A8_DATA, ident=10), self.state), "exact-firmware-a8-data")
+        self.assertEqual(authorize_guest(bulk(1, GOODIX_FIRMWARE_A8, ident=11), self.state), "goodix-usb-outer-a0-firmware-a8-second-64")
+        self.assertEqual(authorize_upstream(bulk(1, requested=64, ident=11), self.state), "firmware-a8-second-out-completion-observe")
         for first in (b"\xe5", b"\xe4", bytes.fromhex("0a0a0a0aa80300000001") + bytes(54)):
             state = GuardState(); state.bulk_header_size = 10
             state.device_connected = state.interface_valid = state.endpoints_valid = True
@@ -197,6 +204,20 @@ class PolicyTests(unittest.TestCase):
             authorize_upstream(bulk(0x82, bytes(wrong), ident=2), self.state)
         with self.assertRaises(GuardViolation):
             authorize_guest(bulk(1, GOODIX_FIRMWARE_A8, ident=3), self.state)
+
+    def test_second_firmware_a8_requires_exact_first_ack_and_data(self):
+        self.assertEqual(authorize_guest(bulk(1, GOODIX_COMMAND00, ident=1), self.state), "goodix-usb-outer-a0-command00-64")
+        self.assertEqual(authorize_upstream(bulk(1, requested=64, ident=1), self.state), "command00-out-completion-observe")
+        self.assertEqual(authorize_guest(bulk(0x82, requested=0x8000, ident=2), self.state), "bounded-bulk-in-request")
+        self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_COMMAND00_ACK, ident=2), self.state), "exact-command00-success-ack")
+        self.assertEqual(authorize_guest(bulk(1, GOODIX_FIRMWARE_A8, ident=3), self.state), "goodix-usb-outer-a0-firmware-a8-first-64")
+        self.assertEqual(authorize_upstream(bulk(1, requested=64, ident=3), self.state), "firmware-a8-first-out-completion-observe")
+        self.assertEqual(authorize_guest(bulk(0x82, requested=0x8000, ident=4), self.state), "bounded-bulk-in-request")
+        wrong_ack = bytearray(GOODIX_FIRMWARE_A8_ACK); wrong_ack[-1] ^= 1
+        with self.assertRaisesRegex(GuardViolation, "exact firmware A8 ACK"):
+            authorize_upstream(bulk(0x82, bytes(wrong_ack), ident=4), self.state)
+        with self.assertRaises(GuardViolation):
+            authorize_guest(bulk(1, GOODIX_FIRMWARE_A8, ident=5), self.state)
 
     def test_endpoint_stream_and_length_matrix(self):
         with self.assertRaises(GuardViolation): authorize_guest(bulk(2, b"\xe5"), self.state)
@@ -328,7 +349,7 @@ class IntegrationTests(unittest.TestCase):
             thread.join(2); self.assertFalse(thread.is_alive())
             audit.close(); guest.close(); upstream.close()
 
-    def test_exact_command00_ack_allows_one_firmware_a8_then_denies_third_out(self):
+    def test_exact_responses_allow_two_firmware_a8_reads_then_deny_fourth_out(self):
         with tempfile.TemporaryDirectory() as directory:
             guest, upstream, audit, audit_path, thread = self._start(directory)
             self._negotiate_and_topology(guest, upstream)
@@ -351,7 +372,19 @@ class IntegrationTests(unittest.TestCase):
             guest.sendall(firmware_a8); self.assertEqual(recv_exact(upstream, len(firmware_a8)), firmware_a8)
             firmware_completion = bulk(1, requested=len(GOODIX_FIRMWARE_A8), ident=14).raw
             upstream.sendall(firmware_completion); self.assertEqual(recv_exact(guest, len(firmware_completion)), firmware_completion)
-            guest.sendall(bulk(1, b"forbidden", ident=15).raw)
+            first_ack = bulk(0x82, GOODIX_FIRMWARE_A8_ACK, ident=13).raw
+            upstream.sendall(first_ack); self.assertEqual(recv_exact(guest, len(first_ack)), first_ack)
+            data_read = bulk(0x82, requested=0x8000, ident=15).raw
+            guest.sendall(data_read); self.assertEqual(recv_exact(upstream, len(data_read)), data_read)
+            first_data = bulk(0x82, GOODIX_FIRMWARE_A8_DATA, ident=15).raw
+            upstream.sendall(first_data); self.assertEqual(recv_exact(guest, len(first_data)), first_data)
+            second_read = bulk(0x82, requested=0x8000, ident=16).raw
+            guest.sendall(second_read); self.assertEqual(recv_exact(upstream, len(second_read)), second_read)
+            second_a8 = bulk(1, GOODIX_FIRMWARE_A8, ident=17).raw
+            guest.sendall(second_a8); self.assertEqual(recv_exact(upstream, len(second_a8)), second_a8)
+            second_completion = bulk(1, requested=64, ident=17).raw
+            upstream.sendall(second_completion); self.assertEqual(recv_exact(guest, len(second_completion)), second_completion)
+            guest.sendall(bulk(1, b"forbidden", ident=18).raw)
             self.assert_closed(guest)
             self.assert_closed(upstream)
             thread.join(2); self.assertFalse(thread.is_alive())
@@ -361,8 +394,10 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual([event["decision"] for event in command00], ["authorize", "forwarded"])
             completion = [event for event in events if event.get("policy") == "command00-out-completion-observe"]
             self.assertEqual([event["decision"] for event in completion], ["authorize", "forwarded"])
-            firmware = [event for event in events if event.get("policy") == "goodix-usb-outer-a0-firmware-a8-64"]
-            self.assertEqual([event["decision"] for event in firmware], ["authorize", "forwarded"])
+            first = [event for event in events if event.get("policy") == "goodix-usb-outer-a0-firmware-a8-first-64"]
+            second = [event for event in events if event.get("policy") == "goodix-usb-outer-a0-firmware-a8-second-64"]
+            self.assertEqual([event["decision"] for event in first], ["authorize", "forwarded"])
+            self.assertEqual([event["decision"] for event in second], ["authorize", "forwarded"])
 
     def test_expired_deadline_denies_firmware_a8_before_forward(self):
         with tempfile.TemporaryDirectory() as directory:

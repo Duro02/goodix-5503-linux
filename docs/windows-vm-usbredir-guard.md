@@ -6,11 +6,12 @@ can replace PSK/protected records and contains firmware-update paths. Disabling
 
 `goodix-5503-usbredir-guard` is a deliberately single-use stream proxy. It
 accepts only `27c6:5503`, safe standard enumeration, bounded 32 KiB bulk-IN
-reads, and exactly two pinned bulk-OUT transfers on endpoint 1:
+reads, and exactly three pinned bulk-OUT transfers on endpoint 1:
 
 ```text
 a00800a800050000000000a5 + 52 zero bytes (command 00; 64 bytes)
 a00600a6a803000000ff + 54 zero bytes (firmware-version A8; 64 bytes)
+a00600a6a803000000ff + 54 zero bytes (second identity read; 64 bytes)
 ```
 
 This is a padded outer-A0 command-00 packet: `a8` is the outer-header checksum,
@@ -19,11 +20,14 @@ first application OUT observed dynamically from the pinned Windows VM; no
 preceding `e5` appeared. The guard correlates its request ID and forwards only
 the successful command-00 OUT completion reporting the exact 64-byte
 transferred length. It requires the exact command-B0 success ACK
-`a00600a6b003000001f6` before allowing the pinned read-only firmware A8 request.
-After that it permits only already-audited control-IN requests and bounded
-endpoint-`82` reads needed to observe the response. Any third bulk OUT closes
-both streams before forwarding; so do a mismatched or failed completion, a
-nonexact command-00 ACK, and the bounded observation deadline.
+`a00600a6b003000001f6` before allowing the first pinned read-only firmware A8.
+The second identical A8 is allowed only after exact first response frames
+`a00600a6b00300a8014e` and
+`a01b00bba818004746333235385f52545345435f4150505f31303036330012`.
+Afterward only already-audited control-IN requests and bounded endpoint-`82`
+reads may pass. Any fourth bulk OUT closes both streams before forwarding; so
+do a mismatched or failed completion, a nonexact ACK/data response, and the
+bounded observation deadline.
 At most three normal pre-command USB resets are allowed. They retain the
 already pinned usbredir connection identity; any topology packet that does
 recur must still match exactly. Unknown, malformed,
