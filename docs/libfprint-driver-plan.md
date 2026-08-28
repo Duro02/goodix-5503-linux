@@ -20,11 +20,14 @@ Use separate bounded `FpiSsm` machines for activation, capture and cleanup:
 1. **Activation:** claim the existing bulk interface; NOP; exact firmware/IAP;
    read and compare the R-family PSK verification record; load the locally
    prepared config and PSK; runtime reset; TLS 1.2 PSK handshake; upload the
-   exact config; set driver state twice; initialize POV.
+   exact config; apply the single pinned-default driver-state hook; initialize
+   the bounded fresh-base path.
 2. **Finger detection:** fixed FDT mode/down commands with cancellable bounded
    waits. Report finger status through `fpi_image_device_report_finger_status()`.
-3. **Capture:** send fixed `0x20`; route ACK/A0 command completions separately
-   from B2 encrypted data; decrypt one exact application stream; validate
+3. **Capture:** parse command-36 data through its dedicated FDT policy (two
+   LE16 header fields followed by the exact profile-sized base), then send fixed
+   `0x20`; route ACK/A0 command completions separately from B2 encrypted data;
+   decrypt one exact application stream; validate
    9-byte opaque prefix, complete TLS records, 7,684-byte plaintext and 4-byte
    opaque trailer boundaries; decode 7,680 packed bytes.
 4. **Cleanup/deactivation:** cancel outstanding USB transfer, wipe TLS/PSK,

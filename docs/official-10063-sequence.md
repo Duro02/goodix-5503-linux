@@ -454,6 +454,12 @@ selects the manual-base branch before that copy. The observed body therefore
 parses losslessly as header `82 01 3f 00` followed by the six raw LE16 base
 words; this is official field removal, not truncation or guessed normalization.
 Bodies other than exactly 16 checksum-free bytes remain fatal in the free path.
+The corrected parser was exercised on the real 10063 unit: all three bounded
+fresh-base acquisitions completed, command 20 returned B2/TLS image data, TLS
+decrypted to exactly 7,684 bytes, and the structural result was an 80x64 frame
+with a 7,680-byte packed body plus the already-defined opaque 9-byte prefix and
+4-byte plaintext trailer. No image bytes or biometric-derived statistics were
+logged or retained.
 
 A combined read-only 8051 image, formed from the low `0x2000` bytes of the
 embedded `MILAN_RTSEC_IAP_10027` resident image and the 10063 APP at `0x2000`,
