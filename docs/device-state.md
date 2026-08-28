@@ -38,6 +38,14 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   ten-byte HU image request. Later pinned-parser/cold-state runs reached the
   first command 36 and consistently received a checksum-free 16-byte payload,
   which exceeds the official DN2 12-byte output capacity and remains fatal.
+  A raw usbmon capture at commit `d6d7a4f` closed the transport question. Its
+  22-byte OUT body was exactly `0d01 || live DAC_LE16[4] || (8000)*6`; the
+  device returned the exact success ACK and then a complete command-36 A0 frame
+  whose inner length was 17 (16 data bytes plus checksum). The decoded body was
+  `82013f0065014b016b0150016b014701`. The IN URBs and command IDs were ordered
+  correctly, and cleanup sent only A2 reset after the fatal response; command
+  20 was not sent. Capture SHA-256:
+  `d20ac47a7f631b07203e03e05e9c2036911ce0fcb38536764a7a86aa0ddd1674`.
   The latest full diff found two still-missing mandatory prerequisites: raw
   loader wake `e5` plus 50 ms settle, and CheckSensor A6 OTP acquisition after
   reset/chip selection and command 00. A separately reviewed one-shot at commit

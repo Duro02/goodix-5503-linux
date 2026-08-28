@@ -429,9 +429,24 @@ in its packet-object length and copies from the unchanged payload pointer; it
 does **not** remove a leading result byte. The free `_decode_packet()` has
 already removed that checksum, so the payload must pass unchanged to the HU
 parser. Payloads 0..12 are right-zero-padded and anything over 12 remains an
-error. The latest controlled run reported 15 only after the former one-byte
-slice, proving the actual checksum-free device payload was 16 bytes and still
-exceeds the official capacity. Output1 is the padded raw six-word response.
+error. A raw usbmon capture at commit `d6d7a4f` independently confirmed the
+current 16-byte result is not stale data or leftover framing. Frames 191/193/195
+contain the exact 22-byte command-36 request, exact success ACK, and full A0
+response respectively:
+
+```text
+OUT: a01a00ba 361700 0d018b0083008c008700800080008000800080008000 2e
+ACK: a00600a6 b00300 3601 c0
+A0:  a01400b4 361100 82013f0065014b016b0150016b014701 7e
+```
+
+The A0 inner length `0x0011` is exactly 16 data bytes plus its checksum. The
+response read was queued after the ACK under a distinct URB, command matching
+was correct, and cleanup sent only A2 reset after the fatal result. No command
+20 was sent. Capture SHA-256 is
+`d20ac47a7f631b07203e03e05e9c2036911ce0fcb38536764a7a86aa0ddd1674`.
+The eight plausible LE16 values are not sufficient evidence to reinterpret or
+truncate the official six-word result. Output1 remains the padded raw six-word response.
 Output2 transforms each
 raw LE16 word `x` to `((x >> 1) << 8) | 0x80`; accepted output2 becomes the base
 for later requests. The DLL retries inconsistent pairs without a numeric bound;
