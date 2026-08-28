@@ -259,10 +259,12 @@ completed and command 00 was sent first, but no IN completion arrived before the
 bounded timeout. No later operation was reached. Because the experiment
 falsified the hypothesis, its specialized reset/descriptor machinery was removed
 rather than retained as dormant production complexity. The remaining concrete
-transport difference is that Windows had a 32 KiB bulk-IN request queued before
-command 00, whereas synchronous PyUSB submits its first IN only after OUT. Any
-next diagnostic should isolate that ordering question without redesigning the
-full capture transport.
+transport difference was that Windows had a 32 KiB bulk-IN request queued before
+command 00, whereas synchronous PyUSB submitted its first IN only after OUT. A
+focused libusb async diagnostic proved this ordering by receiving the exact ACK;
+a smaller PyUSB queued-read check then reproduced it. The experimental capture
+path now uses that queued-read ordering for its fixed transactions without
+changing the generic probe transport.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader. It mirrors command 00 and the

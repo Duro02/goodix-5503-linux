@@ -6,6 +6,7 @@ __test__ = False
 
 import hashlib
 import hmac
+import json
 import os
 import socket
 import ssl
@@ -98,13 +99,89 @@ def _remaining_timeout_ms(operation_deadline: float | None) -> int | None:
     return remaining
 
 
+def _queued_frame_bounded(
+    session: ReadOnlyUsbSession,
+    operation_deadline: float | None,
+    *,
+    packet: bytes | None = None,
+) -> bytes:
+    """Queue one 32 KiB IN read before an optional fixed OUT, then parse it."""
+    timeout_ms = _remaining_timeout_ms(operation_deadline)
+    if timeout_ms is None:
+        timeout_ms = getattr(session, "timeout_ms", 5000)
+    timeout_ms = min(1500, timeout_ms)
+    # Protocol-unit fakes intentionally have no USB endpoint. Real sessions
+    # always take the queued path below.
+    if not hasattr(session, "endpoint_in"):
+        if packet is not None:
+            session._ReadOnlyUsbSession__write_packet(packet)  # type: ignore[attr-defined]
+        try:
+            return session._read_frame(timeout_ms=timeout_ms)
+        except TypeError as error:
+            if "unexpected keyword argument" not in str(error):
+                raise
+            return session._read_frame()
+    entered = threading.Event()
+    captured: list[bytearray] = []
+    errors: list[BaseException] = []
+
+    def receive() -> None:
+        entered.set()
+        try:
+            usb_buffer = session.endpoint_in.read(0x8000, timeout=timeout_ms)
+            try:
+                captured.append(bytearray(usb_buffer))
+            finally:
+                memoryview(usb_buffer).cast("B")[:] = b"\x00" * len(usb_buffer)
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=receive, name="goodix5503-queued-in")
+    worker.start()
+    if not entered.wait(0.100):
+        raise ImageCaptureError("queued USB reader did not start")
+    write_error: BaseException | None = None
+    if packet is not None:
+        # PyUSB has no submit acknowledgement. The command-00 experiment proved
+        # that this short barrier is sufficient to put the read ahead of OUT on
+        # this host; it is transport ordering, not a protocol delay.
+        time.sleep(0.025)
+        try:
+            session._ReadOnlyUsbSession__write_packet(  # type: ignore[attr-defined]
+                packet
+            )
+        except BaseException as error:
+            write_error = error
+    join_seconds = timeout_ms / 1000 + 0.100
+    worker.join(join_seconds)
+    if worker.is_alive():
+        raise ImageCaptureError("queued USB reader exceeded its bounded timeout")
+    if write_error is not None:
+        raise ImageCaptureError("queued USB write failed") from write_error
+    if errors:
+        raise ImageCaptureError("queued USB read failed") from errors[0]
+    if len(captured) != 1 or not captured[0]:
+        raise ImageCaptureError("queued USB read returned no transfer")
+    transfer = captured[0]
+    try:
+        session._rx_buffer.extend(transfer)
+    finally:
+        transfer[:] = b"\x00" * len(transfer)
+    return session._read_frame(timeout_ms=1)
+
+
 def _read_frame_bounded(
     session: ReadOnlyUsbSession, operation_deadline: float | None
 ) -> bytes:
-    timeout_ms = _remaining_timeout_ms(operation_deadline)
-    if timeout_ms is None:
-        return session._read_frame()
-    return session._read_frame(timeout_ms=timeout_ms)
+    return _queued_frame_bounded(session, operation_deadline)
+
+
+def _write_and_read_frame_bounded(
+    session: ReadOnlyUsbSession,
+    packet: bytes,
+    operation_deadline: float | None,
+) -> bytes:
+    return _queued_frame_bounded(session, operation_deadline, packet=packet)
 
 
 def _ack_only(
@@ -113,11 +190,11 @@ def _ack_only(
     payload: bytes,
     operation_deadline: float | None = None,
 ) -> None:
-    session._ReadOnlyUsbSession__write_packet(  # type: ignore[attr-defined]
-        _encode_packet(command, payload)
-    )
     ack = _decode_packet(
-        _read_frame_bounded(session, operation_deadline), COMMAND_ACK
+        _write_and_read_frame_bounded(
+            session, _encode_packet(command, payload), operation_deadline
+        ),
+        COMMAND_ACK,
     )
     _check_ack(ack, command)
 
@@ -177,11 +254,11 @@ def _exchange_raw_command_body(
     payload: bytes,
     operation_deadline: float | None = None,
 ) -> bytes:
-    session._ReadOnlyUsbSession__write_packet(  # type: ignore[attr-defined]
-        _encode_packet(command, payload)
-    )
     ack = _decode_packet(
-        _read_frame_bounded(session, operation_deadline), COMMAND_ACK
+        _write_and_read_frame_bounded(
+            session, _encode_packet(command, payload), operation_deadline
+        ),
+        COMMAND_ACK,
     )
     _check_ack(ack, command)
     return _decode_packet(
@@ -232,18 +309,16 @@ def _read_otp_bounded(
     operation_deadline: float,
 ) -> bytearray:
     command = 0xA6
-    session._ReadOnlyUsbSession__write_packet(  # type: ignore[attr-defined]
-        _encode_packet(command, b"\x00\x00")
+    ack = _decode_packet(
+        _write_and_read_frame_bounded(
+            session, _encode_packet(command, b"\x00\x00"), operation_deadline
+        ),
+        COMMAND_ACK,
     )
-
-    def read_phase() -> bytes:
-        remaining = _remaining_timeout_ms(operation_deadline)
-        assert remaining is not None
-        return session._read_frame(timeout_ms=min(1500, remaining))
-
-    ack = _decode_packet(read_phase(), COMMAND_ACK)
     _check_ack(ack, command)
-    body = _decode_packet(read_phase(), command)
+    body = _decode_packet(
+        _read_frame_bounded(session, operation_deadline), command
+    )
     if len(body) != 64:
         raise ImageCaptureError("post-reset OTP response must be exactly 64 bytes")
     return bytearray(body)
@@ -292,11 +367,13 @@ def _request_encrypted_clear_image(
 ) -> tuple[bytearray, bytearray]:
     if len(request_payload) != 10:
         raise ImageCaptureError("GF3258 HU image request must be exactly 10 bytes")
-    session._ReadOnlyUsbSession__write_packet(  # type: ignore[attr-defined]
-        _encode_packet(COMMAND_GET_IMAGE, request_payload)
-    )
     ack = _decode_packet(
-        _read_frame_bounded(session, operation_deadline), COMMAND_ACK
+        _write_and_read_frame_bounded(
+            session,
+            _encode_packet(COMMAND_GET_IMAGE, request_payload),
+            operation_deadline,
+        ),
+        COMMAND_ACK,
     )
     _check_ack(ack, COMMAND_GET_IMAGE)
     frame = _read_frame_bounded(session, operation_deadline)
@@ -917,3 +994,12 @@ def run_prepared_clear_frame_capture(
             buffer[:] = b"\x00" * len(buffer)
         if primary_cleanup_error is not None and not had_primary_error:
             raise ImageCaptureError("clear-frame cleanup failed") from primary_cleanup_error
+
+
+def main() -> int:
+    print(json.dumps(run_prepared_clear_frame_capture(), sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

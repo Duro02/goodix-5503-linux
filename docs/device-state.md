@@ -139,8 +139,12 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   timed out with no IN completion and reached no later operation. USB reset
   state alone is therefore insufficient, so the specialized reset/descriptor
   code was removed instead of becoming dormant production complexity. Unlike
-  synchronous PyUSB, Windows had a 32 KiB IN request queued before command 00;
-  that ordering difference remains the next isolated question.
+  synchronous PyUSB, Windows had a 32 KiB IN request queued before command 00.
+  A focused libusb asynchronous diagnostic then submitted a real 32 KiB IN
+  before the fixed OUT and received the exact command-00 ACK. A smaller PyUSB
+  queued-read check reproduced the same result. The experimental capture path
+  now queues each bounded IN before its corresponding fixed OUT and queues the
+  next response read immediately after each completion.
 ```
 
 ## Interpretation
