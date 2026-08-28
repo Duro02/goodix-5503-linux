@@ -80,18 +80,15 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   shows outer A8 is legitimate firmware-version traffic in SelfCheck and
   ProcessPsk. A separate optional `McuGetCpuVersion` F0/F1 SPI branch exists but
   is skipped by the pinned USB globals and is not a libusb protocol. The ten
-  zeros remain an empirical completion, not a token to ignore. Final runtime-
-  branch tracing proved the free A0 request used the wrong layer. A later
-  reviewed 15-byte F0/`_WriteSpi(0x3d00)` one-shot also used the wrong layer:
-  that is the SPB branch and correctly produced no USB IN. For USB 5503 the
-  pinned globals select `McuWriteRaw`; the exact official request is inner
-  `0a0a0a0aa80300000001` padded to one 64-byte OUT. Official IoHub requires a
-  separately parsed inner-B ACK before firmware data. The reviewed exact
-  64-byte USB one-shot (`inner10 + 54*00`) later completed OUT at 536 ms but
-  observed zero IN completions through 3,250 ms. Nothing was retried. Static
-  branch reconstruction and live behavior still disagree, making a Windows
-  VM/usbmon trace the preferred next authority; all diagnostic gates remain
-  false.
+  zeros remain an empirical completion, not a token to ignore. The reviewed
+  15-byte F0/`_WriteSpi(0x3d00)` one-shot was the wrong SPB layer and correctly
+  produced no USB IN. A later direct-inner 64-byte one-shot likewise produced
+  no IN. Finally, a no-hardware usbredir trace from pinned QEMU/Windows and the
+  staged official driver observed the actual first application OUT as outer-A0
+  `a00800a800050000000000a5 + 52*00`; no preceding `e5` appeared. This corrects
+  the direct-inner inference and makes the outer-A0 family authoritative for
+  the first official Windows USB A8. No real sensor transfer occurred in that
+  VM trace; hardware and diagnostic gates remain false.
 ```
 
 ## Interpretation

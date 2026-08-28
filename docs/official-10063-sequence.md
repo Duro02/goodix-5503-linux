@@ -115,14 +115,16 @@ is legitimate firmware-version traffic from `McuGetFirmwareVersion @
 0x1800a6060`, called by SelfCheck and ProcessPsk. The distinct
 `McuGetCpuVersion @ 0x18009c830` F0/F1 SPI branch is runtime-flag gated and
 skipped by the pinned USB configuration; its SPB sequence must not be translated
-into libusb commands. Runtime USB selection sets `0x180256800=1` and
-`0x180256804=0`, so `Geneva::SendCmd` uses `McuWriteRaw`, not `_WriteSpi`. The
-exact official USB A8 OUT is the ten-byte inner packet
-`0a0a0a0aa80300000001`, padded to one 64-byte USB write. The prior free A0
-packet and later 15-byte F0/SPB KAT were both wrong transport layers. Official
-`_IoHubExec` requires a separately parsed inner B-class ACK before data; the
-observed `10*00` cannot set that event and the lone free A8 data frame cannot
-replace it. This remains diagnostic only and source-gated.
+into libusb commands. Runtime USB selection does skip `_WriteSpi`, but a later no-hardware dynamic
+trace through pinned QEMU, Windows, and the staged official driver corrected the
+remaining byte-level conclusion. After enumeration and three queued 32 KiB IN
+URBs, its first application OUT was one 64-byte outer-A0 request:
+`a00800a800050000000000a5 + 52*00`. No preceding `e5` appeared in that trace.
+The previously inferred direct inner packet `0a0a0a0aa80300000001 + 54*00` and
+the 15-byte F0/SPB KAT are not the pinned Windows USB wire request. This dynamic
+result restores outer-A0 framing as the authoritative Windows USB transport for
+the first A8 while retaining the separate ACK/data parser question. Hardware
+use remains independently gated.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8

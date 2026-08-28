@@ -6,13 +6,15 @@ can replace PSK/protected records and contains firmware-update paths. Disabling
 
 `goodix-5503-usbredir-guard` is a deliberately single-use stream proxy. It
 accepts only `27c6:5503`, safe standard enumeration, a bounded 32 KiB bulk-IN
-reader, then exactly these bulk-OUT transfers on endpoint 1:
+reader, then exactly one bulk-OUT transfer on endpoint 1:
 
-1. `e5`
-2. `0a0a0a0aa80300000001` followed by 54 zero bytes (64 bytes total)
+```text
+a00800a800050000000000a5 + 52 zero bytes (64 bytes total)
+```
 
-The guard correlates the two OUT completion IDs. It forwards the successful A8
-OUT completion and immediately closes both streams; a mismatch, failed status,
+This outer-A0 A8 packet is the first application OUT observed dynamically from
+the pinned Windows VM; no preceding `e5` appeared. The guard correlates its
+request ID and forwards the successful A8 OUT completion and immediately closes both streams; a mismatch, failed status,
 or bounded completion timeout closes them without forwarding further traffic.
 At most three normal pre-command USB enumeration resets are allowed; each
 requires the exact topology to be announced again. Unknown, malformed,

@@ -1,9 +1,9 @@
 """Fail-closed usbredir guard for the fixed Goodix 27c6:5503 loader prefix.
 
-This proxy is intentionally not a general USB firewall.  It forwards only USB
-setup needed to enumerate the pinned device and exactly two bulk-OUT transfers:
-``e5`` followed by the pinned 64-byte Geneva A8 request.  The next guest
-packet, TLS, streams, and unknown protocol operations terminate both connections.
+This proxy is intentionally not a general USB firewall. It forwards only USB
+setup needed to enumerate the pinned device and the exact 64-byte outer-A0 A8
+request observed from pinned QEMU/Windows. The next guest packet, TLS, streams,
+and unknown protocol operations terminate both connections.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ CAP_EP_MAX_PACKET: Final = 4
 CAP_64BIT_IDS: Final = 5
 CAP_32BIT_BULK_LENGTH: Final = 6
 _KNOWN_CAPS: Final = 0xFF
-GOODIX_A8: Final = bytes.fromhex("0a0a0a0aa80300000001") + bytes(54)
+GOODIX_A8: Final = bytes.fromhex("a00800a800050000000000a5") + bytes(52)
 
 
 class GuardViolation(RuntimeError):
@@ -286,7 +286,7 @@ def _expected_ep_info() -> bytes:
 def authorize_guest(packet: Packet, state: GuardState) -> str:
     if packet.type == HELLO:
         raise GuardViolation("duplicate hello")
-    if state.prefix_step == 2:
+    if state.prefix_step == 1:
         raise GuardViolation("awaiting A8 completion; further guest traffic denied")
     if packet.type == FILTER_FILTER:
         # usbredir serializes filter rules as a NUL-terminated text string.
@@ -353,15 +353,12 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
             raise GuardViolation("only exact bulk OUT endpoint 01 is permitted")
         if state.pending_out is not None:
             raise GuardViolation("overlapping bulk OUT denied")
-        expected = b"\xe5" if state.prefix_step == 0 else GOODIX_A8 if state.prefix_step == 1 else None
-        if expected is None or data != expected:
+        if state.prefix_step != 0 or data != GOODIX_A8:
             raise GuardViolation("bulk OUT prefix denied")
-        kind = "wake" if state.prefix_step == 0 else "a8"
-        state.pending_out = (packet.packet_id, kind)
-        state.prefix_step += 1
-        if kind == "a8":
-            state.a8_deadline = time.monotonic() + state.a8_timeout
-        return "goodix-wake-e5" if kind == "wake" else "goodix-usb-a8-64"
+        state.pending_out = (packet.packet_id, "a8")
+        state.prefix_step = 1
+        state.a8_deadline = time.monotonic() + state.a8_timeout
+        return "goodix-usb-outer-a0-a8-64"
     raise GuardViolation(f"guest packet type {packet.type} denied")
 
 
@@ -420,10 +417,10 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
             raise GuardViolation("unmatched bulk OUT completion")
         kind = state.pending_out[1]
         state.pending_out = None
-        if kind == "a8":
-            state.a8_completed = True
-            return "a8-out-completion-close"
-        return "wake-out-completion"
+        if kind != "a8":
+            raise GuardViolation("unexpected OUT completion kind")
+        state.a8_completed = True
+        return "a8-out-completion-close"
     if packet.type == BUFFERED_BULK_PACKET:
         if len(packet.body) < 10:
             raise GuardViolation("short buffered bulk")

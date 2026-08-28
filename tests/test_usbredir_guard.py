@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import socket
@@ -154,18 +155,17 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(GuardViolation): authorize_upstream(packet(DEVICE_CONNECT, body), variant)
 
     def test_exact_bulk_prefix_order_replay_and_mutation(self):
-        self.assertEqual(authorize_guest(bulk(1, b"\xe5", ident=1), self.state), "goodix-wake-e5")
-        self.assertEqual(authorize_upstream(bulk(1, ident=1), self.state), "wake-out-completion")
-        self.assertEqual(authorize_guest(bulk(1, GOODIX_A8, ident=2), self.state), "goodix-usb-a8-64")
-        with self.assertRaises(GuardViolation): authorize_guest(bulk(1, GOODIX_A8, ident=3), self.state)
-        for first in (GOODIX_A8, b"\xe4", b"\xe5\0"):
+        self.assertEqual(GOODIX_A8[:12].hex(), "a00800a800050000000000a5")
+        self.assertEqual(GOODIX_A8[12:], bytes(52))
+        self.assertEqual(hashlib.sha256(GOODIX_A8).hexdigest(), "e8a1b5c35d31da88a3f96ff1995e7aee4c3d30aa9d0c31de3c5c6bdc8fe8e5aa")
+        self.assertEqual(authorize_guest(bulk(1, GOODIX_A8, ident=1), self.state), "goodix-usb-outer-a0-a8-64")
+        with self.assertRaises(GuardViolation): authorize_guest(bulk(1, GOODIX_A8, ident=2), self.state)
+        for first in (b"\xe5", b"\xe4", bytes.fromhex("0a0a0a0aa80300000001") + bytes(54)):
             state = GuardState(); state.bulk_header_size = 10
             state.device_connected = state.interface_valid = state.endpoints_valid = True
             with self.assertRaises(GuardViolation): authorize_guest(bulk(1, first), state)
         state = GuardState(); state.bulk_header_size = 10
         state.device_connected = state.interface_valid = state.endpoints_valid = True
-        authorize_guest(bulk(1, b"\xe5", ident=1), state)
-        authorize_upstream(bulk(1, ident=1), state)
         changed = bytearray(GOODIX_A8); changed[-1] = 1
         with self.assertRaises(GuardViolation): authorize_guest(bulk(1, bytes(changed), ident=2), state)
 
@@ -270,10 +270,6 @@ class IntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             guest, upstream, audit, audit_path, thread = self._start(directory)
             self._negotiate_and_topology(guest, upstream)
-            wake = bulk(1, b"\xe5", ident=10).raw
-            guest.sendall(wake); self.assertEqual(recv_exact(upstream, len(wake)), wake)
-            completion = bulk(1, ident=10).raw
-            upstream.sendall(completion); self.assertEqual(recv_exact(guest, len(completion)), completion)
             denied = bulk(1, b"\xe0persistent", ident=11).raw
             guest.sendall(denied)
             self.assert_closed(upstream)
@@ -300,17 +296,16 @@ class IntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             guest, upstream, audit, audit_path, thread = self._start(directory)
             self._negotiate_and_topology(guest, upstream)
-            for request, ident in ((b"\xe5", 10), (GOODIX_A8, 11)):
-                outgoing = bulk(1, request, ident=ident).raw
-                guest.sendall(outgoing); self.assertEqual(recv_exact(upstream, len(outgoing)), outgoing)
-                completion = bulk(1, ident=ident).raw
-                upstream.sendall(completion); self.assertEqual(recv_exact(guest, len(completion)), completion)
+            outgoing = bulk(1, GOODIX_A8, ident=11).raw
+            guest.sendall(outgoing); self.assertEqual(recv_exact(upstream, len(outgoing)), outgoing)
+            completion = bulk(1, ident=11).raw
+            upstream.sendall(completion); self.assertEqual(recv_exact(guest, len(completion)), completion)
             self.assert_closed(guest)
             self.assert_closed(upstream)
             thread.join(2); self.assertFalse(thread.is_alive())
             audit.close(); guest.close(); upstream.close()
             events = [json.loads(line) for line in audit_path.read_text().splitlines()]
-            a8 = [event for event in events if event.get("policy") == "goodix-usb-a8-64"]
+            a8 = [event for event in events if event.get("policy") == "goodix-usb-outer-a0-a8-64"]
             self.assertEqual([event["decision"] for event in a8], ["authorize", "forwarded"])
             completion = [event for event in events if event.get("policy") == "a8-out-completion-close"]
             self.assertEqual([event["decision"] for event in completion], ["authorize", "forwarded"])
@@ -320,9 +315,6 @@ class IntegrationTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 guest, upstream, audit, _, thread = self._start(directory, timeout=0.1)
                 self._negotiate_and_topology(guest, upstream)
-                wake = bulk(1, b"\xe5", ident=10).raw
-                guest.sendall(wake); recv_exact(upstream, len(wake))
-                done = bulk(1, ident=10).raw; upstream.sendall(done); recv_exact(guest, len(done))
                 a8 = bulk(1, GOODIX_A8, ident=11).raw
                 guest.sendall(a8); recv_exact(upstream, len(a8))
                 if mismatch: upstream.sendall(bulk(1, ident=12).raw)
