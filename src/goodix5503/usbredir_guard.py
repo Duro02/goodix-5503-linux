@@ -145,8 +145,6 @@ class GuardState:
             self.hello_packets[direction] = packet
             if len(self.hellos) == 2:
                 negotiated = self.hellos["guest"][0] & self.hellos["upstream"][0]
-                if negotiated & 1:
-                    raise GuardViolation("bulk streams capability denied")
                 self.negotiated_caps = negotiated
                 self.header_size = 16 if negotiated & (1 << CAP_64BIT_IDS) else 12
                 self.bulk_header_size = 10 if negotiated & (1 << CAP_32BIT_BULK_LENGTH) else 8
@@ -205,6 +203,17 @@ def read_packet(sock: socket.socket, state: GuardState, initial: bool) -> Packet
         return Packet(packet_type, packet_id, body, raw)
     finally:
         state.release(total)
+
+
+def _without_bulk_streams(packet: Packet) -> Packet:
+    if len(packet.body) != 68:
+        raise GuardViolation("hello must contain exactly one capability word")
+    body = bytearray(packet.body)
+    caps = struct.unpack("<I", body[64:68])[0] & ~1
+    body[64:68] = struct.pack("<I", caps)
+    header_size = len(packet.raw) - len(packet.body)
+    raw = packet.raw[:header_size] + bytes(body)
+    return Packet(packet.type, packet.packet_id, bytes(body), raw)
 
 
 def _bulk_fields(packet: Packet, state: GuardState) -> tuple[int, int, int, int, bytes]:
@@ -449,6 +458,7 @@ class UsbRedirGuard:
             packet = read_packet(source, self.state, initial=True)
             if packet.type != HELLO:
                 raise GuardViolation("first packet is not hello")
+            packet = _without_bulk_streams(packet)
             self.state.register_hello(direction, packet)
             self.state.wait_negotiated()
             self.audit.record(direction, packet, "authorize", "both hellos validated")

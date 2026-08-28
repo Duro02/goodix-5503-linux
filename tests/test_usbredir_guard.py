@@ -255,8 +255,8 @@ class IntegrationTests(unittest.TestCase):
             upstream_caps = caps | 1  # usbredirect advertises streams; QEMU streams=off does not.
         guest_hello = hello(caps); upstream_hello = hello(upstream_caps)
         guest.sendall(guest_hello); upstream.sendall(upstream_hello)
-        self.assertEqual(recv_exact(upstream, len(guest_hello)), guest_hello)
-        self.assertEqual(recv_exact(guest, len(upstream_hello)), upstream_hello)
+        self.assertEqual(recv_exact(upstream, len(guest_hello)), hello(caps & ~1))
+        self.assertEqual(recv_exact(guest, len(upstream_hello)), hello(upstream_caps & ~1))
         connect_body = (struct.pack("<BBBBHHH", 2, 0, 0, 0, 0x27c6, 0x5503, 0x100)
                         if caps & (1 << 1) else struct.pack("<BBBBHH", 2, 0, 0, 0, 0x27c6, 0x5503))
         for kind, body in ((INTERFACE_INFO, _expected_interface_info()),
@@ -341,8 +341,8 @@ class IntegrationTests(unittest.TestCase):
             guest_caps = DEFAULT_CAPS
             upstream_caps = DEFAULT_CAPS & ~(1 << CAP_64BIT_IDS)
             guest.sendall(hello(guest_caps)); upstream.sendall(hello(upstream_caps))
-            self.assertEqual(recv_exact(upstream, len(hello(guest_caps))), hello(guest_caps))
-            self.assertEqual(recv_exact(guest, len(hello(upstream_caps))), hello(upstream_caps))
+            self.assertEqual(recv_exact(upstream, len(hello(guest_caps))), hello(guest_caps & ~1))
+            self.assertEqual(recv_exact(guest, len(hello(upstream_caps))), hello(upstream_caps & ~1))
             for kind, body in ((INTERFACE_INFO, _expected_interface_info()), (EP_INFO, _expected_ep_info())):
                 message = frame(kind, body, 0, False)
                 upstream.sendall(message); self.assertEqual(recv_exact(guest, len(message)), message)

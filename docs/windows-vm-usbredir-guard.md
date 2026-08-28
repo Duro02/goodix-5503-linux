@@ -26,9 +26,10 @@ The protocol profile pins usbredirhost's actual pre-connect order: interface 0
 (`ff/00/00`), endpoint information, then `DEVICE_CONNECT`. Endpoint-array
 indices 1/18 must be bulk OUT `01` and bulk IN `82`, both with max packet 512. The
 index mapping is usbredirhost 0.15 `EP2I(ep) = ((ep & 0x80) >> 3) | (ep & 0x0f)`.
-Both HELLO packets are validated before either is forwarded; the single
-capability word is preserved and 64-bit IDs are used only when both peers offer
-them. The guard is little-endian-only, buffers complete frames, caps each frame
+Both HELLO packets are validated before either is forwarded. The guard clears
+the bulk-streams capability in both forwarded HELLOs, preserves every other
+known capability bit, and uses 64-bit IDs only when both peers offer them. The
+guard is little-endian-only, buffers complete frames, caps each frame
 at 64 KiB, and accepts one connection with no reconnect. Its JSONL audit path
 must have an owner-only parent and is created `0600`; authorization is recorded
 before send and forwarding afterward.
@@ -41,7 +42,8 @@ and must never be used beyond the audited prefix.
 
 ## Loopback topology
 
-Use new owner-only output paths and disable usbredir streams:
+Use new owner-only output paths. The guard itself strips usbredir bulk-stream
+negotiation from both HELLOs:
 
 ```sh
 sudo usbredirect --device 27c6:5503 --as 127.0.0.1:40501
