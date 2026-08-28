@@ -364,6 +364,30 @@ class IntegrationTests(unittest.TestCase):
             firmware = [event for event in events if event.get("policy") == "goodix-usb-outer-a0-firmware-a8-64"]
             self.assertEqual([event["decision"] for event in firmware], ["authorize", "forwarded"])
 
+    def test_expired_deadline_denies_firmware_a8_before_forward(self):
+        with tempfile.TemporaryDirectory() as directory:
+            guest_guard, guest = socket.socketpair()
+            upstream_guard, upstream = socket.socketpair()
+            guest.settimeout(1); upstream.settimeout(1)
+            audit = AuditLog(Path(directory) / "audit.jsonl")
+            guard = UsbRedirGuard(guest_guard, upstream_guard, audit, 1)
+            thread = threading.Thread(target=guard.run); thread.start()
+            self._negotiate_and_topology(guest, upstream)
+            read_request = bulk(0x82, requested=0x8000, ident=10).raw
+            guest.sendall(read_request); self.assertEqual(recv_exact(upstream, len(read_request)), read_request)
+            command00 = bulk(1, GOODIX_COMMAND00, ident=11).raw
+            guest.sendall(command00); self.assertEqual(recv_exact(upstream, len(command00)), command00)
+            completion = bulk(1, requested=64, ident=11).raw
+            upstream.sendall(completion); self.assertEqual(recv_exact(guest, len(completion)), completion)
+            ack = bulk(0x82, GOODIX_COMMAND00_ACK, ident=10).raw
+            upstream.sendall(ack); self.assertEqual(recv_exact(guest, len(ack)), ack)
+            with guard.state.condition:
+                guard.state.command00_deadline = time.monotonic() - 1
+            guest.sendall(bulk(1, GOODIX_FIRMWARE_A8, ident=12).raw)
+            self.assert_closed(upstream)
+            thread.join(1); self.assertFalse(thread.is_alive())
+            audit.close(); guest.close(); upstream.close()
+
     def test_command00_deadline_closes_sockets_while_audit_is_blocked(self):
         class BlockingAudit:
             def __init__(self):

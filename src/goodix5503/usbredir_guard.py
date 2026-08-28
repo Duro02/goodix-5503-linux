@@ -298,9 +298,17 @@ def _expected_ep_info() -> bytes:
     return bytes(types) + intervals + interfaces + struct.pack("<32H", *max_packets)
 
 
+def _enforce_observation_deadline(state: GuardState) -> None:
+    if state.prefix_step >= 1:
+        deadline = state.command00_deadline
+        if deadline is None or time.monotonic() >= deadline:
+            raise GuardViolation("command-00 observation deadline expired")
+
+
 def authorize_guest(packet: Packet, state: GuardState) -> str:
     if packet.type == HELLO:
         raise GuardViolation("duplicate hello")
+    _enforce_observation_deadline(state)
     if state.prefix_step >= 1 and packet.type not in (CONTROL_PACKET, BULK_PACKET):
         raise GuardViolation("only pinned loader OUT or read-only USB traffic is allowed after command 00")
     if packet.type == FILTER_FILTER:
@@ -390,6 +398,7 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
 def authorize_upstream(packet: Packet, state: GuardState) -> str:
     if packet.type == HELLO:
         raise GuardViolation("duplicate hello")
+    _enforce_observation_deadline(state)
     # usbredirhost sends interface and endpoint information immediately before
     # DEVICE_CONNECT so QEMU can apply its device filter at connect time.
     if packet.type == INTERFACE_INFO:
