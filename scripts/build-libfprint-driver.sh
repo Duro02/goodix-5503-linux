@@ -60,5 +60,7 @@ meson setup "$work_dir/build" "$work_dir/source" \
   -Ddoc=false \
   -Dudev_rules=disabled \
   -Dudev_hwdb=disabled
-ninja -C "$work_dir/build" libfprint/libfprint-2.so.2.0.0
+ninja -C "$work_dir/build" \
+  libfprint/libfprint-2.so.2.0.0 \
+  examples/enroll examples/verify examples/img-capture
 printf 'Built development driver in %s\n' "$work_dir/build"

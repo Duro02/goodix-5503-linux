@@ -5,6 +5,7 @@
 #include "fpi-log.h"
 #include "drivers_api.h"
 #include "goodix5503-config.h"
+#include "goodix5503-image.h"
 #include "goodix5503-proto.h"
 #include "goodix5503-security.h"
 #include "goodix5503-tls.h"
@@ -26,7 +27,13 @@
 #define GOODIX5503_COMMAND_TLS 0xd0
 #define GOODIX5503_COMMAND_CONFIG 0x90
 #define GOODIX5503_COMMAND_DRIVER_STATE 0xc4
+#define GOODIX5503_COMMAND_FDT_MANUAL 0x36
+#define GOODIX5503_COMMAND_IDLE 0x70
 #define GOODIX5503_TLS_FLAGS 0xb0
+#define GOODIX5503_MAX_FRESH_ATTEMPTS 3
+#define GOODIX5503_CAPTURE_DISCARD 0
+#define GOODIX5503_CAPTURE_BACKGROUND 1
+#define GOODIX5503_CAPTURE_FINGER 2
 #define GOODIX5503_R_PSK_HASH_SELECTOR 0xbb020007
 #define GOODIX5503_EXPECTED_CHIP_ID 0x220f
 
@@ -38,6 +45,8 @@ typedef void (*Goodix5503CommandCallback) (FpiDeviceGoodix5503 *self,
                                            GError              *error);
 typedef void (*Goodix5503OuterCallback) (FpiDeviceGoodix5503 *self,
                                          GByteArray          *frame,
+                                         GError              *error);
+typedef void (*Goodix5503ImageCallback) (FpiDeviceGoodix5503 *self,
                                          GError              *error);
 
 struct _FpiDeviceGoodix5503
@@ -66,10 +75,22 @@ struct _FpiDeviceGoodix5503
   guint8 dac[GOODIX5503_DAC_SIZE];
   guint8 config[GOODIX5503_CONFIG_SIZE];
   Goodix5503Tls *tls;
+  Goodix5503CaptureState capture_state;
+  Goodix5503ImageCallback image_callback;
   GError *primary_error;
   GSource *delay_source;
   gboolean reset_attempted;
   gboolean cleanup_active;
+  guint capture_destination;
+  guint8 fdt_event_command;
+  gboolean activated;
+  guint fresh_attempt;
+  guint16 fdt_delta;
+  guint8 fresh_raw[3][GOODIX5503_FDT_BASE_SIZE];
+  guint8 fresh_transformed[3][GOODIX5503_FDT_BASE_SIZE];
+  guint8 fdt_base[GOODIX5503_FDT_BASE_SIZE];
+  guint8 background[GOODIX5503_PACKED_IMAGE_SIZE];
+  guint8 finger[GOODIX5503_PACKED_IMAGE_SIZE];
 };
 
 G_DECLARE_FINAL_TYPE (FpiDeviceGoodix5503, fpi_device_goodix5503,
@@ -447,8 +468,21 @@ goodix5503_cleanup_done (FpiDeviceGoodix5503 *self,
   OPENSSL_cleanse (self->otp, sizeof self->otp);
   OPENSSL_cleanse (self->dac, sizeof self->dac);
   OPENSSL_cleanse (self->config, sizeof self->config);
-  fpi_image_device_activate_complete (
-    FP_IMAGE_DEVICE (self), g_steal_pointer (&self->primary_error));
+  OPENSSL_cleanse (self->fresh_raw, sizeof self->fresh_raw);
+  OPENSSL_cleanse (self->fresh_transformed, sizeof self->fresh_transformed);
+  OPENSSL_cleanse (self->fdt_base, sizeof self->fdt_base);
+  OPENSSL_cleanse (self->background, sizeof self->background);
+  OPENSSL_cleanse (self->finger, sizeof self->finger);
+  if (self->activated)
+    {
+      self->activated = FALSE;
+      self->deactivating = FALSE;
+      g_clear_error (&self->primary_error);
+      fpi_image_device_deactivate_complete (FP_IMAGE_DEVICE (self), NULL);
+    }
+  else
+    fpi_image_device_activate_complete (
+      FP_IMAGE_DEVICE (self), g_steal_pointer (&self->primary_error));
 }
 
 static void
@@ -474,6 +508,297 @@ goodix5503_activation_fail (FpiDeviceGoodix5503 *self, GError *error)
 }
 
 static void
+goodix5503_capture_frame_done (FpiDeviceGoodix5503 *self,
+                                GByteArray          *frame,
+                                GError              *error)
+{
+  g_autoptr(GByteArray) owned_frame = frame;
+  g_autoptr(GByteArray) envelope = NULL;
+  g_autoptr(GByteArray) plaintext = NULL;
+  Goodix5503ImageCallback callback;
+
+  if (error ||
+      !goodix5503_capture_consume_frame (&self->capture_state,
+                                         frame ? frame->data : NULL,
+                                         frame ? frame->len : 0,
+                                         &envelope, &error))
+    goto fail;
+  if (frame)
+    OPENSSL_cleanse (frame->data, frame->len);
+  if (!self->capture_state.done)
+    {
+      goodix5503_outer_start (self, NULL, TRUE,
+                              goodix5503_capture_frame_done);
+      return;
+    }
+
+  if (!goodix5503_tls_feed_ciphertext (self->tls,
+                                        envelope->data + 9,
+                                        envelope->len - 9, &error))
+    goto fail;
+  plaintext = goodix5503_tls_take_plaintext (self->tls, &error);
+  if (plaintext == NULL || plaintext->len != GOODIX5503_MAX_TLS_PLAINTEXT)
+    {
+      if (error == NULL)
+        error = g_error_new_literal (GOODIX5503_TLS_ERROR,
+                                     GOODIX5503_TLS_ERROR_LENGTH,
+                                     "invalid Goodix image plaintext length");
+      goto fail;
+    }
+  if (self->capture_destination == GOODIX5503_CAPTURE_BACKGROUND)
+    memcpy (self->background, plaintext->data,
+            GOODIX5503_PACKED_IMAGE_SIZE);
+  else if (self->capture_destination == GOODIX5503_CAPTURE_FINGER)
+    memcpy (self->finger, plaintext->data, GOODIX5503_PACKED_IMAGE_SIZE);
+  OPENSSL_cleanse (envelope->data, envelope->len);
+  OPENSSL_cleanse (plaintext->data, plaintext->len);
+  callback = self->image_callback;
+  self->image_callback = NULL;
+  callback (self, NULL);
+  return;
+
+fail:
+  if (frame)
+    OPENSSL_cleanse (frame->data, frame->len);
+  if (envelope)
+    OPENSSL_cleanse (envelope->data, envelope->len);
+  if (plaintext)
+    OPENSSL_cleanse (plaintext->data, plaintext->len);
+  callback = self->image_callback;
+  self->image_callback = NULL;
+  callback (self, error);
+}
+
+static void
+goodix5503_capture_image (FpiDeviceGoodix5503 *self,
+                           guint                destination,
+                           Goodix5503ImageCallback callback)
+{
+  guint8 payload[10] = { 0x01, 0x00 };
+  g_autoptr(GByteArray) packet = NULL;
+  g_autoptr(GError) error = NULL;
+
+  g_assert (self->image_callback == NULL);
+  memcpy (payload + 2, self->dac, sizeof self->dac);
+  packet = goodix5503_packet_encode (0x20, payload, sizeof payload, TRUE,
+                                     &error);
+  OPENSSL_cleanse (payload, sizeof payload);
+  if (packet == NULL)
+    {
+      callback (self, g_steal_pointer (&error));
+      return;
+    }
+  memset (&self->capture_state, 0, sizeof self->capture_state);
+  self->capture_destination = destination;
+  self->image_callback = callback;
+  goodix5503_outer_start (self, packet, TRUE,
+                          goodix5503_capture_frame_done);
+}
+
+static void goodix5503_fresh_attempt_start (FpiDeviceGoodix5503 *self);
+
+static gboolean
+goodix5503_parse_fdt_slot (FpiDeviceGoodix5503 *self,
+                            guint                 slot,
+                            GByteArray           *body,
+                            GError              **error)
+{
+  guint16 interrupt;
+  guint16 touch_flag;
+
+  return goodix5503_parse_fdt_response (
+    body->data, body->len, &interrupt, &touch_flag,
+    self->fresh_raw[slot], self->fresh_transformed[slot], error);
+}
+
+static void
+goodix5503_fresh_retry (FpiDeviceGoodix5503 *self)
+{
+  OPENSSL_cleanse (self->fresh_raw, sizeof self->fresh_raw);
+  OPENSSL_cleanse (self->fresh_transformed, sizeof self->fresh_transformed);
+  OPENSSL_cleanse (self->background, sizeof self->background);
+  self->fresh_attempt++;
+  if (self->fresh_attempt >= GOODIX5503_MAX_FRESH_ATTEMPTS)
+    {
+      goodix5503_activation_fail (
+        self, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                        "Goodix fresh FDT base did not stabilize"));
+      return;
+    }
+  goodix5503_fresh_attempt_start (self);
+}
+
+static void
+goodix5503_fdt2_done (FpiDeviceGoodix5503 *self,
+                      GByteArray          *body,
+                      GError              *error)
+{
+  g_autoptr(GByteArray) owned_body = body;
+
+  if (error || !goodix5503_parse_fdt_slot (self, 2, body, &error))
+    {
+      goodix5503_activation_fail (self, error);
+      return;
+    }
+  if (!goodix5503_fdt_bases_within_delta (self->fresh_raw[1],
+                                           self->fresh_raw[2],
+                                           self->fdt_delta))
+    {
+      goodix5503_fresh_retry (self);
+      return;
+    }
+
+  memcpy (self->fdt_base, self->fresh_transformed[2], sizeof self->fdt_base);
+  OPENSSL_cleanse (self->fresh_raw, sizeof self->fresh_raw);
+  OPENSSL_cleanse (self->fresh_transformed, sizeof self->fresh_transformed);
+  OPENSSL_cleanse (self->psk, sizeof self->psk);
+  OPENSSL_cleanse (self->expected_verification,
+                   sizeof self->expected_verification);
+  OPENSSL_cleanse (self->otp, sizeof self->otp);
+  OPENSSL_cleanse (self->config, sizeof self->config);
+  self->activated = TRUE;
+  fpi_image_device_activate_complete (FP_IMAGE_DEVICE (self), NULL);
+}
+
+static void
+goodix5503_candidate_done (FpiDeviceGoodix5503 *self, GError *error)
+{
+  guint8 request[GOODIX5503_FDT_REQUEST_SIZE];
+  guint8 zero_base[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+
+  if (error || !goodix5503_build_fdt_request (0x0d, self->dac, zero_base,
+                                               request, &error))
+    {
+      goodix5503_activation_fail (self, error);
+      return;
+    }
+  goodix5503_command_start (self, GOODIX5503_COMMAND_FDT_MANUAL,
+                            request, sizeof request, TRUE, FALSE,
+                            goodix5503_fdt2_done);
+  OPENSSL_cleanse (request, sizeof request);
+}
+
+static void
+goodix5503_delta_done (FpiDeviceGoodix5503 *self,
+                       GByteArray          *body,
+                       GError              *error)
+{
+  g_autoptr(GByteArray) owned_body = body;
+
+  if (error)
+    {
+      goodix5503_activation_fail (self, error);
+      return;
+    }
+  if (body->len != 2)
+    {
+      goodix5503_activation_fail (
+        self, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                        "invalid Goodix FDT delta response"));
+      return;
+    }
+  self->fdt_delta = body->data[1];
+  if (!goodix5503_fdt_bases_within_delta (self->fresh_raw[0],
+                                           self->fresh_raw[1],
+                                           self->fdt_delta))
+    {
+      goodix5503_fresh_retry (self);
+      return;
+    }
+  goodix5503_capture_image (self, GOODIX5503_CAPTURE_BACKGROUND,
+                            goodix5503_candidate_done);
+}
+
+static void
+goodix5503_idle_done (FpiDeviceGoodix5503 *self,
+                      GByteArray          *body,
+                      GError              *error)
+{
+  static const guint8 delta_payload[] = { 0x00, 0x82, 0x00, 0x02, 0x00 };
+
+  g_clear_pointer (&body, g_byte_array_unref);
+  if (error)
+    {
+      goodix5503_activation_fail (self, error);
+      return;
+    }
+  goodix5503_command_start (self, GOODIX5503_COMMAND_READ_REGISTER,
+                            delta_payload, sizeof delta_payload, TRUE, TRUE,
+                            goodix5503_delta_done);
+}
+
+static void
+goodix5503_fdt1_done (FpiDeviceGoodix5503 *self,
+                      GByteArray          *body,
+                      GError              *error)
+{
+  g_autoptr(GByteArray) owned_body = body;
+  static const guint8 idle_payload[] = { 0x14, 0x00 };
+
+  if (error || !goodix5503_parse_fdt_slot (self, 1, body, &error))
+    {
+      goodix5503_activation_fail (self, error);
+      return;
+    }
+  goodix5503_command_start (self, GOODIX5503_COMMAND_IDLE,
+                            idle_payload, sizeof idle_payload, FALSE, TRUE,
+                            goodix5503_idle_done);
+}
+
+static void
+goodix5503_nav_done (FpiDeviceGoodix5503 *self, GError *error)
+{
+  guint8 request[GOODIX5503_FDT_REQUEST_SIZE];
+  guint8 zero_base[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+
+  if (error || !goodix5503_build_fdt_request (0x0d, self->dac, zero_base,
+                                               request, &error))
+    {
+      goodix5503_activation_fail (self, error);
+      return;
+    }
+  goodix5503_command_start (self, GOODIX5503_COMMAND_FDT_MANUAL,
+                            request, sizeof request, TRUE, FALSE,
+                            goodix5503_fdt1_done);
+  OPENSSL_cleanse (request, sizeof request);
+}
+
+static void
+goodix5503_fdt0_done (FpiDeviceGoodix5503 *self,
+                      GByteArray          *body,
+                      GError              *error)
+{
+  g_autoptr(GByteArray) owned_body = body;
+
+  if (error || !goodix5503_parse_fdt_slot (self, 0, body, &error))
+    {
+      goodix5503_activation_fail (self, error);
+      return;
+    }
+  goodix5503_capture_image (self, GOODIX5503_CAPTURE_DISCARD,
+                            goodix5503_nav_done);
+}
+
+static void
+goodix5503_fresh_attempt_start (FpiDeviceGoodix5503 *self)
+{
+  guint8 request[GOODIX5503_FDT_REQUEST_SIZE];
+  guint8 zero_base[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  g_autoptr(GError) error = NULL;
+
+  if (!goodix5503_build_fdt_request (0x0d, self->dac, zero_base,
+                                     request, &error))
+    {
+      goodix5503_activation_fail (self, g_steal_pointer (&error));
+      return;
+    }
+  goodix5503_command_start (self, GOODIX5503_COMMAND_FDT_MANUAL,
+                            request, sizeof request, TRUE, FALSE,
+                            goodix5503_fdt0_done);
+  OPENSSL_cleanse (request, sizeof request);
+}
+
+static void
 goodix5503_driver_state_done (FpiDeviceGoodix5503 *self,
                                GByteArray          *body,
                                GError              *error)
@@ -484,9 +809,8 @@ goodix5503_driver_state_done (FpiDeviceGoodix5503 *self,
       goodix5503_activation_fail (self, error);
       return;
     }
-  goodix5503_activation_fail (
-    self, fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
-                                    "Goodix fresh-base activation is not connected yet"));
+  self->fresh_attempt = 0;
+  goodix5503_fresh_attempt_start (self);
 }
 
 static void
@@ -923,6 +1247,11 @@ goodix5503_close (FpImageDevice *device)
   OPENSSL_cleanse (self->otp, sizeof self->otp);
   OPENSSL_cleanse (self->dac, sizeof self->dac);
   OPENSSL_cleanse (self->config, sizeof self->config);
+  OPENSSL_cleanse (self->fresh_raw, sizeof self->fresh_raw);
+  OPENSSL_cleanse (self->fresh_transformed, sizeof self->fresh_transformed);
+  OPENSSL_cleanse (self->fdt_base, sizeof self->fdt_base);
+  OPENSSL_cleanse (self->background, sizeof self->background);
+  OPENSSL_cleanse (self->finger, sizeof self->finger);
   g_clear_error (&self->primary_error);
   if (self->interface_claimed)
     {
@@ -972,13 +1301,139 @@ goodix5503_deactivate (FpImageDevice *device)
 }
 
 static void
+goodix5503_runtime_error (FpiDeviceGoodix5503 *self, GError *error)
+{
+  if (self->deactivating)
+    goodix5503_activation_fail (self, error);
+  else
+    fpi_image_device_session_error (FP_IMAGE_DEVICE (self), error);
+}
+
+static void
+goodix5503_finger_image_done (FpiDeviceGoodix5503 *self, GError *error)
+{
+  g_autoptr(FpImage) image = NULL;
+
+  if (error)
+    {
+      goodix5503_runtime_error (self, error);
+      return;
+    }
+  image = goodix5503_image_new_from_frames (self->background, self->finger,
+                                             &error);
+  OPENSSL_cleanse (self->finger, sizeof self->finger);
+  if (image == NULL)
+    {
+      if (g_error_matches (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_NO_CONTRAST))
+        {
+          g_clear_error (&error);
+          fpi_image_device_retry_scan (FP_IMAGE_DEVICE (self),
+                                       FP_DEVICE_RETRY_GENERAL);
+          return;
+        }
+      goodix5503_runtime_error (self, error);
+      return;
+    }
+  fpi_image_device_image_captured (FP_IMAGE_DEVICE (self),
+                                   g_steal_pointer (&image));
+}
+
+static void
+goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
+                               GByteArray          *frame,
+                               GError              *error)
+{
+  g_autoptr(GByteArray) owned_frame = frame;
+  g_autoptr(GByteArray) body = NULL;
+  guint8 raw[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 transformed[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint16 interrupt;
+  guint16 touch_flag;
+
+  if (error && g_error_matches (error, G_USB_DEVICE_ERROR,
+                                G_USB_DEVICE_ERROR_TIMED_OUT) &&
+      !self->deactivating)
+    {
+      g_clear_error (&error);
+      goodix5503_outer_start (self, NULL, TRUE,
+                              goodix5503_fdt_event_received);
+      return;
+    }
+  if (error ||
+      !goodix5503_packet_decode (frame ? frame->data : NULL,
+                                 frame ? frame->len : 0,
+                                 self->fdt_event_command, TRUE,
+                                 &body, &error) ||
+      !goodix5503_parse_fdt_response (
+        body->data, body->len, &interrupt, &touch_flag, raw, transformed,
+        &error))
+    {
+      if (frame)
+        OPENSSL_cleanse (frame->data, frame->len);
+      goodix5503_runtime_error (self, error);
+      return;
+    }
+  OPENSSL_cleanse (frame->data, frame->len);
+  OPENSSL_cleanse (body->data, body->len);
+  OPENSSL_cleanse (raw, sizeof raw);
+  OPENSSL_cleanse (transformed, sizeof transformed);
+
+  if (self->fdt_event_command == 0x32)
+    {
+      fpi_image_device_report_finger_status (FP_IMAGE_DEVICE (self), TRUE);
+      goodix5503_capture_image (self, GOODIX5503_CAPTURE_FINGER,
+                                goodix5503_finger_image_done);
+    }
+  else
+    fpi_image_device_report_finger_status (FP_IMAGE_DEVICE (self), FALSE);
+}
+
+static void
+goodix5503_fdt_arm_done (FpiDeviceGoodix5503 *self,
+                          GByteArray          *body,
+                          GError              *error)
+{
+  g_clear_pointer (&body, g_byte_array_unref);
+  if (error)
+    {
+      goodix5503_runtime_error (self, error);
+      return;
+    }
+  goodix5503_outer_start (self, NULL, TRUE,
+                          goodix5503_fdt_event_received);
+}
+
+static void
+goodix5503_fdt_watch_start (FpiDeviceGoodix5503 *self, gboolean finger_on)
+{
+  guint8 request[GOODIX5503_FDT_REQUEST_SIZE];
+  g_autoptr(GError) error = NULL;
+  guint8 command = finger_on ? 0x32 : 0x34;
+  guint8 selector = finger_on ? 0x0c : 0x0e;
+
+  if (!goodix5503_build_fdt_request (selector, self->dac, self->fdt_base,
+                                     request, &error))
+    {
+      goodix5503_runtime_error (self, g_steal_pointer (&error));
+      return;
+    }
+  self->fdt_event_command = command;
+  goodix5503_command_start (self, command, request, sizeof request,
+                            FALSE, TRUE, goodix5503_fdt_arm_done);
+  OPENSSL_cleanse (request, sizeof request);
+}
+
+static void
 goodix5503_change_state (FpImageDevice *device,
                           FpiImageDeviceState state)
 {
+  FpiDeviceGoodix5503 *self = FPI_DEVICE_GOODIX5503 (device);
+
   if (state == FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON)
-    fpi_image_device_session_error (
-      device, fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
-                                        "Goodix 5503 capture is not connected yet"));
+    goodix5503_fdt_watch_start (self, TRUE);
+  else if (state == FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF)
+    goodix5503_fdt_watch_start (self, FALSE);
 }
 
 static const FpIdEntry goodix5503_id_table[] = {
