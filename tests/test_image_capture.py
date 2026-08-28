@@ -3,6 +3,8 @@ import time
 import unittest
 from unittest.mock import ANY, call, patch
 
+import usb.core
+
 from goodix5503.image_capture import (
     COMMAND_GET_IMAGE,
     IMAGE_HEIGHT,
@@ -26,6 +28,7 @@ from goodix5503.image_capture import (
     _validate_dn2_chip_id,
     _validate_prepared_config,
     _validate_tls_records,
+    _wait_hu_fdt_down_event,
     decode_packed_image,
     run_prepared_clear_frame_capture,
 )
@@ -40,6 +43,7 @@ from goodix5503.image_capture import (
     COMMAND_POV_IMAGE_CHECK,
     COMMAND_READ_REGISTER,
     COMMAND_SET_DRIVER_STATE,
+    COMMAND_SWITCH_FDT_DOWN,
     COMMAND_SWITCH_FDT_MODE,
     COMMAND_SWITCH_IDLE,
     COMMAND_UPLOAD_CONFIG,
@@ -152,6 +156,19 @@ class ImageEnvelopeTests(unittest.TestCase):
                 _encode_packet(0xA8, b"\x00\x00"),
             ],
         )
+
+    def test_fdt_down_wait_retries_only_usb_timeouts(self):
+        timeout = ImageCaptureError("queued USB read failed")
+        timeout.__cause__ = usb.core.USBTimeoutError("timed out")
+        expected = bytes(range(16))
+        with patch(
+            "goodix5503.image_capture._read_frame_bounded",
+            side_effect=(timeout, _encode_packet(COMMAND_SWITCH_FDT_DOWN, expected)),
+        ) as read_frame:
+            self.assertEqual(
+                _wait_hu_fdt_down_event(object(), TEST_DEADLINE), expected
+            )
+        self.assertEqual(read_frame.call_count, 2)
 
     def test_fixed_exchange_preserves_checksum_free_milan_payload(self):
         for command, result in (

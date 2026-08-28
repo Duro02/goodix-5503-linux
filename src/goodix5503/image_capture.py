@@ -16,6 +16,8 @@ import threading
 import time
 from typing import Final
 
+import usb.core
+
 from .chip_config import _validate_config_checksum, build_runtime_config
 from .hu_runtime import (
     build_hu_fdt_down_request,
@@ -170,6 +172,22 @@ def _read_frame_bounded(
     session: ReadOnlyUsbSession, operation_deadline: float | None
 ) -> bytes:
     return _queued_frame_bounded(session, operation_deadline)
+
+
+def _wait_hu_fdt_down_event(
+    session: ReadOnlyUsbSession,
+    operation_deadline: float,
+) -> bytes:
+    """Wait through bounded USB NAK timeouts for one unsolicited FDT event."""
+    while True:
+        try:
+            frame = _read_frame_bounded(session, operation_deadline)
+        except ImageCaptureError as exc:
+            if not isinstance(exc.__cause__, usb.core.USBTimeoutError):
+                raise
+            _remaining_timeout_ms(operation_deadline)
+            continue
+        return _decode_packet(frame, COMMAND_SWITCH_FDT_DOWN)
 
 
 def _write_and_read_frame_bounded(
@@ -892,10 +910,8 @@ def run_prepared_clear_frame_capture(
                 operation_deadline,
             )
             print("PLACE FINGER ON SENSOR NOW", flush=True)
-            time.sleep(15.0)
-            fdt_event = _decode_packet(
-                _read_frame_bounded(session, operation_deadline),
-                COMMAND_SWITCH_FDT_DOWN,
+            fdt_event = _wait_hu_fdt_down_event(
+                session, min(operation_deadline, time.monotonic() + 45.0)
             )
             fdt_event_raw, fdt_event_transformed = _parse_hu_fdt_body(fdt_event)
             opaque_prefix[:] = b"\x00" * len(opaque_prefix)
