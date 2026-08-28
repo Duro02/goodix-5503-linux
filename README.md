@@ -2,6 +2,8 @@
 
 面向 Goodix `27c6:5503` 指纹传感器的实验性 Linux 驱动研究项目。仓库包含只读探测、已验证的配对/TLS与配置派生代码，以及仍在调试的内存图像采集路径；目前还不是可供 `fprintd` 或 PAM 使用的驱动。
 
+工程范围与避免过度设计的规则见 [`docs/engineering-scope.md`](docs/engineering-scope.md)。
+
 ## 当前安全边界
 
 探测器只允许以下命令：
