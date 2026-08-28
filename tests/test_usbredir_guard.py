@@ -128,7 +128,8 @@ class PolicyTests(unittest.TestCase):
     def setUp(self):
         self.state = GuardState(); self.state.header_size = 16; self.state.bulk_header_size = 10
         self.state.negotiated_caps = DEFAULT_CAPS
-        self.state.device_connected = True; self.state.interface_valid = True; self.state.endpoints_valid = True
+        self.state.device_connected = self.state.identity_pinned = True
+        self.state.interface_valid = self.state.endpoints_valid = True
 
     def test_device_identity_exact_and_duplicate_denied(self):
         good = struct.pack("<BBBBHHH", 2, 0, 0, 0, 0x27c6, 0x5503, 0x0100)
@@ -179,8 +180,10 @@ class PolicyTests(unittest.TestCase):
 
     def test_bounded_enumeration_resets_allow_exact_topology_refresh(self):
         connect = struct.pack("<BBBBHHH", 2, 0, 0, 0, 0x27c6, 0x5503, 0x100)
-        for _ in range(3):
+        for reset_index in range(3):
             self.assertEqual(authorize_guest(packet(RESET), self.state), "bounded-enumeration-usb-reset")
+            get_status = struct.pack("<BBBBHHH", 0x80, 0, 0x80, 0, 0, 0, 2)
+            self.assertEqual(authorize_guest(packet(CONTROL_PACKET, get_status, ident=100 + reset_index), self.state), "standard-enumeration-control")
             authorize_upstream(packet(INTERFACE_INFO, _expected_interface_info()), self.state)
             authorize_upstream(packet(EP_INFO, _expected_ep_info()), self.state)
             authorize_upstream(packet(DEVICE_CONNECT, connect), self.state)

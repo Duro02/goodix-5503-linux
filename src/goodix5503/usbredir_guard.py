@@ -113,6 +113,7 @@ class GuardState:
         self.bulk_header_size = 8
         self.negotiated_caps = 0
         self.device_connected = False
+        self.identity_pinned = False
         self.interface_valid = False
         self.endpoints_valid = False
         self.awaiting_connect = False
@@ -303,6 +304,8 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
         state.reset_count += 1
         state.device_connected = False
         return "bounded-enumeration-usb-reset"
+    if packet.type == CONTROL_PACKET and state.identity_pinned:
+        return _authorize_control_request(packet, state)
     if not state.device_connected or not state.interface_valid or not state.endpoints_valid:
         raise GuardViolation("guest operation before pinned topology")
     if packet.type == SET_CONFIGURATION:
@@ -338,8 +341,6 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
             raise GuardViolation("bulk stop denied")
         state.pending_status[packet.packet_id] = ("bulk-receiving", struct.pack("<IBB", 0, 0x82, 0))
         return "stop-bulk-in-receiver"
-    if packet.type == CONTROL_PACKET:
-        return _authorize_control_request(packet, state)
     if packet.type == BULK_PACKET:
         endpoint, status, length, _, data = _bulk_fields(packet, state)
         if status != 0 or endpoint != 0x01 or length != len(data):
@@ -386,6 +387,7 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         if fields[:4] != (2, 0, 0, 0) or fields[4:6] != (0x27C6, 0x5503):
             raise GuardViolation("device identity or USB topology mismatch")
         state.device_connected = True
+        state.identity_pinned = True
         state.awaiting_connect = False
         return "goodix-27c6-5503"
     if not state.device_connected:
