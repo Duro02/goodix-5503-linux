@@ -17,8 +17,7 @@ from goodix5503.image_capture import (
     _fixed_exchange,
     _milan_parse_other_body,
     _read_chip_id_bounded,
-    _read_official_loader_firmware,
-    _read_official_update_firmware,
+    _read_firmware_identity,
     _read_otp_bounded,
     _read_register_exchange,
     _request_encrypted_clear_image,
@@ -133,63 +132,26 @@ class ImageDecodeTests(unittest.TestCase):
 
 
 class ImageEnvelopeTests(unittest.TestCase):
-    def test_official_loader_firmware_uses_command00_ack_then_a8_ack_data(self):
-        session = object.__new__(ReadOnlyUsbSession)
-        writes = []
-        firmware = b"GF3258_RTSEC_APP_10063\x00"
-        frames = iter(
-            (
-                _encode_packet(COMMAND_ACK, b"\x00\x01"),
-                _encode_packet(COMMAND_ACK, b"\xa8\x01"),
-                _encode_packet(0xA8, firmware),
-                _encode_packet(COMMAND_ACK, b"\xa8\x01"),
-                _encode_packet(0xA8, firmware),
-            )
-        )
-        session._ReadOnlyUsbSession__write_packet = writes.append
-        session._read_frame = lambda: next(frames)
-        self.assertEqual(_read_official_loader_firmware(session), "GF3258_RTSEC_APP_10063")
-        self.assertEqual(
-            writes,
-            [
-                _encode_packet(COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00"),
-                _encode_packet(0xA8, b"\x00\x00"),
-                _encode_packet(0xA8, b"\x00\x00"),
-            ],
-        )
-
-    def test_official_loader_rejects_disagreeing_firmware_reads(self):
-        session = object.__new__(ReadOnlyUsbSession)
-        frames = iter(
-            (
-                _encode_packet(COMMAND_ACK, b"\x00\x01"),
-                _encode_packet(COMMAND_ACK, b"\xa8\x01"),
-                _encode_packet(0xA8, b"first\x00"),
-                _encode_packet(COMMAND_ACK, b"\xa8\x01"),
-                _encode_packet(0xA8, b"second\x00"),
-            )
-        )
-        session._ReadOnlyUsbSession__write_packet = lambda _packet: None
-        session._read_frame = lambda: next(frames)
-        with self.assertRaisesRegex(ImageCaptureError, "firmware reads disagree"):
-            _read_official_loader_firmware(session)
-
-    def test_official_update_firmware_uses_third_a8_ack_data(self):
+    def test_firmware_identity_uses_command00_then_one_a8_read(self):
         session = object.__new__(ReadOnlyUsbSession)
         writes = []
         frames = iter(
             (
+                _encode_packet(COMMAND_ACK, b"\x00\x01"),
                 _encode_packet(COMMAND_ACK, b"\xa8\x01"),
                 _encode_packet(0xA8, b"GF3258_RTSEC_APP_10063\x00"),
             )
         )
         session._ReadOnlyUsbSession__write_packet = writes.append
         session._read_frame = lambda: next(frames)
+        self.assertEqual(_read_firmware_identity(session), "GF3258_RTSEC_APP_10063")
         self.assertEqual(
-            _read_official_update_firmware(session),
-            "GF3258_RTSEC_APP_10063",
+            writes,
+            [
+                _encode_packet(COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00"),
+                _encode_packet(0xA8, b"\x00\x00"),
+            ],
         )
-        self.assertEqual(writes, [_encode_packet(0xA8, b"\x00\x00")])
 
     def test_fixed_exchange_preserves_checksum_free_milan_payload(self):
         for command, result in (
@@ -616,12 +578,11 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
                 side_effect=receive,
             ),
         ):
-            prefix, plaintext, lengths = _acquire_hu_fresh_base_frame(
+            prefix, plaintext = _acquire_hu_fresh_base_frame(
                 object(), object(), bytearray(HU_DAC_FIELD), HU_IMAGE_REQUEST, TEST_DEADLINE
             )
         try:
             self.assertEqual(prefix, bytearray(9))
-            self.assertEqual(lengths, (12, 12, 12))
             self.assertEqual(plaintext, bytearray([2]) * 7684)
             self.assertEqual(image_count, 2)
             self.assertEqual(
@@ -695,12 +656,11 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
                 side_effect=receive,
             ),
         ):
-            prefix, plaintext, lengths = _acquire_hu_fresh_base_frame(
+            prefix, plaintext = _acquire_hu_fresh_base_frame(
                 object(), object(), bytearray(HU_DAC_FIELD), HU_IMAGE_REQUEST, TEST_DEADLINE
             )
         try:
             self.assertEqual(image_count, 3)
-            self.assertEqual(lengths, (12, 12, 12, 12, 12))
         finally:
             prefix[:] = b"\x00" * len(prefix)
             plaintext[:] = b"\x00" * len(plaintext)
@@ -906,7 +866,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
             patch("goodix5503.image_capture._disable_core_dumps"),
             patch("goodix5503.image_capture._preflight_tls_runtime"),
             patch(
-                "goodix5503.image_capture._read_official_loader_firmware",
+                "goodix5503.image_capture._read_firmware_identity",
                 return_value="GF3258_RTSEC_APP_10063",
             ),
             patch(
@@ -918,10 +878,6 @@ class CaptureOrchestratorTests(unittest.TestCase):
             patch("goodix5503.image_capture._read_secure_secret", return_value=bytearray(32)),
             patch("goodix5503.image_capture.calculate_r_verification_record", return_value=bytearray(32)),
             patch("goodix5503.image_capture._build_tls_context", return_value=object()),
-            patch(
-                "goodix5503.image_capture._read_official_update_firmware",
-                return_value="GF3258_RTSEC_APP_10063",
-            ),
             patch("goodix5503.image_capture._ResetGuard.start"),
             patch("goodix5503.image_capture._read_chip_id_bounded", return_value=0x220F),
             patch("goodix5503.image_capture._ack_only"),
@@ -1005,7 +961,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
         def acquire_fresh(_session, _tls, dac, payload, _deadline):
             self.assertEqual(dac, HU_DAC_FIELD)
             self.assertEqual(payload, HU_IMAGE_REQUEST)
-            return bytearray(9), bytearray(7684), (1, 1, 1)
+            return bytearray(9), bytearray(7684)
 
         with (
             patch("goodix5503.image_capture.ReadOnlyUsbSession", FakeSession),
@@ -1058,7 +1014,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertNotIn("pixel_min", result)
         self.assertNotIn("pixel_max", result)
         self.assertNotIn("pixel_sum", result)
-        self.assertEqual(result["fdt_response_lengths"], "1,1,1")
+        self.assertNotIn("fdt_response_lengths", result)
         requests = [event for event in events if event[0] == "request"]
         self.assertEqual(requests, [])
         self.assertEqual(events.count(("verification-read",)), 1)
@@ -1067,13 +1023,8 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertNotIn(("wake", ANY), events)
         self.assertNotIn(("sleep", 0.050), events)
         update_firmware_event = ("exchange", 0xA8, b"\x00\x00")
-        self.assertEqual(events.count(update_firmware_event), 3)
-        third_a8_index = max(
-            index for index, event in enumerate(events)
-            if event == update_firmware_event
-        )
-        self.assertLess(events.index(("verification-read",)), third_a8_index)
-        self.assertLess(third_a8_index, events.index(("reset",)))
+        self.assertEqual(events.count(update_firmware_event), 1)
+        self.assertLess(events.index(update_firmware_event), events.index(("reset",)))
         self.assertLess(events.index(("reset",)), events.index(("sleep", 0.010)))
         self.assertLess(events.index(("sleep", 0.010)), events.index(("read-chip-id",)))
         cold_ack_indices = [
@@ -1093,23 +1044,21 @@ class CaptureOrchestratorTests(unittest.TestCase):
             ("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00"),
         )
         self.assertEqual(runtime[1], ("exchange", 0xA8, b"\x00\x00"))
-        self.assertEqual(runtime[2], ("exchange", 0xA8, b"\x00\x00"))
-        self.assertEqual(runtime[3], ("exchange", 0xA8, b"\x00\x00"))
         self.assertEqual(
-            runtime[4],
+            runtime[2],
             ("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00"),
         )
         self.assertEqual(
-            runtime[5],
+            runtime[3],
             ("exchange", COMMAND_POV_IMAGE_CHECK, b"\x00\x00"),
         )
-        self.assertEqual(runtime[6][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
-        self.assertEqual(len(runtime[6][2]), 256)
+        self.assertEqual(runtime[4][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
+        self.assertEqual(len(runtime[4][2]), 256)
         self.assertEqual(
-            runtime[7],
+            runtime[5],
             ("ack-only", COMMAND_SET_DRIVER_STATE, b"\x01\x00"),
         )
-        self.assertEqual(len(runtime), 8)
+        self.assertEqual(len(runtime), 6)
         self.assertIn(("tls-close",), events)
         self.assertEqual(events[-1], ("close",))
         self.assertTrue(all(not any(otp) for otp in issued_otps))

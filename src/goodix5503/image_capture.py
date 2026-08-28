@@ -193,7 +193,7 @@ def _ack_only(
     _check_ack(ack, command)
 
 
-def _read_official_loader_firmware(
+def _read_firmware_identity(
     session: ReadOnlyUsbSession,
     operation_deadline: float | None = None,
 ) -> str:
@@ -203,27 +203,6 @@ def _read_official_loader_firmware(
         b"\x00\x00\x00\x00",
         operation_deadline,
     )
-    versions = [
-        _decode_c_string(
-            _fixed_exchange(
-                session,
-                COMMAND_FIRMWARE_VERSION,
-                b"\x00\x00",
-                operation_deadline,
-            )
-        )
-        for _ in range(2)
-    ]
-    if versions[0] != versions[1]:
-        raise ImageCaptureError("official loader firmware reads disagree")
-    return versions[0]
-
-
-def _read_official_update_firmware(
-    session: ReadOnlyUsbSession,
-    operation_deadline: float | None = None,
-) -> str:
-    """Mirror UpdateFirmware's post-PSK read-only firmware identity check."""
     return _decode_c_string(
         _fixed_exchange(
             session,
@@ -716,9 +695,8 @@ def _acquire_hu_fresh_base_frame(
     dac_field: bytearray,
     image_request: bytes,
     operation_deadline: float,
-) -> tuple[bytearray, bytearray, tuple[int, ...]]:
+) -> tuple[bytearray, bytearray]:
     zero_base = bytearray(12)
-    fdt_response_lengths: list[int] = []
     try:
         fdt_request = build_hu_manual_fdt_request(dac_field, zero_base)
         for _attempt in range(MAX_FRESH_BASE_ATTEMPTS):
@@ -736,7 +714,6 @@ def _acquire_hu_fresh_base_frame(
                     fdt_request,
                     operation_deadline,
                 )
-                fdt_response_lengths.append(len(response0))
                 raw0, transformed0 = _parse_hu_fdt_body(response0)
                 nav_prefix, nav_plaintext = _receive_hu_plaintext_image(
                     session, tls_server, image_request, operation_deadline
@@ -751,7 +728,6 @@ def _acquire_hu_fresh_base_frame(
                     fdt_request,
                     operation_deadline,
                 )
-                fdt_response_lengths.append(len(response1))
                 raw1, transformed1 = _parse_hu_fdt_body(response1)
                 _ack_only(
                     session,
@@ -783,16 +759,11 @@ def _acquire_hu_fresh_base_frame(
                     fdt_request,
                     operation_deadline,
                 )
-                fdt_response_lengths.append(len(response2))
                 raw2, transformed2 = _parse_hu_fdt_body(response2)
                 if not hu_fdt_bases_within_delta(raw1, raw2, delta):
                     continue
                 keep_candidate = True
-                return (
-                    candidate_prefix,
-                    candidate_plaintext,
-                    tuple(fdt_response_lengths),
-                )
+                return candidate_prefix, candidate_plaintext
             finally:
                 for buffer in (
                     raw0,
@@ -844,7 +815,7 @@ def run_prepared_clear_frame_capture(
         )
         # The pinned Windows USB trace starts directly with command 00. Although
         # Geneva exposes a raw-wake method, no e5 OUT precedes this runtime path.
-        firmware = _read_official_loader_firmware(session, operation_deadline)
+        firmware = _read_firmware_identity(session, operation_deadline)
         if firmware != EXPECTED_FIRMWARE:
             raise ImageCaptureError("unexpected firmware")
         live = _read_live_verification(session)
@@ -861,12 +832,6 @@ def run_prepared_clear_frame_capture(
         if not hmac.compare_digest(live, derived):
             raise ImageCaptureError("device PSK does not match prepared PSK")
         context = _build_tls_context(psk)
-
-        update_firmware = _read_official_update_firmware(
-            session, operation_deadline
-        )
-        if update_firmware != firmware:
-            raise ImageCaptureError("official UpdateFirmware identity disagrees")
 
         reset_guard.start(operation_deadline)
         time.sleep(0.010)
@@ -909,7 +874,7 @@ def run_prepared_clear_frame_capture(
             operation_deadline,
         )
 
-        opaque_prefix, plaintext, fdt_response_lengths = _acquire_hu_fresh_base_frame(
+        opaque_prefix, plaintext = _acquire_hu_fresh_base_frame(
             session,
             tls_server,
             dac_field,
@@ -930,9 +895,6 @@ def run_prepared_clear_frame_capture(
             "packed_length": PACKED_IMAGE_LENGTH,
             "opaque_prefix_length": len(opaque_prefix),
             "opaque_trailer_length": len(opaque_trailer),
-            "fdt_response_lengths": ",".join(
-                str(length) for length in fdt_response_lengths
-            ),
         }
     finally:
         had_primary_error = sys.exc_info()[0] is not None
