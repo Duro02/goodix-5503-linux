@@ -120,7 +120,11 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   flow places it at `SetIap(..., 0x32)` / command A4, immediately before an app
   erase/retry path, so it is a persistent-state boundary and will not be
   whitelisted. This closes command-00 and both firmware-A8 response routes while
-  leaving any later actual record recovery separately gated.
+  leaving any later actual record recovery separately gated. Static analysis
+  proves these are three failed `PresetPskIsValidR` attempts. Entering the valid
+  official branch would require a new device-resident DPAPI `bb010002` record
+  recoverable by this VM user and matched to the existing PSK; preparing it can
+  be offline, but writing it is a separately authorized persistent operation.
 ```
 
 ## Interpretation

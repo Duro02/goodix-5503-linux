@@ -19,6 +19,7 @@ from goodix5503.image_capture import (
     _milan_parse_other_body,
     _read_chip_id_bounded,
     _read_official_loader_firmware,
+    _read_official_update_firmware,
     _read_otp_bounded,
     _read_register_exchange,
     _request_encrypted_clear_image,
@@ -167,6 +168,23 @@ class ImageEnvelopeTests(unittest.TestCase):
         session._read_frame = lambda: next(frames)
         with self.assertRaisesRegex(ImageCaptureError, "firmware reads disagree"):
             _read_official_loader_firmware(session)
+
+    def test_official_update_firmware_uses_third_a8_ack_data(self):
+        session = object.__new__(ReadOnlyUsbSession)
+        writes = []
+        frames = iter(
+            (
+                _encode_packet(COMMAND_ACK, b"\xa8\x01"),
+                _encode_packet(0xA8, b"GF3258_RTSEC_APP_10063\x00"),
+            )
+        )
+        session._ReadOnlyUsbSession__write_packet = writes.append
+        session._read_frame = lambda: next(frames)
+        self.assertEqual(
+            _read_official_update_firmware(session),
+            "GF3258_RTSEC_APP_10063",
+        )
+        self.assertEqual(writes, [_encode_packet(0xA8, b"\x00\x00")])
 
     def test_fixed_exchange_preserves_checksum_free_milan_payload(self):
         for command, result in (
@@ -913,6 +931,10 @@ class CaptureOrchestratorTests(unittest.TestCase):
             patch("goodix5503.image_capture._read_secure_secret", return_value=bytearray(32)),
             patch("goodix5503.image_capture.calculate_r_verification_record", return_value=bytearray(32)),
             patch("goodix5503.image_capture._build_tls_context", return_value=object()),
+            patch(
+                "goodix5503.image_capture._read_official_update_firmware",
+                return_value="GF3258_RTSEC_APP_10063",
+            ),
             patch("goodix5503.image_capture._ResetGuard.start"),
             patch("goodix5503.image_capture._read_chip_id_bounded", return_value=0x220F),
             patch("goodix5503.image_capture._ack_only"),
@@ -1060,6 +1082,14 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertEqual(events.count(("reset",)), 2)
         self.assertEqual(events.count(("read-chip-id",)), 1)
         self.assertLess(events.index(("wake", ANY)), events.index(("sleep", 0.050)))
+        update_firmware_event = ("exchange", 0xA8, b"\x00\x00")
+        self.assertEqual(events.count(update_firmware_event), 3)
+        third_a8_index = max(
+            index for index, event in enumerate(events)
+            if event == update_firmware_event
+        )
+        self.assertLess(events.index(("verification-read",)), third_a8_index)
+        self.assertLess(third_a8_index, events.index(("reset",)))
         self.assertLess(events.index(("sleep", 0.050)), events.index(("reset",)))
         self.assertLess(events.index(("reset",)), events.index(("sleep", 0.010)))
         self.assertLess(events.index(("sleep", 0.010)), events.index(("read-chip-id",)))
@@ -1081,21 +1111,22 @@ class CaptureOrchestratorTests(unittest.TestCase):
         )
         self.assertEqual(runtime[1], ("exchange", 0xA8, b"\x00\x00"))
         self.assertEqual(runtime[2], ("exchange", 0xA8, b"\x00\x00"))
+        self.assertEqual(runtime[3], ("exchange", 0xA8, b"\x00\x00"))
         self.assertEqual(
-            runtime[3],
+            runtime[4],
             ("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00"),
         )
         self.assertEqual(
-            runtime[4],
+            runtime[5],
             ("exchange", COMMAND_POV_IMAGE_CHECK, b"\x00\x00"),
         )
-        self.assertEqual(runtime[5][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
-        self.assertEqual(len(runtime[5][2]), 256)
+        self.assertEqual(runtime[6][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
+        self.assertEqual(len(runtime[6][2]), 256)
         self.assertEqual(
-            runtime[6],
+            runtime[7],
             ("ack-only", COMMAND_SET_DRIVER_STATE, b"\x01\x00"),
         )
-        self.assertEqual(len(runtime), 7)
+        self.assertEqual(len(runtime), 8)
         self.assertIn(("tls-close",), events)
         self.assertEqual(events[-1], ("close",))
         self.assertTrue(all(not any(otp) for otp in issued_otps))

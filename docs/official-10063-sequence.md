@@ -225,17 +225,31 @@ stops at this persistent-state boundary. Evidence hashes: usbmon capture
 owner-only guard audit
 `5d16b52b123ce30f2c8811c8a0e47adfa105f49f66d7fe1d49f70e36b6ecb827`.
 
+Pinned static analysis also closes the counterfactual valid branch. The three
+observed `bb010002` transactions are three top-level `PresetPskIsValidR`
+attempts, not three phases of one read. A successful attempt must recover a
+32-byte PSK from a device-resident per-user DPAPI blob, then read the separate
+32-byte R verification selector `bb020007` and compare it. Success returns from
+`ProcessPsk` immediately; loader continuation is firmware A8, then runtime reset
+A2/0514, then chip-ID 82/0000000400. This VM lacks the original Current User
+DPAPI master-key state, while the current Linux pairing retained/replaced only
+the white-box side. Reaching that official valid branch would therefore require
+constructing and persistently writing a new `bb010002` DPAPI record matched to
+the existing PSK (normally together with the matching `bb010003` TLV). That is a
+new persistent operation and is not authorized by this trace work.
+
 The free preflight is an explicit **functional PSK substitution**, not a
-byte-for-byte replay of the paired Windows loader: it performs one bounded A8
-APP identity read and the R verification read `E4/bb020007`, then compares the
-owner-only local PSK-derived record. A normal successful Windows loader performs
-two total A8 reads (SelfCheck and ProcessPsk); a third occurs only after the
-SelfCheck read fails and HardResetMcu retries. Windows also queries selector
-`bb010002` before any later recovery of the paired secret.
-Those omitted operations are read-only and have no proven sensor-state effect;
-the local protected record was separately backed up and the PSK is independently
-verified. Claims of exact ordering below apply from loader wake/reset and the
-sensor cold path, not to this substituted host PSK recovery.
+byte-for-byte replay of the paired Windows loader. It mirrors command 00 and the
+SelfCheck and ProcessPsk A8 identity reads, substitutes a direct
+`E4/bb020007` verification against the owner-only local PSK for Windows's
+unavailable `bb010002` DPAPI recovery, then mirrors UpdateFirmware's third A8
+identity read before reset. A normal successful Windows loader therefore has
+three total A8 reads on this path, with `bb010002` recovery and `bb020007`
+verification between the second and third. The omitted DPAPI-record read is
+read-only and has no proven sensor-state effect; its prior contents were
+separately backed up and the active PSK is independently verified. Claims of
+exact ordering below apply from loader wake/reset and the sensor cold path,
+while host secret recovery remains a functional substitution.
 
 F6 is intentionally absent from the up-to-date APP branch. The previously
 recorded `MILAN_RTSEC_IAP_10027` attestation in `docs/device-state.md` is accepted

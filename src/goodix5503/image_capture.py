@@ -153,6 +153,21 @@ def _read_official_loader_firmware(
     return versions[0]
 
 
+def _read_official_update_firmware(
+    session: ReadOnlyUsbSession,
+    operation_deadline: float | None = None,
+) -> str:
+    """Mirror UpdateFirmware's post-PSK read-only firmware identity check."""
+    return _decode_c_string(
+        _fixed_exchange(
+            session,
+            COMMAND_FIRMWARE_VERSION,
+            b"\x00\x00",
+            operation_deadline,
+        )
+    )
+
+
 def _milan_parse_other_body(body: bytes) -> bytes:
     """Return payload already stripped of the checksum by ``_decode_packet``."""
     # The DLL parser subtracts the trailing protocol checksum from its packet
@@ -801,6 +816,12 @@ def run_prepared_clear_frame_capture(
         if not hmac.compare_digest(live, derived):
             raise ImageCaptureError("device PSK does not match prepared PSK")
         context = _build_tls_context(psk)
+
+        update_firmware = _read_official_update_firmware(
+            session, operation_deadline
+        )
+        if update_firmware != firmware:
+            raise ImageCaptureError("official UpdateFirmware identity disagrees")
 
         reset_guard.start(operation_deadline)
         time.sleep(0.010)
