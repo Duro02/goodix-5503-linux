@@ -108,8 +108,11 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   containing `GF3258_RTSEC_APP_10063\0`. The next OUT was denied before hardware.
   An owner-only loopback capture identified that denied third OUT as an exact
   second padded `A8/0000` request, confirming the two normal APP identity reads
-  statically mapped to SelfCheck and ProcessPsk. This closes official command-00
-  ACK routing and the first firmware-A8 ACK/data routing.
+  statically mapped to SelfCheck and ProcessPsk. A reviewed three-OUT run
+  captured identical success ACK and firmware data for the second read. The
+  fourth denied OUT hash uniquely matches fixed read-only command E4 selector
+  `bb010002`, zero length: the protected paired-record read. It remained blocked
+  before hardware. This closes command-00 and both firmware-A8 response routes.
 ```
 
 ## Interpretation

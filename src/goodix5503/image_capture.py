@@ -137,13 +137,20 @@ def _read_official_loader_firmware(
         b"\x00\x00\x00\x00",
         operation_deadline,
     )
-    body = _fixed_exchange(
-        session,
-        COMMAND_FIRMWARE_VERSION,
-        b"\x00\x00",
-        operation_deadline,
-    )
-    return _decode_c_string(body)
+    versions = [
+        _decode_c_string(
+            _fixed_exchange(
+                session,
+                COMMAND_FIRMWARE_VERSION,
+                b"\x00\x00",
+                operation_deadline,
+            )
+        )
+        for _ in range(2)
+    ]
+    if versions[0] != versions[1]:
+        raise ImageCaptureError("official loader firmware reads disagree")
+    return versions[0]
 
 
 def _milan_parse_other_body(body: bytes) -> bytes:

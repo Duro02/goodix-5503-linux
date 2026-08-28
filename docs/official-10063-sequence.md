@@ -167,7 +167,8 @@ guard audit SHA-256 is
 `d7a6f91158d41fbe8f8ee466b925c64ab2624fcc558801a5d197ecdea12b945b`.
 This dynamically proves ordinary separate ACK/data routing for firmware A8.
 The Linux clear-frame preflight now mirrors the exact official wire payloads:
-command `00/00000000` with ACK only, then `A8/0000` with ACK plus data.
+command `00/00000000` with ACK only, then two `A8/0000` identity reads with ACK
+plus data; disagreement between the two firmware strings is fatal.
 
 A subsequent owner-only loopback capture identified the denied third OUT as an
 exact replay of the padded `A8/0000` request, not a new opcode. Its usbredir
@@ -178,6 +179,18 @@ ProcessPsk). Loopback capture SHA-256 is
 `042991ada67f905ad958fbd699f3605472b5c8db2b94b412d5d792f5a82a4b2f`;
 usbmon SHA-256 is
 `2b805509c0d2c839d7ed1d076a9fd0272fe17a2cc2a381f2e23e8a802063b36f`.
+A reviewed three-OUT run then captured the second A8's exact same success ACK
+and 31-byte firmware data before denying the fourth OUT. Thus both normal APP
+identity reads have identical ACK/data routing.
+
+The fourth denied-frame SHA-256 was matched offline against the small fixed
+read-only candidate set, including the exact usbredir packet ID. It uniquely
+matches padded command E4 with selector `bb010002` and zero length:
+`a00c00ace40900020001bb00000000ff + 48*00`. This is the protected paired-record
+read already identified statically, not a write. The candidate packet hash is
+exactly the guard audit hash
+`a58048045dd2f77f13188e783ec28856f0e3f9f04bcac940a1806597b9135b64`.
+It was denied before hardware in this run.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8

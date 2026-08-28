@@ -136,6 +136,8 @@ class ImageEnvelopeTests(unittest.TestCase):
                 _encode_packet(COMMAND_ACK, b"\x00\x01"),
                 _encode_packet(COMMAND_ACK, b"\xa8\x01"),
                 _encode_packet(0xA8, firmware),
+                _encode_packet(COMMAND_ACK, b"\xa8\x01"),
+                _encode_packet(0xA8, firmware),
             )
         )
         session._ReadOnlyUsbSession__write_packet = writes.append
@@ -146,8 +148,25 @@ class ImageEnvelopeTests(unittest.TestCase):
             [
                 _encode_packet(COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00"),
                 _encode_packet(0xA8, b"\x00\x00"),
+                _encode_packet(0xA8, b"\x00\x00"),
             ],
         )
+
+    def test_official_loader_rejects_disagreeing_firmware_reads(self):
+        session = object.__new__(ReadOnlyUsbSession)
+        frames = iter(
+            (
+                _encode_packet(COMMAND_ACK, b"\x00\x01"),
+                _encode_packet(COMMAND_ACK, b"\xa8\x01"),
+                _encode_packet(0xA8, b"first\x00"),
+                _encode_packet(COMMAND_ACK, b"\xa8\x01"),
+                _encode_packet(0xA8, b"second\x00"),
+            )
+        )
+        session._ReadOnlyUsbSession__write_packet = lambda _packet: None
+        session._read_frame = lambda: next(frames)
+        with self.assertRaisesRegex(ImageCaptureError, "firmware reads disagree"):
+            _read_official_loader_firmware(session)
 
     def test_fixed_exchange_preserves_checksum_free_milan_payload(self):
         for command, result in (
@@ -1061,21 +1080,22 @@ class CaptureOrchestratorTests(unittest.TestCase):
             ("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00"),
         )
         self.assertEqual(runtime[1], ("exchange", 0xA8, b"\x00\x00"))
+        self.assertEqual(runtime[2], ("exchange", 0xA8, b"\x00\x00"))
         self.assertEqual(
-            runtime[2],
+            runtime[3],
             ("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00"),
         )
         self.assertEqual(
-            runtime[3],
+            runtime[4],
             ("exchange", COMMAND_POV_IMAGE_CHECK, b"\x00\x00"),
         )
-        self.assertEqual(runtime[4][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
-        self.assertEqual(len(runtime[4][2]), 256)
+        self.assertEqual(runtime[5][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
+        self.assertEqual(len(runtime[5][2]), 256)
         self.assertEqual(
-            runtime[5],
+            runtime[6],
             ("ack-only", COMMAND_SET_DRIVER_STATE, b"\x01\x00"),
         )
-        self.assertEqual(len(runtime), 6)
+        self.assertEqual(len(runtime), 7)
         self.assertIn(("tls-close",), events)
         self.assertEqual(events[-1], ("close",))
         self.assertTrue(all(not any(otp) for otp in issued_otps))
