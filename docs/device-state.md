@@ -115,9 +115,12 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   `01 01`, not the protected record; this is a query/status transaction. The
   conservative record-envelope gate rejected and wiped it before Windows. A
   later reviewed runs forwarded the exact `01 01` results; successive denied
-  OUT hashes identify exact second and third `E4/bb010002/mode0` queries. This closes
-  command-00 and both firmware-A8 response routes while leaving any later actual
-  record recovery separately gated.
+  OUT hashes identify exact second and third `E4/bb010002/mode0` queries. After
+  the third exact response, the seventh OUT was denied before hardware. Static
+  flow places it at `SetIap(..., 0x32)` / command A4, immediately before an app
+  erase/retry path, so it is a persistent-state boundary and will not be
+  whitelisted. This closes command-00 and both firmware-A8 response routes while
+  leaving any later actual record recovery separately gated.
 ```
 
 ## Interpretation

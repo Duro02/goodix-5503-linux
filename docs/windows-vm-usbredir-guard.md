@@ -33,7 +33,10 @@ query/status transactions, not the 324-byte protected record. Each response is
 still handled conservatively with one mutable backing buffer, no packet
 metadata/content hashing in the audit, and zeroing in a `finally` path.
 Buffered-bulk responses are always denied. Afterward only already-audited
-control-IN requests and bounded endpoint-`82` reads may pass. Any seventh bulk OUT
+control-IN requests and bounded endpoint-`82` reads may pass. The observed real
+seventh OUT follows the driver's three failed PSK-validity attempts and reaches
+its `SetIap(..., 0x32)` / command-A4 app-erase branch; it is intentionally never
+whitelisted. Any seventh bulk OUT
 closes both streams before forwarding; so do a mismatched or failed completion,
 a nonexact ACK/data response, and the bounded observation deadline.
 At most three normal pre-command USB resets are allowed. They retain the

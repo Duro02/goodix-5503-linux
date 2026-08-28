@@ -209,6 +209,22 @@ reviewed two-query run forwarded the second exact `01 01` response; the sixth
 OUT hash again matches the identical mode-0 query. It was denied before hardware,
 proving a third query without broadening the command family.
 
+A reviewed three-query run forwarded the third exact `01 01` response and then
+denied the seventh OUT before hardware. Its complete usbredir-frame audit hash is
+`9578daa46925381e24024ce1bd3c723997557a8cfb1fe8df341791cab123215b`
+(packet ID `4638055104`, frame length 74). Unlike the previous repeated queries,
+it does not match the fixed read-only candidate set. Static control flow explains
+why it must remain blocked: `ProcessPsk` performs exactly three validity attempts,
+then the host-only IAP/app check falls through to `SetIap(..., 0x32)`; the next
+code path logs `erase app failed, retry...`. `SetIap @ 0x1800a5900` constructs a
+two-byte request and submits command `A4`. This is a firmware/IAP transition,
+not a read-only loader observation. The dynamic frame was therefore not
+forwarded, no loopback capture was enabled, and reconstruction intentionally
+stops at this persistent-state boundary. Evidence hashes: usbmon capture
+`3e717ae6a48da16816474e095733c3c941deb2bdb8f4bb76df8f4e1751f0dea6`;
+owner-only guard audit
+`5d16b52b123ce30f2c8811c8a0e47adfa105f49f66d7fe1d49f70e36b6ecb827`.
+
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
 APP identity read and the R verification read `E4/bb020007`, then compares the
