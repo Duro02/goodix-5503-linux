@@ -102,21 +102,6 @@ def derive_hu_dac_field(otp: bytearray) -> bytearray:
     return field
 
 
-def build_hu_nav_base(decoded_image: bytes | bytearray) -> bytearray:
-    """Crop the official 80x12 navigation base from an 80x64 LE16 image."""
-    if len(decoded_image) != 80 * 64 * 2:
-        raise HuRuntimeError("decoded GF3258 image must be exactly 10240 bytes")
-    nav = bytearray(80 * 12 * 2)
-    for output_row in range(12):
-        source_row = 8 + 4 * output_row
-        source_offset = source_row * 80 * 2
-        output_offset = output_row * 80 * 2
-        nav[output_offset : output_offset + 160] = decoded_image[
-            source_offset : source_offset + 160
-        ]
-    return nav
-
-
 def build_hu_image_request(dac_field: bytes | bytearray) -> bytes:
     """Build the fixed-purpose local command-20 request payload."""
     if len(dac_field) != 8:

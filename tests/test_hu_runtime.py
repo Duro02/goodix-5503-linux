@@ -6,7 +6,6 @@ from goodix5503.hu_runtime import (
     build_hu_fdt_down_request,
     build_hu_image_request,
     build_hu_manual_fdt_request,
-    build_hu_nav_base,
     classify_hu_right_info,
     derive_hu_dac_field,
     gf3258_dn2_otp_integrity,
@@ -125,29 +124,6 @@ class HuRuntimeTests(unittest.TestCase):
         _defeat_long_crc_predicates(otp)
         with self.assertRaisesRegex(HuRuntimeError, "classification failed"):
             derive_hu_dac_field(otp)
-
-    def test_nav_base_selects_twelve_fixed_full_width_rows(self):
-        decoded = bytearray(80 * 64 * 2)
-        for row in range(64):
-            for column in range(80):
-                value = row * 80 + column
-                decoded[(row * 80 + column) * 2 : (row * 80 + column) * 2 + 2] = (
-                    value.to_bytes(2, "little")
-                )
-        nav = build_hu_nav_base(decoded)
-        try:
-            self.assertEqual(len(nav), 1920)
-            for output_row, source_row in enumerate(range(8, 53, 4)):
-                values = [
-                    int.from_bytes(nav[(output_row * 80 + column) * 2 :][:2], "little")
-                    for column in range(80)
-                ]
-                self.assertEqual(values, [source_row * 80 + column for column in range(80)])
-        finally:
-            decoded[:] = b"\x00" * len(decoded)
-            nav[:] = b"\x00" * len(nav)
-        with self.assertRaisesRegex(HuRuntimeError, "10240"):
-            build_hu_nav_base(bytes(10239))
 
     def test_builds_local_hu_image_and_fresh_fdt_requests(self):
         dac = bytearray.fromhex("8b0084008c008800")

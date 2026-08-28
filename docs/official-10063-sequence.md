@@ -52,30 +52,20 @@ the first command-36 base suffix is the proven zero-base value. The prior
 D4/`0000` step has also been removed: it came from the 5110 log, while pinned
 Milan exposes no immediate D4.
 
-## Current narrow candidate versus proof
+## Current bounded runtime path
 
-The dormant runtime implementation now begins directly with the dynamically
-proven command-00 transaction, performs identity/PSK checks, loader reset and chip-ID
+The active `goodix-5503-capture` entry point begins directly with the proven
+command-00 transaction, performs identity/PSK checks, loader reset and chip-ID
 selection, the mandatory post-command-00 `A6/0000` CheckSensor OTP snapshot,
 TLS D0 flights, config 90, and the bounded official fresh-base coordinator. It
 uses dynamic HU command-20/36 payloads, exact command-36 bodies, command
 `70/1400`, register-82 delta reads, two consistency comparisons and at most
 three complete attempts. Pinned image defaults additionally require cold
 command `00/00000000`, one D6/`0000` discriminator, and exactly one post-config
-C4/`0100`; D2 and duplicate C4 remain absent. The TLS bridge supports both
-command-20 images on one TLS session.
-The hardware entry point remains explicitly disabled before USB even with
-confirmation until this new coordinator passes independent review.
-
-## Offline work gate
-
-Before another capture attempt:
-
-1. independently review the bounded coordinator and multi-image TLS bridge;
-2. verify all short/oversized command-36, delta, retry and cleanup tests;
-3. retain a single operation deadline across USB and TLS;
-4. confirm no optional resume-only command was accidentally made mandatory;
-5. only then consider one runtime-only, memory-only validation.
+C4/`0100`; D2 and duplicate C4 remain absent. The TLS bridge supports multiple
+command-20 images on one session. Runtime validation has completed the
+memory-only clear-frame path; the optional finger-frame path remains bounded,
+interactive, and non-persistent.
 
 No firmware, PSK or persistent operation is required for this work.
 

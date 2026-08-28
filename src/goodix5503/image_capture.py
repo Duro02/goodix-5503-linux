@@ -21,7 +21,6 @@ from .hu_runtime import (
     build_hu_fdt_down_request,
     build_hu_image_request,
     build_hu_manual_fdt_request,
-    build_hu_nav_base,
     derive_hu_dac_field,
     gf3258_dn2_otp_integrity,
     hu_fdt_bases_within_delta,
@@ -707,7 +706,6 @@ def _acquire_hu_fresh_base_frame(
             raw0 = transformed0 = raw1 = transformed1 = bytearray()
             raw2 = transformed2 = bytearray()
             nav_prefix = nav_plaintext = bytearray()
-            nav_decoded = nav_base = bytearray()
             candidate_prefix = candidate_plaintext = candidate_base = bytearray()
             keep_candidate = False
             try:
@@ -721,10 +719,6 @@ def _acquire_hu_fresh_base_frame(
                 nav_prefix, nav_plaintext = _receive_hu_plaintext_image(
                     session, tls_server, image_request, operation_deadline
                 )
-                nav_decoded = decode_packed_image(
-                    memoryview(nav_plaintext)[:PACKED_IMAGE_LENGTH]
-                )
-                nav_base = build_hu_nav_base(nav_decoded)
                 response1 = _fixed_exchange(
                     session,
                     COMMAND_SWITCH_FDT_MODE,
@@ -778,8 +772,6 @@ def _acquire_hu_fresh_base_frame(
                     transformed2,
                     nav_prefix,
                     nav_plaintext,
-                    nav_decoded,
-                    nav_base,
                 ):
                     buffer[:] = b"\x00" * len(buffer)
                 if not keep_candidate:

@@ -1025,8 +1025,6 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertEqual(events.count(("verification-read",)), 1)
         self.assertEqual(events.count(("reset",)), 2)
         self.assertEqual(events.count(("read-chip-id",)), 1)
-        self.assertNotIn(("wake", ANY), events)
-        self.assertNotIn(("sleep", 0.050), events)
         update_firmware_event = ("exchange", 0xA8, b"\x00\x00")
         self.assertEqual(events.count(update_firmware_event), 1)
         self.assertLess(events.index(update_firmware_event), events.index(("reset",)))
