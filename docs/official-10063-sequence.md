@@ -64,11 +64,11 @@ three complete attempts. Pinned image defaults additionally require cold
 command `00/00000000`, one D6/`0000` discriminator, and exactly one post-config
 C4/`0100`; D2 and duplicate C4 remain absent. The TLS bridge supports multiple
 command-20 images on one session. Runtime validation has completed the
-memory-only clear-frame path. A subsequent FDT-down run received an unsolicited
-command-32 event and a structurally valid 80x64 B2/TLS image, but the operator
-did not intentionally touch the sensor in time; it therefore does not yet prove
-a finger frame. No image bytes or derived statistics were retained. The
-interactive validation remains bounded and non-persistent.
+memory-only clear-frame path. A coordinated follow-up, with the operator ready
+and intentionally touching immediately after the prompt, received the
+unsolicited command-32 event and a structurally valid 80x64 B2/TLS finger
+frame. No image bytes or derived statistics were retained. The interactive
+validation remains bounded and non-persistent.
 
 No firmware, PSK or persistent operation is required for this work.
 
