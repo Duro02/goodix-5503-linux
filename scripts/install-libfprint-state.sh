@@ -36,7 +36,9 @@ umask 077
 [[ $(stat -Lc %u "$GOODIX_SOURCE") == "$GOODIX_UID" ]]
 [[ $(stat -Lc %a "$GOODIX_SOURCE") == 600 ]]
 [[ $(stat -Lc %s "$GOODIX_SOURCE") == 32 ]]
+[[ ! -L $GOODIX_TARGET_DIR ]]
 /usr/bin/install -d -m 0700 -o root -g root -- "$GOODIX_TARGET_DIR"
+[[ $(stat -Lc %u:%g:%a "$GOODIX_TARGET_DIR") == 0:0:700 ]]
 if [[ -e $GOODIX_TARGET || -L $GOODIX_TARGET ]]; then
   [[ ! -L $GOODIX_TARGET ]]
   [[ $(stat -Lc %u:%g:%a:%s "$GOODIX_TARGET") == 0:0:600:32 ]]

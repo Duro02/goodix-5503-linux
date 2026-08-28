@@ -58,6 +58,8 @@ goodix5503_frame_buffer_free (Goodix5503FrameBuffer *buffer)
 {
   if (buffer == NULL)
     return;
+  if (buffer->bytes)
+    memset (buffer->bytes->data, 0, buffer->bytes->len);
   g_clear_pointer (&buffer->bytes, g_byte_array_unref);
   g_free (buffer);
 }

@@ -69,6 +69,7 @@ struct _FpiDeviceGoodix5503
   gboolean read_active;
   gboolean outer_expect_read;
   gboolean deactivating;
+  gboolean closing;
   guint8 psk[GOODIX5503_SECURITY_PSK_SIZE];
   guint8 expected_verification[GOODIX5503_VERIFICATION_SIZE];
   guint8 otp[GOODIX5503_OTP_SIZE];
@@ -99,12 +100,12 @@ G_DEFINE_TYPE (FpiDeviceGoodix5503, fpi_device_goodix5503,
                FP_TYPE_IMAGE_DEVICE)
 
 static void goodix5503_submit_read (FpiDeviceGoodix5503 *self);
+static void goodix5503_close_finish (FpiDeviceGoodix5503 *self);
 
 static void
 goodix5503_command_clear (FpiDeviceGoodix5503 *self)
 {
   g_clear_object (&self->transaction_cancel);
-  g_clear_pointer (&self->frame_buffer, goodix5503_frame_buffer_free);
   g_clear_pointer (&self->command_response, g_byte_array_unref);
   g_clear_error (&self->command_error);
   self->command_callback = NULL;
@@ -124,6 +125,15 @@ goodix5503_command_maybe_complete (FpiDeviceGoodix5503 *self)
   if (self->command_error == NULL && self->command_response == NULL)
     return;
 
+  if (self->closing)
+    {
+      if (self->command_response)
+        OPENSSL_cleanse (self->command_response->data,
+                         self->command_response->len);
+      goodix5503_command_clear (self);
+      goodix5503_close_finish (self);
+      return;
+    }
   callback = self->command_callback;
   response = g_steal_pointer (&self->command_response);
   error = g_steal_pointer (&self->command_error);
@@ -211,11 +221,6 @@ goodix5503_read_done (FpiUsbTransfer *transfer,
       if (self->command_state == GOODIX5503_COMMAND_DONE)
         {
           self->command_response = g_steal_pointer (&body);
-          if (goodix5503_frame_buffer_length (self->frame_buffer) != 0)
-            g_set_error_literal (&self->command_error,
-                                 GOODIX5503_PROTO_ERROR,
-                                 GOODIX5503_PROTO_ERROR_INVALID,
-                                 "excess Goodix command response data");
           break;
         }
     }
@@ -265,7 +270,8 @@ goodix5503_command_start (FpiDeviceGoodix5503  *self,
     }
 
   self->transaction_cancel = g_cancellable_new ();
-  self->frame_buffer = goodix5503_frame_buffer_new ();
+  if (self->frame_buffer == NULL)
+    self->frame_buffer = goodix5503_frame_buffer_new ();
   self->command_state = GOODIX5503_COMMAND_WAIT_ACK;
   self->command_callback = callback;
   self->expected_command = command;
@@ -291,7 +297,6 @@ static void
 goodix5503_outer_clear (FpiDeviceGoodix5503 *self)
 {
   g_clear_object (&self->transaction_cancel);
-  g_clear_pointer (&self->frame_buffer, goodix5503_frame_buffer_free);
   g_clear_pointer (&self->outer_response, g_byte_array_unref);
   g_clear_error (&self->outer_error);
   self->outer_callback = NULL;
@@ -313,6 +318,14 @@ goodix5503_outer_maybe_complete (FpiDeviceGoodix5503 *self)
       self->outer_expect_read)
     return;
 
+  if (self->closing)
+    {
+      if (self->outer_response)
+        OPENSSL_cleanse (self->outer_response->data, self->outer_response->len);
+      goodix5503_outer_clear (self);
+      goodix5503_close_finish (self);
+      return;
+    }
   callback = self->outer_callback;
   response = g_steal_pointer (&self->outer_response);
   error = g_steal_pointer (&self->outer_error);
@@ -359,13 +372,27 @@ goodix5503_outer_out_done (FpiUsbTransfer *transfer,
 static void goodix5503_outer_submit_read (FpiDeviceGoodix5503 *self);
 
 static void
+goodix5503_outer_process_buffer (FpiDeviceGoodix5503 *self)
+{
+  g_autoptr(GByteArray) frame = NULL;
+
+  if (goodix5503_frame_buffer_take (self->frame_buffer, &frame,
+                                    &self->outer_error))
+    self->outer_response = g_steal_pointer (&frame);
+  if (self->outer_error)
+    goodix5503_outer_fail (self, g_steal_pointer (&self->outer_error));
+  else if (self->outer_response == NULL)
+    goodix5503_outer_submit_read (self);
+  goodix5503_outer_maybe_complete (self);
+}
+
+static void
 goodix5503_outer_read_done (FpiUsbTransfer *transfer,
                              FpDevice       *device,
                              gpointer        user_data,
                              GError         *error)
 {
   FpiDeviceGoodix5503 *self = FPI_DEVICE_GOODIX5503 (device);
-  g_autoptr(GByteArray) frame = NULL;
 
   (void) user_data;
   self->read_active = FALSE;
@@ -386,21 +413,7 @@ goodix5503_outer_read_done (FpiUsbTransfer *transfer,
       goodix5503_outer_maybe_complete (self);
       return;
     }
-  if (goodix5503_frame_buffer_take (self->frame_buffer, &frame,
-                                    &self->outer_error))
-    {
-      if (goodix5503_frame_buffer_length (self->frame_buffer) != 0)
-        g_set_error_literal (&self->outer_error, GOODIX5503_PROTO_ERROR,
-                             GOODIX5503_PROTO_ERROR_INVALID,
-                             "excess Goodix TLS transport data");
-      else
-        self->outer_response = g_steal_pointer (&frame);
-    }
-  if (self->outer_error)
-    goodix5503_outer_fail (self, g_steal_pointer (&self->outer_error));
-  else if (self->outer_response == NULL)
-    goodix5503_outer_submit_read (self);
-  goodix5503_outer_maybe_complete (self);
+  goodix5503_outer_process_buffer (self);
 }
 
 static void
@@ -427,12 +440,19 @@ goodix5503_outer_start (FpiDeviceGoodix5503 *self,
   g_assert (self->command_callback == NULL && self->outer_callback == NULL);
   g_assert (packet != NULL || expect_read);
   self->transaction_cancel = g_cancellable_new ();
-  self->frame_buffer = goodix5503_frame_buffer_new ();
+  if (self->frame_buffer == NULL)
+    self->frame_buffer = goodix5503_frame_buffer_new ();
   self->outer_callback = callback;
   self->outer_expect_read = expect_read;
   self->out_done = packet == NULL;
   self->read_active = FALSE;
 
+  if (expect_read && goodix5503_frame_buffer_length (self->frame_buffer) > 0)
+    {
+      g_assert (packet == NULL);
+      goodix5503_outer_process_buffer (self);
+      return;
+    }
   if (expect_read)
     goodix5503_outer_submit_read (self);
   if (packet)
@@ -453,6 +473,25 @@ static void goodix5503_activation_fail (FpiDeviceGoodix5503 *self,
                                         GError              *error);
 
 static void
+goodix5503_pre_reset_fail (FpiDeviceGoodix5503 *self, GError *error)
+{
+  g_clear_pointer (&self->tls, goodix5503_tls_free);
+  g_clear_pointer (&self->frame_buffer, goodix5503_frame_buffer_free);
+  OPENSSL_cleanse (self->psk, sizeof self->psk);
+  OPENSSL_cleanse (self->expected_verification,
+                   sizeof self->expected_verification);
+  OPENSSL_cleanse (self->otp, sizeof self->otp);
+  OPENSSL_cleanse (self->dac, sizeof self->dac);
+  OPENSSL_cleanse (self->config, sizeof self->config);
+  OPENSSL_cleanse (self->fresh_raw, sizeof self->fresh_raw);
+  OPENSSL_cleanse (self->fresh_transformed, sizeof self->fresh_transformed);
+  OPENSSL_cleanse (self->fdt_base, sizeof self->fdt_base);
+  OPENSSL_cleanse (self->background, sizeof self->background);
+  OPENSSL_cleanse (self->finger, sizeof self->finger);
+  fpi_image_device_activate_complete (FP_IMAGE_DEVICE (self), error);
+}
+
+static void
 goodix5503_cleanup_done (FpiDeviceGoodix5503 *self,
                           GByteArray          *body,
                           GError              *error)
@@ -462,6 +501,7 @@ goodix5503_cleanup_done (FpiDeviceGoodix5503 *self,
   self->cleanup_active = FALSE;
   self->reset_attempted = FALSE;
   g_clear_pointer (&self->tls, goodix5503_tls_free);
+  g_clear_pointer (&self->frame_buffer, goodix5503_frame_buffer_free);
   OPENSSL_cleanse (self->psk, sizeof self->psk);
   OPENSSL_cleanse (self->expected_verification,
                    sizeof self->expected_verification);
@@ -496,8 +536,8 @@ goodix5503_activation_fail (FpiDeviceGoodix5503 *self, GError *error)
     g_clear_error (&error);
   if (!self->reset_attempted || self->cleanup_active)
     {
-      fpi_image_device_activate_complete (
-        FP_IMAGE_DEVICE (self), g_steal_pointer (&self->primary_error));
+      goodix5503_pre_reset_fail (self,
+                                 g_steal_pointer (&self->primary_error));
       return;
     }
 
@@ -1118,13 +1158,12 @@ goodix5503_verification_done (FpiDeviceGoodix5503 *self,
                               GByteArray          *body,
                               GError              *error)
 {
-  FpImageDevice *device = FP_IMAGE_DEVICE (self);
   g_autoptr(GByteArray) owned_body = body;
   gboolean valid;
 
   if (error)
     {
-      fpi_image_device_activate_complete (device, error);
+      goodix5503_pre_reset_fail (self, error);
       return;
     }
   valid = body->len == 41 && body->data[0] == 0 &&
@@ -1135,9 +1174,9 @@ goodix5503_verification_done (FpiDeviceGoodix5503 *self,
   OPENSSL_cleanse (body->data, body->len);
   if (!valid)
     {
-      fpi_image_device_activate_complete (
-        device, fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
-                                          "Goodix device PSK verification failed"));
+      goodix5503_pre_reset_fail (
+        self, fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
+                                        "Goodix device PSK verification failed"));
       return;
     }
 
@@ -1156,20 +1195,19 @@ goodix5503_firmware_done (FpiDeviceGoodix5503 *self,
                            GByteArray          *body,
                            GError              *error)
 {
-  FpImageDevice *device = FP_IMAGE_DEVICE (self);
   g_autoptr(GByteArray) owned_body = body;
 
   if (error)
     {
-      fpi_image_device_activate_complete (device, error);
+      goodix5503_pre_reset_fail (self, error);
       return;
     }
   if (body->len != sizeof expected_firmware ||
       memcmp (body->data, expected_firmware, sizeof expected_firmware) != 0)
     {
-      fpi_image_device_activate_complete (
-        device, fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
-                                          "unsupported Goodix 5503 firmware"));
+      goodix5503_pre_reset_fail (
+        self, fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
+                                        "unsupported Goodix 5503 firmware"));
       return;
     }
 
@@ -1177,7 +1215,7 @@ goodix5503_firmware_done (FpiDeviceGoodix5503 *self,
       !goodix5503_derive_verification_record (
         self->psk, self->expected_verification, &error))
     {
-      fpi_image_device_activate_complete (device, error);
+      goodix5503_pre_reset_fail (self, error);
       return;
     }
   {
@@ -1201,7 +1239,7 @@ goodix5503_nop_done (FpiDeviceGoodix5503 *self,
   g_clear_pointer (&body, g_byte_array_unref);
   if (error)
     {
-      fpi_image_device_activate_complete (FP_IMAGE_DEVICE (self), error);
+      goodix5503_pre_reset_fail (self, error);
       return;
     }
   goodix5503_command_start (self, GOODIX5503_COMMAND_FIRMWARE,
@@ -1226,13 +1264,12 @@ goodix5503_open (FpImageDevice *device)
 }
 
 static void
-goodix5503_close (FpImageDevice *device)
+goodix5503_close_finish (FpiDeviceGoodix5503 *self)
 {
-  FpiDeviceGoodix5503 *self = FPI_DEVICE_GOODIX5503 (device);
   g_autoptr(GError) error = NULL;
 
-  if (self->transaction_cancel)
-    g_cancellable_cancel (self->transaction_cancel);
+  g_assert (self->command_callback == NULL && self->outer_callback == NULL);
+  self->closing = FALSE;
   if (self->delay_source)
     {
       g_source_destroy (self->delay_source);
@@ -1240,6 +1277,7 @@ goodix5503_close (FpImageDevice *device)
     }
   goodix5503_command_clear (self);
   goodix5503_outer_clear (self);
+  g_clear_pointer (&self->frame_buffer, goodix5503_frame_buffer_free);
   g_clear_pointer (&self->tls, goodix5503_tls_free);
   OPENSSL_cleanse (self->psk, sizeof self->psk);
   OPENSSL_cleanse (self->expected_verification,
@@ -1256,10 +1294,27 @@ goodix5503_close (FpImageDevice *device)
   if (self->interface_claimed)
     {
       g_usb_device_release_interface (
-        fpi_device_get_usb_device (FP_DEVICE (device)), 0, 0, &error);
+        fpi_device_get_usb_device (FP_DEVICE (self)), 0, 0, &error);
       self->interface_claimed = FALSE;
     }
-  fpi_image_device_close_complete (device, g_steal_pointer (&error));
+  fpi_image_device_close_complete (FP_IMAGE_DEVICE (self),
+                                   g_steal_pointer (&error));
+}
+
+static void
+goodix5503_close (FpImageDevice *device)
+{
+  FpiDeviceGoodix5503 *self = FPI_DEVICE_GOODIX5503 (device);
+
+  if (self->transaction_cancel || self->command_callback ||
+      self->outer_callback || self->read_active)
+    {
+      self->closing = TRUE;
+      if (self->transaction_cancel)
+        g_cancellable_cancel (self->transaction_cancel);
+      return;
+    }
+  goodix5503_close_finish (self);
 }
 
 static void

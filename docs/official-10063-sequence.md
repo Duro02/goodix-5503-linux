@@ -260,17 +260,15 @@ path now uses that queued-read ordering for its fixed transactions without
 changing the generic probe transport.
 
 The free preflight is an explicit **functional PSK substitution**, not a
-byte-for-byte replay of the paired Windows loader. It mirrors command 00 and the
-SelfCheck and ProcessPsk A8 identity reads, substitutes a direct
-`E4/bb020007` verification against the owner-only local PSK for Windows's
-unavailable `bb010002` DPAPI recovery, then mirrors UpdateFirmware's third A8
-identity read before reset. A normal successful Windows loader therefore has
-three total A8 reads on this path, with `bb010002` recovery and `bb020007`
-verification between the second and third. The omitted DPAPI-record read is
-read-only and has no proven sensor-state effect; its prior contents were
-separately backed up and the active PSK is independently verified. Claims of
-exact ordering below apply from loader wake/reset and the sensor cold path,
-while host secret recovery remains a functional substitution.
+byte-for-byte replay of the paired Windows loader. The three Windows A8 call
+sites were useful for reconstructing SelfCheck, ProcessPsk and UpdateFirmware,
+but repeated reads have no proven state effect. The active runtime therefore
+uses one exact post-command-00 A8 identity check, followed by direct
+`E4/bb020007` verification against the owner-only local PSK, before reset. This
+replaces Windows's unavailable `bb010002` DPAPI recovery while preserving the
+identity and pairing gates without retaining duplicate diagnostic ceremony.
+The omitted DPAPI-record read is read-only; its prior contents were separately
+backed up and the active PSK is independently verified.
 
 F6 is intentionally absent from the up-to-date APP branch. The previously
 recorded `MILAN_RTSEC_IAP_10027` attestation in `docs/device-state.md` is accepted

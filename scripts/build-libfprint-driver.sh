@@ -63,4 +63,14 @@ meson setup "$work_dir/build" "$work_dir/source" \
 ninja -C "$work_dir/build" \
   libfprint/libfprint-2.so.2.0.0 \
   examples/enroll examples/verify examples/img-capture
+
+cc -std=c11 -Wall -Wextra -Werror -O2 \
+  -I"$work_dir/build/libfprint" \
+  -I"$work_dir/source/libfprint" \
+  $(pkg-config --cflags libfprint-2 gusb) \
+  "$repo_dir/tools/goodix5503_libfprint_smoke.c" \
+  -L"$work_dir/build/libfprint" \
+  -Wl,-rpath,"$work_dir/build/libfprint" \
+  -o "$repo_dir/.tools/goodix5503-libfprint-smoke" \
+  $(pkg-config --libs libfprint-2)
 printf 'Built development driver in %s\n' "$work_dir/build"
