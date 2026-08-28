@@ -5,6 +5,58 @@
 #include "goodix5503-proto.h"
 
 static void
+test_frame_buffer_split_and_coalesced (void)
+{
+  const guint8 first_payload[] = { 0x01, 0x02 };
+  const guint8 second_payload[] = { 0x03, 0x04, 0x05 };
+  g_autoptr(GByteArray) first = NULL;
+  g_autoptr(GByteArray) second = NULL;
+  g_autoptr(GByteArray) joined = g_byte_array_new ();
+  g_autoptr(GByteArray) frame = NULL;
+  g_autoptr(Goodix5503FrameBuffer) buffer = goodix5503_frame_buffer_new ();
+  g_autoptr(GError) error = NULL;
+
+  first = goodix5503_packet_encode (0x20, first_payload,
+                                    sizeof first_payload, TRUE, &error);
+  g_assert_no_error (error);
+  second = goodix5503_packet_encode (0x36, second_payload,
+                                     sizeof second_payload, FALSE, &error);
+  g_assert_no_error (error);
+  g_byte_array_append (joined, first->data, first->len);
+  g_byte_array_append (joined, second->data, second->len);
+
+  g_assert_true (goodix5503_frame_buffer_append (buffer, joined->data, 3,
+                                                 &error));
+  g_assert_false (goodix5503_frame_buffer_take (buffer, &frame, &error));
+  g_assert_no_error (error);
+  g_assert_true (goodix5503_frame_buffer_append (
+    buffer, joined->data + 3, joined->len - 3, &error));
+  g_assert_true (goodix5503_frame_buffer_take (buffer, &frame, &error));
+  g_assert_cmpmem (frame->data, frame->len, first->data, first->len);
+  g_clear_pointer (&frame, g_byte_array_unref);
+  g_assert_true (goodix5503_frame_buffer_take (buffer, &frame, &error));
+  g_assert_cmpmem (frame->data, frame->len, second->data, second->len);
+  g_clear_pointer (&frame, g_byte_array_unref);
+  g_assert_false (goodix5503_frame_buffer_take (buffer, &frame, &error));
+  g_assert_no_error (error);
+}
+
+static void
+test_frame_buffer_rejects_bad_header (void)
+{
+  const guint8 invalid[] = { 0xa0, 0x04, 0x00, 0x00 };
+  g_autoptr(Goodix5503FrameBuffer) buffer = goodix5503_frame_buffer_new ();
+  g_autoptr(GByteArray) frame = NULL;
+  g_autoptr(GError) error = NULL;
+
+  g_assert_true (goodix5503_frame_buffer_append (buffer, invalid,
+                                                 sizeof invalid, &error));
+  g_assert_false (goodix5503_frame_buffer_take (buffer, &frame, &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_CHECKSUM);
+}
+
+static void
 test_packet_round_trip (void)
 {
   const guint8 payload[] = { 0x01, 0x00, 0x8b, 0x00 };
@@ -179,6 +231,10 @@ int
 main (int argc, char **argv)
 {
   g_test_init (&argc, &argv, NULL);
+  g_test_add_func ("/goodix5503/frame-buffer/split-coalesced",
+                   test_frame_buffer_split_and_coalesced);
+  g_test_add_func ("/goodix5503/frame-buffer/bad-header",
+                   test_frame_buffer_rejects_bad_header);
   g_test_add_func ("/goodix5503/packet/round-trip", test_packet_round_trip);
   g_test_add_func ("/goodix5503/packet/no-checksum", test_no_checksum_packet);
   g_test_add_func ("/goodix5503/packet/reject-mutations",

@@ -14,6 +14,8 @@ G_BEGIN_DECLS
 #define GOODIX5503_DAC_SIZE 8
 #define GOODIX5503_FDT_REQUEST_SIZE 22
 
+typedef struct _Goodix5503FrameBuffer Goodix5503FrameBuffer;
+
 typedef enum
 {
   GOODIX5503_PROTO_ERROR_INVALID,
@@ -24,6 +26,20 @@ typedef enum
 
 #define GOODIX5503_PROTO_ERROR (goodix5503_proto_error_quark ())
 GQuark goodix5503_proto_error_quark (void);
+
+Goodix5503FrameBuffer *goodix5503_frame_buffer_new (void);
+void goodix5503_frame_buffer_free (Goodix5503FrameBuffer *buffer);
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (Goodix5503FrameBuffer,
+                               goodix5503_frame_buffer_free)
+
+gboolean goodix5503_frame_buffer_append (Goodix5503FrameBuffer  *buffer,
+                                          const guint8           *data,
+                                          gsize                   data_len,
+                                          GError                **error);
+
+gboolean goodix5503_frame_buffer_take (Goodix5503FrameBuffer  *buffer,
+                                        GByteArray            **frame,
+                                        GError                **error);
 
 GByteArray *goodix5503_packet_encode (guint8         command,
                                       const guint8  *payload,

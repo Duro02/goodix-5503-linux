@@ -4,6 +4,13 @@
 #define GOODIX_MESSAGE_FLAGS 0xa0
 #define GOODIX_CHECKSUM_TARGET 0xaa
 #define GOODIX_NO_CHECKSUM_TRAILER 0x88
+#define GOODIX5503_MAX_FRAME_SIZE 32768
+#define GOODIX5503_MAX_BUFFER_SIZE (GOODIX5503_MAX_FRAME_SIZE * 2)
+
+struct _Goodix5503FrameBuffer
+{
+  GByteArray *bytes;
+};
 
 G_DEFINE_QUARK (goodix5503-proto-error-quark, goodix5503_proto_error)
 
@@ -35,6 +42,83 @@ sum8 (const guint8 *data, gsize length)
   for (gsize index = 0; index < length; index++)
     sum += data[index];
   return sum & 0xff;
+}
+
+Goodix5503FrameBuffer *
+goodix5503_frame_buffer_new (void)
+{
+  Goodix5503FrameBuffer *buffer = g_new0 (Goodix5503FrameBuffer, 1);
+
+  buffer->bytes = g_byte_array_sized_new (GOODIX5503_MAX_FRAME_SIZE);
+  return buffer;
+}
+
+void
+goodix5503_frame_buffer_free (Goodix5503FrameBuffer *buffer)
+{
+  if (buffer == NULL)
+    return;
+  g_clear_pointer (&buffer->bytes, g_byte_array_unref);
+  g_free (buffer);
+}
+
+gboolean
+goodix5503_frame_buffer_append (Goodix5503FrameBuffer  *buffer,
+                                 const guint8           *data,
+                                 gsize                   data_len,
+                                 GError                **error)
+{
+  g_return_val_if_fail (buffer != NULL, FALSE);
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+  if ((data_len > 0 && data == NULL) ||
+      data_len > GOODIX5503_MAX_BUFFER_SIZE - buffer->bytes->len)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_LENGTH,
+                           "Goodix USB frame buffer exceeded its bound");
+      return FALSE;
+    }
+  if (data_len > 0)
+    g_byte_array_append (buffer->bytes, data, data_len);
+  return TRUE;
+}
+
+gboolean
+goodix5503_frame_buffer_take (Goodix5503FrameBuffer  *buffer,
+                               GByteArray            **frame,
+                               GError                **error)
+{
+  guint16 payload_len;
+  gsize frame_len;
+
+  g_return_val_if_fail (buffer != NULL, FALSE);
+  g_return_val_if_fail (frame != NULL && *frame == NULL, FALSE);
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+  if (buffer->bytes->len < 4)
+    return FALSE;
+  if (sum8 (buffer->bytes->data, 3) != buffer->bytes->data[3])
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_CHECKSUM,
+                           "invalid Goodix USB frame header checksum");
+      return FALSE;
+    }
+  payload_len = read_le16 (buffer->bytes->data + 1);
+  frame_len = (gsize) payload_len + 4;
+  if (frame_len > GOODIX5503_MAX_FRAME_SIZE)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_LENGTH,
+                           "Goodix USB frame exceeded its bound");
+      return FALSE;
+    }
+  if (buffer->bytes->len < frame_len)
+    return FALSE;
+
+  *frame = g_byte_array_sized_new (frame_len);
+  g_byte_array_append (*frame, buffer->bytes->data, frame_len);
+  g_byte_array_remove_range (buffer->bytes, 0, frame_len);
+  return TRUE;
 }
 
 GByteArray *
