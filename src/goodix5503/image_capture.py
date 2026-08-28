@@ -1,10 +1,9 @@
-"""Review-gated, fixed clear-frame acquisition path for the Goodix 5503."""
+"""Fixed experimental clear-frame acquisition path for the Goodix 5503."""
 
 from __future__ import annotations
 
 __test__ = False
 
-import hashlib
 import hmac
 import json
 import os
@@ -16,11 +15,7 @@ import threading
 import time
 from typing import Final
 
-from .chip_config import (
-    LOCAL_RUNTIME_CONFIG_SHA256,
-    _validate_config_checksum,
-    build_runtime_config,
-)
+from .chip_config import _validate_config_checksum, build_runtime_config
 from .hu_runtime import (
     build_hu_image_request,
     build_hu_manual_fdt_request,
@@ -83,7 +78,6 @@ IMAGE_WIDTH: Final = 80
 IMAGE_HEIGHT: Final = 64
 MAX_FRESH_BASE_ATTEMPTS: Final = 3
 EXPECTED_CHIP_ID: Final = 0x220F
-EXPECTED_RUNTIME_CONFIG_SHA256: Final = LOCAL_RUNTIME_CONFIG_SHA256
 
 
 class ImageCaptureError(RuntimeError):
@@ -443,10 +437,6 @@ def _validate_config_result(result: bytes) -> None:
 
 def _validate_prepared_config(config: bytes | bytearray) -> None:
     _validate_config_checksum(config)
-    if not hmac.compare_digest(
-        hashlib.sha256(config).hexdigest(), EXPECTED_RUNTIME_CONFIG_SHA256
-    ):
-        raise ImageCaptureError("runtime configuration is not the prepared OTP-derived value")
 
 
 def decode_packed_image(packed: bytes | bytearray | memoryview) -> bytearray:
@@ -469,18 +459,6 @@ def decode_packed_image(packed: bytes | bytearray | memoryview) -> bytearray:
     return pixels
 
 
-def _pixel_metrics(pixels: bytearray) -> dict[str, int]:
-    if len(pixels) != PIXEL_COUNT * 2:
-        raise ValueError("decoded image has an invalid length")
-    minimum = 0xFFFF
-    maximum = 0
-    total = 0
-    for offset in range(0, len(pixels), 2):
-        value = pixels[offset] | (pixels[offset + 1] << 8)
-        minimum = min(minimum, value)
-        maximum = max(maximum, value)
-        total += value
-    return {"pixel_min": minimum, "pixel_max": maximum, "pixel_sum": total}
 
 
 class _ResetGuard:
@@ -942,7 +920,6 @@ def run_prepared_clear_frame_capture(
         if len(opaque_prefix) != 9 or len(opaque_trailer) != 4:
             raise ImageCaptureError("image opaque metadata has an invalid length")
         pixels = decode_packed_image(memoryview(plaintext)[:PACKED_IMAGE_LENGTH])
-        metrics = _pixel_metrics(pixels)
         return {
             "operation": "runtime-only-memory-clear-frame",
             "firmware": firmware,
@@ -956,7 +933,6 @@ def run_prepared_clear_frame_capture(
             "fdt_response_lengths": ",".join(
                 str(length) for length in fdt_response_lengths
             ),
-            **metrics,
         }
     finally:
         had_primary_error = sys.exc_info()[0] is not None

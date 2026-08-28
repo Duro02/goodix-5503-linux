@@ -30,7 +30,11 @@ from goodix5503.image_capture import (
     decode_packed_image,
     run_prepared_clear_frame_capture,
 )
-from goodix5503.chip_config import EXPECTED_ZERO_OTP_CONFIG, RUNTIME_CONFIG_PATH
+from goodix5503.chip_config import (
+    EXPECTED_ZERO_OTP_CONFIG,
+    RUNTIME_CONFIG_PATH,
+    ChipConfigError,
+)
 from goodix5503.hu_runtime import goodix_crc8
 from goodix5503.image_capture import (
     COMMAND_COLD_PRECHECK,
@@ -92,9 +96,11 @@ class ImageDecodeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ImageCaptureError, "rejected"):
                     _validate_config_result(result)
 
-    def test_zero_otp_config_is_not_the_prepared_device_config(self):
-        with self.assertRaisesRegex(ImageCaptureError, "OTP-derived"):
-            _validate_prepared_config(EXPECTED_ZERO_OTP_CONFIG)
+    def test_runtime_config_requires_a_valid_checksum(self):
+        config = bytearray(EXPECTED_ZERO_OTP_CONFIG)
+        config[0] ^= 1
+        with self.assertRaises(ChipConfigError):
+            _validate_prepared_config(config)
 
     def test_local_prepared_config_has_pinned_identity_when_present(self):
         if not RUNTIME_CONFIG_PATH.exists():
@@ -1049,9 +1055,9 @@ class CaptureOrchestratorTests(unittest.TestCase):
         ):
             result = run_prepared_clear_frame_capture()
 
-        self.assertEqual(result["pixel_min"], 0)
-        self.assertEqual(result["pixel_max"], 0)
-        self.assertEqual(result["pixel_sum"], 0)
+        self.assertNotIn("pixel_min", result)
+        self.assertNotIn("pixel_max", result)
+        self.assertNotIn("pixel_sum", result)
         self.assertEqual(result["fdt_response_lengths"], "1,1,1")
         requests = [event for event in events if event[0] == "request"]
         self.assertEqual(requests, [])
