@@ -54,6 +54,10 @@ def reader_session(*chunks):
 
 
 class OfficialEndpoint:
+    bLength = 7
+    bDescriptorType = 5
+    bInterval = 0
+
     def __init__(self, address, *, attributes=2, packet_size=512):
         self.bEndpointAddress = address
         self.bmAttributes = attributes
@@ -67,6 +71,10 @@ class OfficialEndpoint:
 
 
 class OfficialInterface:
+    bLength = 9
+    bDescriptorType = 4
+    iInterface = 0
+
     def __init__(self, *, number=0, alternate=0, endpoints=None):
         self.bInterfaceNumber = number
         self.bAlternateSetting = alternate
@@ -74,13 +82,21 @@ class OfficialInterface:
         self.bInterfaceSubClass = 0
         self.bInterfaceProtocol = 0
         self.endpoints = endpoints or [OfficialEndpoint(0x01), OfficialEndpoint(0x82)]
+        self.bNumEndpoints = len(self.endpoints)
 
     def __iter__(self):
         return iter(self.endpoints)
 
 
 class OfficialConfig:
+    bLength = 9
+    bDescriptorType = 2
+    wTotalLength = 0x20
+    bNumInterfaces = 1
     bConfigurationValue = 1
+    iConfiguration = 0
+    bmAttributes = 0xA0
+    bMaxPower = 50
 
     def __init__(self, interface=None):
         self.interface = interface or OfficialInterface()
@@ -90,6 +106,9 @@ class OfficialConfig:
 
 
 class OfficialDevice:
+    bLength = 18
+    bDescriptorType = 1
+    bcdUSB = 0x0200
     idVendor = 0x27C6
     idProduct = 0x5503
     bus = 3
@@ -98,6 +117,12 @@ class OfficialDevice:
     bDeviceClass = 0xEF
     bDeviceSubClass = 2
     bDeviceProtocol = 1
+    bMaxPacketSize0 = 64
+    bcdDevice = 0x0100
+    iManufacturer = 1
+    iProduct = 2
+    iSerialNumber = 0
+    bNumConfigurations = 1
 
     def __init__(self, *, config=None, driver=False):
         self.config = config or OfficialConfig()
@@ -293,6 +318,23 @@ class PacketTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "descriptor"):
                     _official_device_layout(device)
 
+    def test_official_layout_pins_complete_device_collection_and_raw_packet_size(self):
+        changed_device = OfficialDevice()
+        changed_device.bcdDevice = 0x0101
+
+        changed_packet = OfficialDevice()
+        changed_packet.config.interface.endpoints[0].wMaxPacketSize = 0x1200
+
+        class ExtraInterfaceConfig(OfficialConfig):
+            def __iter__(self):
+                return iter((self.interface, OfficialInterface(number=1)))
+
+        extra_interface = OfficialDevice(config=ExtraInterfaceConfig())
+        for device in (changed_device, changed_packet, extra_interface):
+            with self.subTest(device=device):
+                with self.assertRaisesRegex(RuntimeError, "changed"):
+                    _official_device_layout(device)
+
     def test_official_reset_disposes_when_descriptor_property_raises(self):
         class BrokenDevice(OfficialDevice):
             @property
@@ -308,62 +350,66 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(device.reset_calls, 0)
         dispose.assert_called_once_with(device)
 
-    def test_official_loader_session_reacquires_exact_descriptors_and_settles(self):
-        import usb.core
+    def test_official_loader_disposes_when_repeated_descriptor_access_raises(self):
+        class FlakyInterface(OfficialInterface):
+            def __init__(self):
+                self.number_reads = 0
+                super().__init__()
 
-        class Endpoint:
-            bmAttributes = 2
-            wMaxPacketSize = 512
+            @property
+            def bInterfaceNumber(self):
+                self.number_reads += 1
+                if self.number_reads > 1:
+                    raise RuntimeError("interface number read failed")
+                return self._number
 
+            @bInterfaceNumber.setter
+            def bInterfaceNumber(self, value):
+                self._number = value
+
+        class FlakyEndpoint(OfficialEndpoint):
             def __init__(self, address):
-                self.bEndpointAddress = address
+                self.packet_reads = 0
+                super().__init__(address)
 
-            def read(self, _size, timeout):
-                self.timeout = timeout
-                raise usb.core.USBTimeoutError("quiet")
+            @property
+            def wMaxPacketSize(self):
+                self.packet_reads += 1
+                if self.packet_reads > 1:
+                    raise RuntimeError("packet size read failed")
+                return self._packet_size
 
-        class Interface:
-            bInterfaceNumber = 0
-            bAlternateSetting = 0
-            bInterfaceClass = 0xFF
-            bInterfaceSubClass = 0
-            bInterfaceProtocol = 0
+            @wMaxPacketSize.setter
+            def wMaxPacketSize(self, value):
+                self._packet_size = value
 
-            def __init__(self):
-                self.endpoints = [Endpoint(0x01), Endpoint(0x82)]
+        devices = (
+            OfficialDevice(config=OfficialConfig(FlakyInterface())),
+            OfficialDevice(
+                config=OfficialConfig(
+                    OfficialInterface(
+                        endpoints=[OfficialEndpoint(0x01), FlakyEndpoint(0x82)]
+                    )
+                )
+            ),
+        )
+        for device, message in zip(devices, ("interface number", "packet size")):
+            with self.subTest(message=message):
+                identity = _usb_identity(device)
+                with (
+                    patch("goodix5503.probe._find_unique_device", return_value=device),
+                    patch(
+                        "goodix5503.probe._official_loader_usb_reset_sequence",
+                        return_value=(device, 10.0, identity),
+                    ),
+                    patch("goodix5503.probe.usb.util.dispose_resources") as dispose,
+                    self.assertRaisesRegex(RuntimeError, message),
+                ):
+                    ReadOnlyUsbSession._for_official_loader()
+                dispose.assert_called_once_with(device)
 
-            def __iter__(self):
-                return iter(self.endpoints)
-
-        class Config:
-            bConfigurationValue = 1
-
-            def __init__(self, interface):
-                self.interface = interface
-
-            def __iter__(self):
-                return iter((self.interface,))
-
-        class Device:
-            idVendor = 0x27C6
-            idProduct = 0x5503
-            bus = 3
-            address = 2
-            port_numbers = (3,)
-            bDeviceClass = 0xEF
-            bDeviceSubClass = 2
-            bDeviceProtocol = 1
-
-            def __init__(self):
-                self.interface = Interface()
-
-            def get_active_configuration(self):
-                return Config(self.interface)
-
-            def is_kernel_driver_active(self, _interface):
-                return False
-
-        device = Device()
+    def test_official_loader_session_reacquires_exact_descriptors_and_settles(self):
+        device = OfficialDevice()
         identity = _usb_identity(device)
         with (
             patch("goodix5503.probe._find_unique_device", side_effect=(device, device)),
@@ -378,8 +424,12 @@ class PacketTests(unittest.TestCase):
             patch("goodix5503.probe.time.sleep") as sleep,
         ):
             session = ReadOnlyUsbSession._for_official_loader()
-            self.assertIs(session.endpoint_out, device.interface.endpoints[0])
-            self.assertIs(session.endpoint_in, device.interface.endpoints[1])
+            self.assertIs(
+                session.endpoint_out, device.config.interface.endpoints[0]
+            )
+            self.assertIs(
+                session.endpoint_in, device.config.interface.endpoints[1]
+            )
             session.close()
         resets.assert_called_once_with(device)
         claim.assert_called_once_with(device, 0)
@@ -424,46 +474,13 @@ class PacketTests(unittest.TestCase):
         sleep.assert_not_called()
 
     def test_official_loader_session_rejects_descriptor_drift_before_claim(self):
-        class Endpoint:
-            bmAttributes = 2
-            wMaxPacketSize = 512
-
-            def __init__(self, address):
-                self.bEndpointAddress = address
-
-        class Interface:
-            bInterfaceNumber = 0
-            bAlternateSetting = 0
-            bInterfaceClass = 0xFF
-            bInterfaceSubClass = 0
-            bInterfaceProtocol = 0
-
-            def __iter__(self):
-                return iter((Endpoint(0x02), Endpoint(0x82)))
-
-        class Config:
-            bConfigurationValue = 1
-
-            def __iter__(self):
-                return iter((Interface(),))
-
-        class Device:
-            idVendor = 0x27C6
-            idProduct = 0x5503
-            bus = 3
-            address = 2
-            port_numbers = (3,)
-            bDeviceClass = 0xEF
-            bDeviceSubClass = 2
-            bDeviceProtocol = 1
-
-            def get_active_configuration(self):
-                return Config()
-
-            def is_kernel_driver_active(self, _interface):
-                return False
-
-        device = Device()
+        device = OfficialDevice(
+            config=OfficialConfig(
+                OfficialInterface(
+                    endpoints=[OfficialEndpoint(0x02), OfficialEndpoint(0x82)]
+                )
+            )
+        )
         with (
             patch("goodix5503.probe._find_unique_device", return_value=device),
             patch(

@@ -180,40 +180,73 @@ def _official_device_layout(device, expected_identity=None):
     identity = _usb_identity(device)
     if expected_identity is not None and identity != expected_identity:
         raise RuntimeError("fingerprint USB identity/topology changed after reset")
-    if (
+    device_descriptor = (
+        int(device.bLength),
+        int(device.bDescriptorType),
+        int(device.bcdUSB),
         int(device.bDeviceClass),
         int(device.bDeviceSubClass),
         int(device.bDeviceProtocol),
-    ) != (0xEF, 0x02, 0x01):
+        int(device.bMaxPacketSize0),
+        int(device.idVendor),
+        int(device.idProduct),
+        int(device.bcdDevice),
+        int(device.iManufacturer),
+        int(device.iProduct),
+        int(device.iSerialNumber),
+        int(device.bNumConfigurations),
+    )
+    if device_descriptor != (
+        18, 1, 0x0200, 0xEF, 0x02, 0x01, 64,
+        VENDOR_ID, PRODUCT_ID, 0x0100, 1, 2, 0, 1,
+    ):
         raise RuntimeError("official-loader USB device descriptor changed")
     config = device.get_active_configuration()
-    if int(config.bConfigurationValue) != 1:
+    config_descriptor = (
+        int(config.bLength),
+        int(config.bDescriptorType),
+        int(config.wTotalLength),
+        int(config.bNumInterfaces),
+        int(config.bConfigurationValue),
+        int(config.iConfiguration),
+        int(config.bmAttributes),
+        int(config.bMaxPower),
+    )
+    if config_descriptor != (9, 2, 0x20, 1, 1, 0, 0xA0, 50):
         raise RuntimeError("official-loader USB configuration changed")
-    interfaces = [
-        interface
-        for interface in config
-        if (
-            int(interface.bInterfaceNumber),
-            int(interface.bAlternateSetting),
-            int(interface.bInterfaceClass),
-            int(interface.bInterfaceSubClass),
-            int(interface.bInterfaceProtocol),
-        )
-        == (0, 0, 0xFF, 0x00, 0x00)
-    ]
+    interfaces = list(config)
     if len(interfaces) != 1:
-        raise RuntimeError("official-loader USB interface descriptor changed")
+        raise RuntimeError("official-loader USB interface collection changed")
     interface = interfaces[0]
+    interface_descriptor = (
+        int(interface.bLength),
+        int(interface.bDescriptorType),
+        int(interface.bInterfaceNumber),
+        int(interface.bAlternateSetting),
+        int(interface.bNumEndpoints),
+        int(interface.bInterfaceClass),
+        int(interface.bInterfaceSubClass),
+        int(interface.bInterfaceProtocol),
+        int(interface.iInterface),
+    )
+    if interface_descriptor != (9, 4, 0, 0, 2, 0xFF, 0x00, 0x00, 0):
+        raise RuntimeError("official-loader USB interface descriptor changed")
     endpoints = list(interface)
     endpoint_layout = sorted(
         (
+            int(endpoint.bLength),
+            int(endpoint.bDescriptorType),
             int(endpoint.bEndpointAddress),
             int(endpoint.bmAttributes),
-            int(endpoint.wMaxPacketSize) & 0x7FF,
+            int(endpoint.wMaxPacketSize),
+            int(endpoint.bInterval),
         )
         for endpoint in endpoints
     )
-    if endpoint_layout != [(0x01, 0x02, 512), (0x82, 0x02, 512)]:
+    if endpoint_layout != [
+        (7, 5, 0x01, 0x02, 512, 0),
+        (7, 5, 0x82, 0x02, 512, 0),
+    ]:
         raise RuntimeError("official-loader USB endpoint descriptors changed")
     if device.is_kernel_driver_active(0):
         raise RuntimeError(
@@ -283,52 +316,48 @@ class ReadOnlyUsbSession:
                 _official_loader_usb_reset_sequence(self.device)
             )
 
-        if _initialization_token is _OFFICIAL_LOADER_INITIALIZATION:
-            try:
+        try:
+            if _initialization_token is _OFFICIAL_LOADER_INITIALIZATION:
                 _, interface, self.endpoint_in, self.endpoint_out = (
                     _official_device_layout(self.device, official_identity)
                 )
-            except BaseException:
-                usb.util.dispose_resources(self.device)
-                raise
-        else:
-            try:
+            else:
                 config = self.device.get_active_configuration()
-            except BaseException:
-                usb.util.dispose_resources(self.device)
-                raise
-            interface = usb.util.find_descriptor(
-                config,
-                custom_match=lambda item: item.bInterfaceClass in (0x0A, 0xFF),
-            )
-            if interface is None:
-                usb.util.dispose_resources(self.device)
-                raise RuntimeError("vendor/data USB interface was not found")
-            self.endpoint_in = usb.util.find_descriptor(
-                interface,
-                custom_match=lambda ep: usb.util.endpoint_direction(ep.bEndpointAddress)
-                == usb.util.ENDPOINT_IN
-                and usb.util.endpoint_type(ep.bmAttributes)
-                == usb.util.ENDPOINT_TYPE_BULK,
-            )
-            self.endpoint_out = usb.util.find_descriptor(
-                interface,
-                custom_match=lambda ep: usb.util.endpoint_direction(ep.bEndpointAddress)
-                == usb.util.ENDPOINT_OUT
-                and usb.util.endpoint_type(ep.bmAttributes)
-                == usb.util.ENDPOINT_TYPE_BULK,
-            )
-            if self.endpoint_in is None or self.endpoint_out is None:
-                usb.util.dispose_resources(self.device)
-                raise RuntimeError("bulk USB endpoints were not found")
+                interface = usb.util.find_descriptor(
+                    config,
+                    custom_match=lambda item: item.bInterfaceClass in (0x0A, 0xFF),
+                )
+                if interface is None:
+                    raise RuntimeError("vendor/data USB interface was not found")
+                self.endpoint_in = usb.util.find_descriptor(
+                    interface,
+                    custom_match=lambda ep: usb.util.endpoint_direction(
+                        ep.bEndpointAddress
+                    )
+                    == usb.util.ENDPOINT_IN
+                    and usb.util.endpoint_type(ep.bmAttributes)
+                    == usb.util.ENDPOINT_TYPE_BULK,
+                )
+                self.endpoint_out = usb.util.find_descriptor(
+                    interface,
+                    custom_match=lambda ep: usb.util.endpoint_direction(
+                        ep.bEndpointAddress
+                    )
+                    == usb.util.ENDPOINT_OUT
+                    and usb.util.endpoint_type(ep.bmAttributes)
+                    == usb.util.ENDPOINT_TYPE_BULK,
+                )
+                if self.endpoint_in is None or self.endpoint_out is None:
+                    raise RuntimeError("bulk USB endpoints were not found")
 
-        self.interface_number = int(interface.bInterfaceNumber)
-        if self.device.is_kernel_driver_active(self.interface_number):
-            usb.util.dispose_resources(self.device)
-            raise RuntimeError("a kernel driver owns the fingerprint interface; refusing to detach it")
-
-        self._max_packet_size = max(8, int(self.endpoint_in.wMaxPacketSize) & 0x7FF)
-        try:
+            self.interface_number = int(interface.bInterfaceNumber)
+            if self.device.is_kernel_driver_active(self.interface_number):
+                raise RuntimeError(
+                    "a kernel driver owns the fingerprint interface; refusing to detach it"
+                )
+            self._max_packet_size = max(
+                8, int(self.endpoint_in.wMaxPacketSize) & 0x7FF
+            )
             usb.util.claim_interface(self.device, self.interface_number)
             self._claimed = True
             self._drain_input()
