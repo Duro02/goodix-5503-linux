@@ -175,7 +175,11 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(GuardViolation): authorize_guest(malformed, self.state)
         streamed = packet(BULK_PACKET, struct.pack("<BBHIH", 1, 0, 1, 1, 0) + b"\xe5")
         with self.assertRaisesRegex(GuardViolation, "stream"): authorize_guest(streamed, self.state)
-        with self.assertRaises(GuardViolation): authorize_guest(bulk(0x82, requested=0x8000), self.state)
+        request = bulk(0x82, requested=0x8000, ident=50)
+        self.assertEqual(authorize_guest(request, self.state), "bounded-bulk-in-request")
+        with self.assertRaises(GuardViolation): authorize_guest(request, self.state)
+        response = bulk(0x82, b"abc", ident=50)
+        self.assertEqual(authorize_upstream(response, self.state), "matched-bulk-in-response")
         with self.assertRaises(GuardViolation): authorize_guest(bulk(0x82, requested=0x8001), self.state)
 
     def test_bounded_enumeration_resets_allow_exact_topology_refresh(self):
