@@ -26,9 +26,12 @@ The second identical A8 is allowed only after exact first response frames
 `a00600a6b00300a8014e` and
 `a01b00bba818004746333235385f52545345435f4150505f31303036330012`.
 The fixed read-only `E4/bb010002` request is then allowed. Its ACK must be exact,
-and its 341-byte response must match the SHA-256 of the separately backed-up
-protected record envelope. The sensitive packet uses mutable buffers which are
-zeroed immediately after forwarding and hashing. Afterward only already-audited
+and its 341-byte response must match a digest derived at startup from the
+owner-only `0600` protected-record backup supplied with
+`--protected-record-backup`. No device-specific digest is stored in source or
+passed on the command line. The sensitive packet uses one mutable backing buffer,
+is forwarded without packet metadata/content hashing in the audit, and is zeroed
+in a `finally` path. Buffered-bulk responses are always denied. Afterward only already-audited
 control-IN requests and bounded endpoint-`82` reads may pass. Any fifth bulk OUT
 closes both streams before forwarding; so do a mismatched or failed completion,
 a nonexact ACK/data response, and the bounded observation deadline.
@@ -64,12 +67,13 @@ Use new owner-only output paths. The guard itself strips usbredir bulk-stream
 negotiation from both HELLOs:
 
 ```sh
-sudo usbredirect --device 27c6:5503 --as 127.0.0.1:40501
+pkexec usbredirect --device 27c6:5503 --as 127.0.0.1:40501
 
 goodix-5503-usbredir-guard \
   --listen 127.0.0.1:40502 \
   --upstream 127.0.0.1:40501 \
   --audit /secure/capture/goodix-guard.jsonl \
+  --protected-record-backup artifacts/device-backup/psk-record-bb010002.bin \
   --accept-timeout 60
 ```
 

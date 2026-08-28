@@ -10,8 +10,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from goodix5503.probe import _encode_packet
 from goodix5503.usbredir_guard import (
-    ALT_SETTING_STATUS, AuditLog, BULK_PACKET, CAP_32BIT_BULK_LENGTH,
+    ALT_SETTING_STATUS, AuditLog, BUFFERED_BULK_PACKET, BULK_PACKET,
+    CAP_32BIT_BULK_LENGTH,
     CAP_64BIT_IDS, CONFIGURATION_STATUS, CONTROL_PACKET, DEVICE_CONNECT,
     SET_CONFIGURATION,
     EP_INFO, FILTER_FILTER, GOODIX_COMMAND00, GOODIX_COMMAND00_ACK,
@@ -19,8 +21,8 @@ from goodix5503.usbredir_guard import (
     GOODIX_PROTECTED_READ, GOODIX_PROTECTED_READ_ACK, GuardState,
     GuardViolation, HELLO, RESET,
     INTERFACE_INFO, MAX_FRAME, Packet, UsbRedirGuard, _expected_ep_info,
-    _expected_interface_info, _wipe_packet, authorize_guest, authorize_upstream,
-    read_packet,
+    _expected_interface_info, _load_protected_response_digest, _wipe_packet,
+    authorize_guest, authorize_upstream, read_packet,
 )
 
 
@@ -105,6 +107,23 @@ class FramingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             os.chmod(directory, 0o755)
             with self.assertRaises(PermissionError): AuditLog(Path(directory) / "audit.jsonl")
+
+    def test_protected_digest_loads_only_owner_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); os.chmod(root, 0o700)
+            path = root / "record.bin"
+            record = bytes(index & 0xFF for index in range(324))
+            path.write_bytes(record); path.chmod(0o600)
+            expected_frame = _encode_packet(
+                0xE4, b"\x00" + struct.pack("<II", 0xBB010002, len(record)) + record
+            )
+            self.assertEqual(
+                _load_protected_response_digest(path),
+                hashlib.sha256(expected_frame).digest(),
+            )
+            path.chmod(0o644)
+            with self.assertRaises(PermissionError):
+                _load_protected_response_digest(path)
 
     def test_timeout_and_global_buffer_bound(self):
         left, right = socket.socketpair(); left.settimeout(0.01)
@@ -193,6 +212,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_FIRMWARE_A8_ACK, ident=12), self.state), "exact-firmware-a8-success-ack")
         self.assertEqual(authorize_guest(bulk(0x82, requested=0x8000, ident=13), self.state), "bounded-bulk-in-request")
         self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_FIRMWARE_A8_DATA, ident=13), self.state), "exact-firmware-a8-data")
+        self.state.protected_response_sha256 = bytes(32)
         self.assertEqual(authorize_guest(bulk(1, GOODIX_PROTECTED_READ, ident=14), self.state), "goodix-usb-outer-a0-protected-read-bb010002-64")
         self.assertEqual(authorize_upstream(bulk(1, requested=64, ident=14), self.state), "protected-read-out-completion-observe")
         for first in (b"\xe5", b"\xe4", bytes.fromhex("0a0a0a0aa80300000001") + bytes(54)):
@@ -237,12 +257,12 @@ class PolicyTests(unittest.TestCase):
             authorize_upstream(bulk(0x82, GOODIX_PROTECTED_READ_ACK, ident=1), self.state),
             "exact-protected-read-success-ack",
         )
+        with self.assertRaisesRegex(GuardViolation, "buffered bulk denied"):
+            authorize_upstream(packet(BUFFERED_BULK_PACKET, b"opaque", ident=7), self.state)
         sensitive = b"test-protected-frame"
+        self.state.protected_response_sha256 = hashlib.sha256(sensitive).digest()
         self.state.pending_in.add(2)
-        with (
-            patch("goodix5503.usbredir_guard.GOODIX_PROTECTED_RESPONSE_LENGTH", len(sensitive)),
-            patch("goodix5503.usbredir_guard.GOODIX_PROTECTED_RESPONSE_SHA256", hashlib.sha256(sensitive).digest()),
-        ):
+        with patch("goodix5503.usbredir_guard.GOODIX_PROTECTED_RESPONSE_LENGTH", len(sensitive)):
             self.assertEqual(
                 authorize_upstream(bulk(0x82, sensitive, ident=2), self.state),
                 "exact-protected-read-data-sensitive",
@@ -331,13 +351,15 @@ class IntegrationTests(unittest.TestCase):
         except ConnectionResetError:
             pass
 
-    def _start(self, directory, timeout=1):
+    def _start(self, directory, timeout=1, protected_digest=None):
         guest_guard, guest_peer = socket.socketpair()
         upstream_guard, upstream_peer = socket.socketpair()
         guest_peer.settimeout(timeout); upstream_peer.settimeout(timeout)
         audit_path = Path(directory) / "audit.jsonl"
         audit = AuditLog(audit_path)
-        guard = UsbRedirGuard(guest_guard, upstream_guard, audit, timeout)
+        guard = UsbRedirGuard(
+            guest_guard, upstream_guard, audit, timeout, protected_digest
+        )
         thread = threading.Thread(target=guard.run); thread.start()
         return guest_peer, upstream_peer, audit, audit_path, thread
 
@@ -383,9 +405,12 @@ class IntegrationTests(unittest.TestCase):
             thread.join(2); self.assertFalse(thread.is_alive())
             audit.close(); guest.close(); upstream.close()
 
-    def test_exact_responses_allow_two_firmware_a8_reads_then_deny_fourth_out(self):
+    def test_exact_prefix_forwards_wiped_protected_data_then_denies_fifth_out(self):
         with tempfile.TemporaryDirectory() as directory:
-            guest, upstream, audit, audit_path, thread = self._start(directory)
+            sensitive = b"test-protected-frame"
+            guest, upstream, audit, audit_path, thread = self._start(
+                directory, protected_digest=hashlib.sha256(sensitive).digest()
+            )
             self._negotiate_and_topology(guest, upstream)
             read_request = bulk(0x82, requested=0x8000, ident=10).raw
             guest.sendall(read_request); self.assertEqual(recv_exact(upstream, len(read_request)), read_request)
@@ -418,7 +443,27 @@ class IntegrationTests(unittest.TestCase):
             guest.sendall(second_a8); self.assertEqual(recv_exact(upstream, len(second_a8)), second_a8)
             second_completion = bulk(1, requested=64, ident=17).raw
             upstream.sendall(second_completion); self.assertEqual(recv_exact(guest, len(second_completion)), second_completion)
-            guest.sendall(bulk(1, b"forbidden", ident=18).raw)
+            second_ack = bulk(0x82, GOODIX_FIRMWARE_A8_ACK, ident=16).raw
+            upstream.sendall(second_ack); self.assertEqual(recv_exact(guest, len(second_ack)), second_ack)
+            second_data_read = bulk(0x82, requested=0x8000, ident=18).raw
+            guest.sendall(second_data_read); self.assertEqual(recv_exact(upstream, len(second_data_read)), second_data_read)
+            second_data = bulk(0x82, GOODIX_FIRMWARE_A8_DATA, ident=18).raw
+            upstream.sendall(second_data); self.assertEqual(recv_exact(guest, len(second_data)), second_data)
+            protected_read_request = bulk(0x82, requested=0x8000, ident=19).raw
+            guest.sendall(protected_read_request); self.assertEqual(recv_exact(upstream, len(protected_read_request)), protected_read_request)
+            protected_out = bulk(1, GOODIX_PROTECTED_READ, ident=20).raw
+            guest.sendall(protected_out); self.assertEqual(recv_exact(upstream, len(protected_out)), protected_out)
+            protected_completion = bulk(1, requested=64, ident=20).raw
+            upstream.sendall(protected_completion); self.assertEqual(recv_exact(guest, len(protected_completion)), protected_completion)
+            protected_ack = bulk(0x82, GOODIX_PROTECTED_READ_ACK, ident=19).raw
+            upstream.sendall(protected_ack); self.assertEqual(recv_exact(guest, len(protected_ack)), protected_ack)
+            sensitive_read = bulk(0x82, requested=0x8000, ident=21).raw
+            guest.sendall(sensitive_read); self.assertEqual(recv_exact(upstream, len(sensitive_read)), sensitive_read)
+            sensitive_response = bulk(0x82, sensitive, ident=21).raw
+            with patch("goodix5503.usbredir_guard.GOODIX_PROTECTED_RESPONSE_LENGTH", len(sensitive)):
+                upstream.sendall(sensitive_response)
+                self.assertEqual(recv_exact(guest, len(sensitive_response)), sensitive_response)
+            guest.sendall(bulk(1, b"forbidden", ident=22).raw)
             self.assert_closed(guest)
             self.assert_closed(upstream)
             thread.join(2); self.assertFalse(thread.is_alive())
@@ -432,6 +477,57 @@ class IntegrationTests(unittest.TestCase):
             second = [event for event in events if event.get("policy") == "goodix-usb-outer-a0-firmware-a8-second-64"]
             self.assertEqual([event["decision"] for event in first], ["authorize", "forwarded"])
             self.assertEqual([event["decision"] for event in second], ["authorize", "forwarded"])
+            sensitive_events = [event for event in events if event.get("policy") == "exact-protected-read-data-sensitive"]
+            self.assertEqual(len(sensitive_events), 1)
+            self.assertEqual(sensitive_events[0]["decision"], "forwarded")
+            self.assertTrue({"type", "id", "length", "sha256"}.isdisjoint(sensitive_events[0]))
+
+    def test_rejected_sensitive_response_is_wiped_and_audited_without_packet_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            guest_guard, guest = socket.socketpair()
+            upstream_guard, upstream = socket.socketpair()
+            guest.settimeout(1); upstream.settimeout(1)
+            audit_path = Path(directory) / "audit.jsonl"
+            audit = AuditLog(audit_path)
+            guard = UsbRedirGuard(guest_guard, upstream_guard, audit, 1)
+            thread = threading.Thread(target=guard.run); thread.start()
+            self._negotiate_and_topology(guest, upstream)
+            with guard.state.condition:
+                guard.state.prefix_step = 4
+                guard.state.command00_deadline = time.monotonic() + 1
+                guard.state.protected_read_completed = True
+                guard.state.protected_read_acknowledged = True
+                guard.state.pending_in.add(77)
+            upstream.sendall(bulk(0x82, b"wrong-sensitive-data", ident=77).raw)
+            self.assert_closed(guest)
+            thread.join(1); self.assertFalse(thread.is_alive())
+            audit.close(); guest.close(); upstream.close()
+            denial = json.loads(audit_path.read_text().splitlines()[-1])
+            self.assertEqual(denial["decision"], "deny")
+            self.assertTrue({"type", "id", "length", "sha256"}.isdisjoint(denial))
+
+    def test_buffered_sensitive_response_is_denied_without_packet_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            guest_guard, guest = socket.socketpair()
+            upstream_guard, upstream = socket.socketpair()
+            guest.settimeout(1); upstream.settimeout(1)
+            audit_path = Path(directory) / "audit.jsonl"
+            audit = AuditLog(audit_path)
+            guard = UsbRedirGuard(guest_guard, upstream_guard, audit, 1)
+            thread = threading.Thread(target=guard.run); thread.start()
+            self._negotiate_and_topology(guest, upstream)
+            with guard.state.condition:
+                guard.state.prefix_step = 4
+                guard.state.command00_deadline = time.monotonic() + 1
+                guard.state.protected_read_completed = True
+                guard.state.protected_read_acknowledged = True
+            upstream.sendall(frame(BUFFERED_BULK_PACKET, b"buffered-sensitive-data", 88, True))
+            self.assert_closed(guest)
+            thread.join(1); self.assertFalse(thread.is_alive())
+            audit.close(); guest.close(); upstream.close()
+            denial = json.loads(audit_path.read_text().splitlines()[-1])
+            self.assertEqual(denial["decision"], "deny")
+            self.assertTrue({"type", "id", "length", "sha256"}.isdisjoint(denial))
 
     def test_expired_deadline_denies_firmware_a8_before_forward(self):
         with tempfile.TemporaryDirectory() as directory:
