@@ -446,8 +446,23 @@ was correct, and cleanup sent only A2 reset after the fatal result. No command
 20 was sent. Capture SHA-256 is
 `d20ac47a7f631b07203e03e05e9c2036911ce0fcb38536764a7a86aa0ddd1674`.
 The eight plausible LE16 values are not sufficient evidence to reinterpret or
-truncate the official six-word result. Output1 remains the padded raw six-word response.
-Output2 transforms each
+truncate the official six-word result. The pinned Milan `McuParseOther` subtracts only the trailing protocol checksum
+represented in its packet-object length and copies from the unchanged payload
+pointer. Because the 16 bytes above are already checksum-free payload, all 16
+reach the manual-FDT caller's 12-byte capacity check and the normal IoHub path
+rejects them. The official consumer does not silently remove the leading four
+bytes.
+
+A combined read-only 8051 image, formed from the low `0x2000` bytes of the
+embedded `MILAN_RTSEC_IAP_10027` resident image and the 10063 APP at `0x2000`,
+allows lower generic-pointer helpers to be resolved. Bounded analysis still
+finds no serializer or data-flow proof for a `status + bitmap + six words`
+layout. It confirms only that internal code can write `0x3f` to XDATA `0xc0d0`;
+no read/copy from that location to the wire buffer has been established.
+Consequently the observed body remains an extended/unknown response, not a
+normal result that may be normalized locally.
+
+Output1 remains the padded raw six-word response. Output2 transforms each
 raw LE16 word `x` to `((x >> 1) << 8) | 0x80`; accepted output2 becomes the base
 for later requests. The DLL retries inconsistent pairs without a numeric bound;
 the free implementation must instead use the existing operation deadline and a
