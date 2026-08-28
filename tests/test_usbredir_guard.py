@@ -133,7 +133,7 @@ class PolicyTests(unittest.TestCase):
         self.state.interface_valid = self.state.endpoints_valid = True
 
     def test_device_identity_exact_and_duplicate_denied(self):
-        good = struct.pack("<BBBBHHH", 2, 0, 0, 0, 0x27c6, 0x5503, 0x0100)
+        good = struct.pack("<BBBBHHH", 2, 0xef, 2, 1, 0x27c6, 0x5503, 0x0100)
         state = GuardState(); state.negotiated_caps = (1 << 1) | (1 << 4)
         authorize_upstream(packet(INTERFACE_INFO, _expected_interface_info()), state)
         authorize_upstream(packet(EP_INFO, _expected_ep_info()), state)
@@ -142,11 +142,11 @@ class PolicyTests(unittest.TestCase):
         bad_state = GuardState(); bad_state.negotiated_caps = (1 << 1) | (1 << 4)
         authorize_upstream(packet(INTERFACE_INFO, _expected_interface_info()), bad_state)
         authorize_upstream(packet(EP_INFO, _expected_ep_info()), bad_state)
-        bad = struct.pack("<BBBBHHH", 2, 0, 0, 0, 0x27c6, 0x5504, 0x0100)
+        bad = struct.pack("<BBBBHHH", 2, 0xef, 2, 1, 0x27c6, 0x5504, 0x0100)
         with self.assertRaisesRegex(GuardViolation, "identity"): authorize_upstream(packet(DEVICE_CONNECT, bad), bad_state)
 
     def test_device_connect_length_follows_negotiated_cap1(self):
-        body8 = struct.pack("<BBBBHH", 2, 0, 0, 0, 0x27c6, 0x5503)
+        body8 = struct.pack("<BBBBHH", 2, 0xef, 2, 1, 0x27c6, 0x5503)
         state = GuardState(); state.interface_valid = state.endpoints_valid = state.awaiting_connect = True
         self.assertEqual(authorize_upstream(packet(DEVICE_CONNECT, body8), state), "goodix-27c6-5503")
         for caps, body in ((0, body8 + b"\0\1"), (1 << 1, body8)):
@@ -183,7 +183,7 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(GuardViolation): authorize_guest(bulk(0x82, requested=0x8001), self.state)
 
     def test_bounded_enumeration_resets_allow_exact_topology_refresh(self):
-        connect = struct.pack("<BBBBHHH", 2, 0, 0, 0, 0x27c6, 0x5503, 0x100)
+        connect = struct.pack("<BBBBHHH", 2, 0xef, 2, 1, 0x27c6, 0x5503, 0x100)
         for reset_index in range(3):
             self.assertEqual(authorize_guest(packet(RESET), self.state), "bounded-enumeration-usb-reset")
             get_status = struct.pack("<BBBBHHH", 0x80, 0, 0x80, 0, 0, 0, 2)
@@ -205,7 +205,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_interface_and_endpoint_topology_are_exact(self):
         state = GuardState(); state.negotiated_caps = DEFAULT_CAPS
-        connect = struct.pack("<BBBBHHH", 2, 0, 0, 0, 0x27c6, 0x5503, 0x100)
+        connect = struct.pack("<BBBBHHH", 2, 0xef, 2, 1, 0x27c6, 0x5503, 0x100)
         self.assertEqual(authorize_upstream(packet(INTERFACE_INFO, _expected_interface_info()), state), "interface0-vendor-specific")
         self.assertEqual(authorize_upstream(packet(EP_INFO, _expected_ep_info()), state), "bulk-out01-in82-maxpacket512")
         authorize_upstream(packet(DEVICE_CONNECT, connect), state)
@@ -257,8 +257,8 @@ class IntegrationTests(unittest.TestCase):
         guest.sendall(guest_hello); upstream.sendall(upstream_hello)
         self.assertEqual(recv_exact(upstream, len(guest_hello)), hello(caps & ~1))
         self.assertEqual(recv_exact(guest, len(upstream_hello)), hello(upstream_caps & ~1))
-        connect_body = (struct.pack("<BBBBHHH", 2, 0, 0, 0, 0x27c6, 0x5503, 0x100)
-                        if caps & (1 << 1) else struct.pack("<BBBBHH", 2, 0, 0, 0, 0x27c6, 0x5503))
+        connect_body = (struct.pack("<BBBBHHH", 2, 0xef, 2, 1, 0x27c6, 0x5503, 0x100)
+                        if caps & (1 << 1) else struct.pack("<BBBBHH", 2, 0xef, 2, 1, 0x27c6, 0x5503))
         for kind, body in ((INTERFACE_INFO, _expected_interface_info()),
                            (EP_INFO, _expected_ep_info()),
                            (DEVICE_CONNECT, connect_body)):
@@ -346,7 +346,7 @@ class IntegrationTests(unittest.TestCase):
             for kind, body in ((INTERFACE_INFO, _expected_interface_info()), (EP_INFO, _expected_ep_info())):
                 message = frame(kind, body, 0, False)
                 upstream.sendall(message); self.assertEqual(recv_exact(guest, len(message)), message)
-            connect = frame(DEVICE_CONNECT, struct.pack("<BBBBHHH", 2, 0, 0, 0, 0x27c6, 0x5503, 0x100), 0xfeedbeef, False)
+            connect = frame(DEVICE_CONNECT, struct.pack("<BBBBHHH", 2, 0xef, 2, 1, 0x27c6, 0x5503, 0x100), 0xfeedbeef, False)
             upstream.sendall(connect); self.assertEqual(recv_exact(guest, len(connect)), connect)
             guest.close(); upstream.close(); thread.join(2); audit.close()
 

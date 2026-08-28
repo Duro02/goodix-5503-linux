@@ -396,7 +396,7 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         if state.prefix_step or not state.interface_valid or not state.endpoints_valid or not state.awaiting_connect or len(packet.body) != expected_length:
             raise GuardViolation("invalid device connect")
         fields = struct.unpack("<BBBBHH", packet.body[:8])
-        if fields[:4] != (2, 0, 0, 0) or fields[4:6] != (0x27C6, 0x5503):
+        if fields[:4] != (2, 0xEF, 0x02, 0x01) or fields[4:6] != (0x27C6, 0x5503):
             raise GuardViolation("device identity or USB topology mismatch")
         state.device_connected = True
         state.identity_pinned = True

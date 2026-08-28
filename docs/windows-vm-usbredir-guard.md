@@ -23,7 +23,8 @@ and replay traffic closes both streams without
 forwarding the denied frame or synthesizing a response.
 
 The protocol profile pins usbredirhost's actual pre-connect order: interface 0
-(`ff/00/00`), endpoint information, then `DEVICE_CONNECT`. Endpoint-array
+(`ff/00/00`), endpoint information, then high-speed `DEVICE_CONNECT` with device
+class `ef/02/01` and `27c6:5503`. Endpoint-array
 indices 1/18 must be bulk OUT `01` and bulk IN `82`, both with max packet 512. The
 index mapping is usbredirhost 0.15 `EP2I(ep) = ((ep & 0x80) >> 3) | (ep & 0x0f)`.
 Both HELLO packets are validated before either is forwarded. The guard clears
