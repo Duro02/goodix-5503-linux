@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __test__ = False
 
+import argparse
 import hmac
 import json
 import os
@@ -17,6 +18,7 @@ from typing import Final
 
 from .chip_config import _validate_config_checksum, build_runtime_config
 from .hu_runtime import (
+    build_hu_fdt_down_request,
     build_hu_image_request,
     build_hu_manual_fdt_request,
     build_hu_nav_base,
@@ -64,6 +66,7 @@ COMMAND_COLD_PRECHECK: Final = 0x00
 COMMAND_UPLOAD_CONFIG: Final = 0x90
 COMMAND_SET_DRIVER_STATE: Final = 0xC4
 COMMAND_POV_IMAGE_CHECK: Final = 0xD6
+COMMAND_SWITCH_FDT_DOWN: Final = 0x32
 COMMAND_SWITCH_FDT_MODE: Final = 0x36
 COMMAND_SWITCH_IDLE: Final = 0x70
 COMMAND_READ_REGISTER: Final = 0x82
@@ -695,7 +698,7 @@ def _acquire_hu_fresh_base_frame(
     dac_field: bytearray,
     image_request: bytes,
     operation_deadline: float,
-) -> tuple[bytearray, bytearray]:
+) -> tuple[bytearray, bytearray, bytearray]:
     zero_base = bytearray(12)
     try:
         fdt_request = build_hu_manual_fdt_request(dac_field, zero_base)
@@ -705,7 +708,7 @@ def _acquire_hu_fresh_base_frame(
             raw2 = transformed2 = bytearray()
             nav_prefix = nav_plaintext = bytearray()
             nav_decoded = nav_base = bytearray()
-            candidate_prefix = candidate_plaintext = bytearray()
+            candidate_prefix = candidate_plaintext = candidate_base = bytearray()
             keep_candidate = False
             try:
                 response0 = _fixed_exchange(
@@ -762,8 +765,9 @@ def _acquire_hu_fresh_base_frame(
                 raw2, transformed2 = _parse_hu_fdt_body(response2)
                 if not hu_fdt_bases_within_delta(raw1, raw2, delta):
                     continue
+                candidate_base = bytearray(transformed2)
                 keep_candidate = True
-                return candidate_prefix, candidate_plaintext
+                return candidate_prefix, candidate_plaintext, candidate_base
             finally:
                 for buffer in (
                     raw0,
@@ -781,6 +785,7 @@ def _acquire_hu_fresh_base_frame(
                 if not keep_candidate:
                     candidate_prefix[:] = b"\x00" * len(candidate_prefix)
                     candidate_plaintext[:] = b"\x00" * len(candidate_plaintext)
+                    candidate_base[:] = b"\x00" * len(candidate_base)
         raise ImageCaptureError("fresh FDT base did not stabilize")
     finally:
         zero_base[:] = b"\x00" * len(zero_base)
@@ -788,6 +793,8 @@ def _acquire_hu_fresh_base_frame(
 
 def run_prepared_clear_frame_capture(
     timeout_seconds: float = 5.0,
+    *,
+    finger_validation: bool = False,
 ) -> dict[str, int | str]:
     """Capture one experimental memory-only frame using fixed commands."""
     _disable_core_dumps()
@@ -804,6 +811,9 @@ def run_prepared_clear_frame_capture(
     image_request = b""
     opaque_prefix = bytearray()
     plaintext = bytearray()
+    fdt_base = bytearray()
+    fdt_event_raw = bytearray()
+    fdt_event_transformed = bytearray()
     opaque_trailer = bytearray()
     pixels = bytearray()
     reset_guard: _ResetGuard | None = None
@@ -811,7 +821,8 @@ def run_prepared_clear_frame_capture(
         session = ReadOnlyUsbSession(timeout_seconds)
         reset_guard = _ResetGuard(session)
         operation_deadline = time.monotonic() + min(
-            120.0, max(30.0, timeout_seconds * 8)
+            180.0 if finger_validation else 120.0,
+            max(120.0 if finger_validation else 30.0, timeout_seconds * 12),
         )
         # The pinned Windows USB trace starts directly with command 00. Although
         # Geneva exposes a raw-wake method, no e5 OUT precedes this runtime path.
@@ -874,19 +885,42 @@ def run_prepared_clear_frame_capture(
             operation_deadline,
         )
 
-        opaque_prefix, plaintext = _acquire_hu_fresh_base_frame(
+        opaque_prefix, plaintext, fdt_base = _acquire_hu_fresh_base_frame(
             session,
             tls_server,
             dac_field,
             image_request,
             operation_deadline,
         )
+        if finger_validation:
+            _ack_only(
+                session,
+                COMMAND_SWITCH_FDT_DOWN,
+                build_hu_fdt_down_request(dac_field, fdt_base),
+                operation_deadline,
+            )
+            print("PLACE FINGER ON SENSOR NOW", flush=True)
+            time.sleep(15.0)
+            fdt_event = _decode_packet(
+                _read_frame_bounded(session, operation_deadline),
+                COMMAND_SWITCH_FDT_DOWN,
+            )
+            fdt_event_raw, fdt_event_transformed = _parse_hu_fdt_body(fdt_event)
+            opaque_prefix[:] = b"\x00" * len(opaque_prefix)
+            plaintext[:] = b"\x00" * len(plaintext)
+            opaque_prefix, plaintext = _receive_hu_plaintext_image(
+                session, tls_server, image_request, operation_deadline
+            )
         opaque_trailer = bytearray(memoryview(plaintext)[PACKED_IMAGE_LENGTH:])
         if len(opaque_prefix) != 9 or len(opaque_trailer) != 4:
             raise ImageCaptureError("image opaque metadata has an invalid length")
         pixels = decode_packed_image(memoryview(plaintext)[:PACKED_IMAGE_LENGTH])
         return {
-            "operation": "runtime-only-memory-clear-frame",
+            "operation": (
+                "runtime-only-memory-finger-frame"
+                if finger_validation
+                else "runtime-only-memory-clear-frame"
+            ),
             "firmware": firmware,
             "tls": "established",
             "cipher": cipher,
@@ -926,6 +960,9 @@ def run_prepared_clear_frame_capture(
             dac_field,
             opaque_prefix,
             plaintext,
+            fdt_base,
+            fdt_event_raw,
+            fdt_event_transformed,
             opaque_trailer,
             pixels,
         ):
@@ -935,7 +972,21 @@ def run_prepared_clear_frame_capture(
 
 
 def main() -> int:
-    print(json.dumps(run_prepared_clear_frame_capture(), sort_keys=True))
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--finger-validation",
+        action="store_true",
+        help="arm fixed FDT-down detection and capture one memory-only finger frame",
+    )
+    args = parser.parse_args()
+    print(
+        json.dumps(
+            run_prepared_clear_frame_capture(
+                finger_validation=args.finger_validation
+            ),
+            sort_keys=True,
+        )
+    )
     return 0
 
 

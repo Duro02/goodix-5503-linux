@@ -580,12 +580,13 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
                 side_effect=receive,
             ),
         ):
-            prefix, plaintext = _acquire_hu_fresh_base_frame(
+            prefix, plaintext, base = _acquire_hu_fresh_base_frame(
                 object(), object(), bytearray(HU_DAC_FIELD), HU_IMAGE_REQUEST, TEST_DEADLINE
             )
         try:
             self.assertEqual(prefix, bytearray(9))
             self.assertEqual(plaintext, bytearray([2]) * 7684)
+            self.assertEqual(base, bytearray.fromhex("80f680f680f680f680f680f6"))
             self.assertEqual(image_count, 2)
             self.assertEqual(
                 [command for command, _payload in commands],
@@ -605,6 +606,7 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
         finally:
             prefix[:] = b"\x00" * len(prefix)
             plaintext[:] = b"\x00" * len(plaintext)
+            base[:] = b"\x00" * len(base)
 
     def test_rejects_malformed_command36_body_before_image(self):
         with (
@@ -658,7 +660,7 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
                 side_effect=receive,
             ),
         ):
-            prefix, plaintext = _acquire_hu_fresh_base_frame(
+            prefix, plaintext, base = _acquire_hu_fresh_base_frame(
                 object(), object(), bytearray(HU_DAC_FIELD), HU_IMAGE_REQUEST, TEST_DEADLINE
             )
         try:
@@ -666,6 +668,7 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
         finally:
             prefix[:] = b"\x00" * len(prefix)
             plaintext[:] = b"\x00" * len(plaintext)
+            base[:] = b"\x00" * len(base)
 
 
     def test_stops_after_three_inconsistent_fresh_base_attempts(self):
@@ -963,7 +966,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
         def acquire_fresh(_session, _tls, dac, payload, _deadline):
             self.assertEqual(dac, HU_DAC_FIELD)
             self.assertEqual(payload, HU_IMAGE_REQUEST)
-            return bytearray(9), bytearray(7684)
+            return bytearray(9), bytearray(7684), bytearray(12)
 
         with (
             patch("goodix5503.image_capture.ReadOnlyUsbSession", FakeSession),

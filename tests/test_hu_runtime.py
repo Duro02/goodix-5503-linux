@@ -3,6 +3,7 @@ import unittest
 from goodix5503.hu_runtime import (
     HuRuntimeError,
     RightInfoClass,
+    build_hu_fdt_down_request,
     build_hu_image_request,
     build_hu_manual_fdt_request,
     build_hu_nav_base,
@@ -157,6 +158,10 @@ class HuRuntimeTests(unittest.TestCase):
         self.assertEqual(
             build_hu_manual_fdt_request(dac, bytes(12)),
             bytes.fromhex("0d018b0084008c008800800080008000800080008000"),
+        )
+        self.assertEqual(
+            build_hu_fdt_down_request(dac, bytes(12)),
+            bytes.fromhex("0c018b0084008c008800800080008000800080008000"),
         )
 
     def test_manual_fdt_response_builds_raw_and_transformed_forms(self):

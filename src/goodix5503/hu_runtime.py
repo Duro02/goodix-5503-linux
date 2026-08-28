@@ -170,6 +170,28 @@ def hu_fdt_bases_within_delta(
     )
 
 
+def _build_hu_fdt_request(
+    selector: int,
+    dac_field: bytes | bytearray,
+    base: bytes | bytearray,
+) -> bytes:
+    if not 0 <= selector <= 0xFF or (selector & 0x0F) not in (0x0C, 0x0D, 0x0E):
+        raise HuRuntimeError("unsupported HU FDT selector")
+    if len(dac_field) != 8:
+        raise HuRuntimeError("HU DAC field must be exactly 8 bytes")
+    if len(base) != 12:
+        raise HuRuntimeError("HU FDT base must be exactly 12 bytes")
+
+    transformed = bytearray(12)
+    try:
+        for offset in range(0, 12, 2):
+            word = struct.unpack_from("<H", base, offset)[0]
+            struct.pack_into("<H", transformed, offset, (word & 0xFF00) | 0x0080)
+        return bytes((selector, 1)) + bytes(dac_field) + bytes(transformed)
+    finally:
+        transformed[:] = b"\x00" * len(transformed)
+
+
 def build_hu_manual_fdt_request(
     dac_field: bytes | bytearray,
     base: bytes | bytearray,
@@ -177,18 +199,16 @@ def build_hu_manual_fdt_request(
     mode_nibble: int = 0,
 ) -> bytes:
     """Build the fixed-purpose local command-36 manual-base request payload."""
-    if len(dac_field) != 8:
-        raise HuRuntimeError("HU DAC field must be exactly 8 bytes")
-    if len(base) != 12:
-        raise HuRuntimeError("HU FDT base must be exactly 12 bytes")
     if not 0 <= mode_nibble <= 0x0F:
         raise HuRuntimeError("HU mode nibble must be in range 0..15")
+    return _build_hu_fdt_request(
+        (mode_nibble << 4) | 0x0D, dac_field, base
+    )
 
-    transformed = bytearray(12)
-    try:
-        for offset in range(0, 12, 2):
-            word = struct.unpack_from("<H", base, offset)[0]
-            struct.pack_into("<H", transformed, offset, (word & 0xFF00) | 0x0080)
-        return bytes(((mode_nibble << 4) | 0x0D, 1)) + bytes(dac_field) + bytes(transformed)
-    finally:
-        transformed[:] = b"\x00" * len(transformed)
+
+def build_hu_fdt_down_request(
+    dac_field: bytes | bytearray,
+    base: bytes | bytearray,
+) -> bytes:
+    """Build the fixed command-32 payload that arms finger-down detection."""
+    return _build_hu_fdt_request(0x0C, dac_field, base)
