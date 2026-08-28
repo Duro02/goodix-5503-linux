@@ -16,8 +16,9 @@ This outer-A0 A8 packet is the first application OUT observed dynamically from
 the pinned Windows VM; no preceding `e5` appeared. The guard correlates its
 request ID and forwards the successful A8 OUT completion and immediately closes both streams; a mismatch, failed status,
 or bounded completion timeout closes them without forwarding further traffic.
-At most three normal pre-command USB enumeration resets are allowed; each
-requires the exact topology to be announced again. Unknown, malformed,
+At most three normal pre-command USB resets are allowed. They retain the
+already pinned usbredir connection identity; any topology packet that does
+recur must still match exactly. Unknown, malformed,
 class/vendor control, stream, TLS, further reset, firmware/configuration, PSK,
 and replay traffic closes both streams without
 forwarding the denied frame or synthesizing a response.

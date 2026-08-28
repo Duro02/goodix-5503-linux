@@ -312,7 +312,6 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
         if state.reset_count >= 3 or packet.body or state.prefix_step or state.pending_out is not None:
             raise GuardViolation("USB enumeration reset denied")
         state.reset_count += 1
-        state.device_connected = False
         return "bounded-enumeration-usb-reset"
     if packet.type == CONTROL_PACKET and state.identity_pinned:
         return _authorize_control_request(packet, state)
