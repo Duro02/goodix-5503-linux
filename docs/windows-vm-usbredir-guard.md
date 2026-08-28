@@ -5,11 +5,12 @@ can replace PSK/protected records and contains firmware-update paths. Disabling
 `WbioSrvc` does not disable its PnP UMDF service.
 
 `goodix-5503-usbredir-guard` is a deliberately single-use stream proxy. It
-accepts only `27c6:5503`, safe standard enumeration, a bounded 32 KiB bulk-IN
-reader, then exactly one bulk-OUT transfer on endpoint 1:
+accepts only `27c6:5503`, safe standard enumeration, bounded 32 KiB bulk-IN
+reads, and exactly two pinned bulk-OUT transfers on endpoint 1:
 
 ```text
-a00800a800050000000000a5 + 52 zero bytes (64 bytes total)
+a00800a800050000000000a5 + 52 zero bytes (command 00; 64 bytes)
+a00600a6a803000000ff + 54 zero bytes (firmware-version A8; 64 bytes)
 ```
 
 This is a padded outer-A0 command-00 packet: `a8` is the outer-header checksum,
@@ -17,14 +18,16 @@ while the inner command byte is `00` with four zero payload bytes. It is the
 first application OUT observed dynamically from the pinned Windows VM; no
 preceding `e5` appeared. The guard correlates its request ID and forwards only
 the successful command-00 OUT completion reporting the exact 64-byte
-transferred length. After command 00 it permits only already-audited control-IN
-requests and bounded endpoint-`82` reads needed to observe the response. Any
-second bulk OUT closes both streams before forwarding; so do a mismatched or
-failed completion and the bounded observation deadline.
+transferred length. It requires the exact command-B0 success ACK
+`a00600a6b003000001f6` before allowing the pinned read-only firmware A8 request.
+After that it permits only already-audited control-IN requests and bounded
+endpoint-`82` reads needed to observe the response. Any third bulk OUT closes
+both streams before forwarding; so do a mismatched or failed completion, a
+nonexact command-00 ACK, and the bounded observation deadline.
 At most three normal pre-command USB resets are allowed. They retain the
 already pinned usbredir connection identity; any topology packet that does
 recur must still match exactly. Unknown, malformed,
-class/vendor control, stream, TLS, further reset, firmware/configuration, PSK,
+class/vendor control, stream, TLS, further reset, firmware-write/configuration, PSK,
 and replay traffic closes both streams without
 forwarding the denied frame or synthesizing a response.
 

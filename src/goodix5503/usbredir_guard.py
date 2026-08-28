@@ -2,8 +2,9 @@
 
 This proxy is intentionally not a general USB firewall. It forwards only USB
 setup needed to enumerate the pinned device and the exact padded 64-byte
-outer-A0 command-00 request observed from pinned QEMU/Windows. Afterward only
-control-IN and bounded bulk-IN reads may pass; a second OUT, TLS, streams, and
+outer-A0 command-00 and firmware-A8 requests observed from pinned QEMU/Windows.
+The second OUT requires the exact command-00 success ACK; afterward only
+control-IN and bounded bulk-IN reads may pass. A third OUT, TLS, streams, and
 unknown protocol operations terminate both connections.
 """
 
@@ -55,6 +56,8 @@ CAP_64BIT_IDS: Final = 5
 CAP_32BIT_BULK_LENGTH: Final = 6
 _KNOWN_CAPS: Final = 0xFF
 GOODIX_COMMAND00: Final = bytes.fromhex("a00800a800050000000000a5") + bytes(52)
+GOODIX_COMMAND00_ACK: Final = bytes.fromhex("a00600a6b003000001f6")
+GOODIX_FIRMWARE_A8: Final = bytes.fromhex("a00600a6a803000000ff") + bytes(54)
 
 
 class GuardViolation(RuntimeError):
@@ -129,6 +132,8 @@ class GuardState:
         self.command00_timeout = DEFAULT_TIMEOUT
         self.negotiation_timeout = DEFAULT_TIMEOUT
         self.command00_completed = False
+        self.command00_acknowledged = False
+        self.firmware_a8_completed = False
         self.buffered = 0
         self.stopped = False
 
@@ -296,8 +301,8 @@ def _expected_ep_info() -> bytes:
 def authorize_guest(packet: Packet, state: GuardState) -> str:
     if packet.type == HELLO:
         raise GuardViolation("duplicate hello")
-    if state.prefix_step == 1 and packet.type not in (CONTROL_PACKET, BULK_PACKET):
-        raise GuardViolation("only read-only USB traffic is allowed after command 00")
+    if state.prefix_step >= 1 and packet.type not in (CONTROL_PACKET, BULK_PACKET):
+        raise GuardViolation("only pinned loader OUT or read-only USB traffic is allowed after command 00")
     if packet.type == FILTER_FILTER:
         # usbredir serializes filter rules as a NUL-terminated text string.
         # This is the exact form emitted by pinned QEMU/libvirt for our rule.
@@ -315,7 +320,7 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
         state.reset_count += 1
         return "bounded-enumeration-usb-reset"
     if packet.type == CONTROL_PACKET and state.identity_pinned:
-        if state.prefix_step == 1 and not (_control_fields(packet)[2] & 0x80):
+        if state.prefix_step >= 1 and not (_control_fields(packet)[2] & 0x80):
             raise GuardViolation("only control IN is allowed after command 00")
         return _authorize_control_request(packet, state)
     safe_admin = {SET_CONFIGURATION, GET_CONFIGURATION, SET_ALT_SETTING,
@@ -368,12 +373,17 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
             raise GuardViolation("only exact bulk OUT endpoint 01 is permitted")
         if state.pending_out is not None:
             raise GuardViolation("overlapping bulk OUT denied")
-        if state.prefix_step != 0 or data != GOODIX_COMMAND00:
-            raise GuardViolation("bulk OUT prefix denied")
-        state.pending_out = (packet.packet_id, "command00")
-        state.prefix_step = 1
-        state.command00_deadline = time.monotonic() + state.command00_timeout
-        return "goodix-usb-outer-a0-command00-64"
+        if state.prefix_step == 0 and data == GOODIX_COMMAND00:
+            state.pending_out = (packet.packet_id, "command00")
+            state.prefix_step = 1
+            state.command00_deadline = time.monotonic() + state.command00_timeout
+            return "goodix-usb-outer-a0-command00-64"
+        if (state.prefix_step == 1 and state.command00_completed
+                and state.command00_acknowledged and data == GOODIX_FIRMWARE_A8):
+            state.pending_out = (packet.packet_id, "firmware-a8")
+            state.prefix_step = 2
+            return "goodix-usb-outer-a0-firmware-a8-64"
+        raise GuardViolation("bulk OUT prefix denied")
     raise GuardViolation(f"guest packet type {packet.type} denied")
 
 
@@ -416,6 +426,11 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
             if packet.packet_id not in state.pending_in or status != 0 or length != len(data) or length > 0x8000:
                 raise GuardViolation("unmatched bulk IN response")
             state.pending_in.remove(packet.packet_id)
+            if state.prefix_step == 1 and not state.command00_acknowledged:
+                if not state.command00_completed or data != GOODIX_COMMAND00_ACK:
+                    raise GuardViolation("exact command-00 ACK required")
+                state.command00_acknowledged = True
+                return "exact-command00-success-ack"
             return "matched-bulk-in-response"
     status_types = {CONFIGURATION_STATUS: "configuration", ALT_SETTING_STATUS: "alternate",
                     BULK_RECEIVING_STATUS: "bulk-receiving"}
@@ -428,16 +443,19 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         raise GuardViolation("packet before device identity")
     if packet.type == BULK_PACKET:
         endpoint, status, length, _, data = _bulk_fields(packet, state)
-        if endpoint != 0x01 or status != 0 or length != len(GOODIX_COMMAND00) or data:
-            raise GuardViolation("only exact successful command-00 OUT completion is permitted")
+        if endpoint != 0x01 or status != 0 or length != 64 or data:
+            raise GuardViolation("only exact successful 64-byte OUT completion is permitted")
         if state.pending_out is None or packet.packet_id != state.pending_out[0]:
             raise GuardViolation("unmatched bulk OUT completion")
         kind = state.pending_out[1]
         state.pending_out = None
-        if kind != "command00":
-            raise GuardViolation("unexpected OUT completion kind")
-        state.command00_completed = True
-        return "command00-out-completion-observe"
+        if kind == "command00":
+            state.command00_completed = True
+            return "command00-out-completion-observe"
+        if kind == "firmware-a8":
+            state.firmware_a8_completed = True
+            return "firmware-a8-out-completion-observe"
+        raise GuardViolation("unexpected OUT completion kind")
     if packet.type == BUFFERED_BULK_PACKET:
         if len(packet.body) < 10:
             raise GuardViolation("short buffered bulk")
