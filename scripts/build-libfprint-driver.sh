@@ -17,6 +17,10 @@ cp -- "$repo_dir/libfprint/drivers/goodix5503.c" \
       "$repo_dir/libfprint/drivers/goodix5503-proto.h" \
       "$repo_dir/libfprint/drivers/goodix5503-config.c" \
       "$repo_dir/libfprint/drivers/goodix5503-config.h" \
+      "$repo_dir/libfprint/drivers/goodix5503-security.c" \
+      "$repo_dir/libfprint/drivers/goodix5503-security.h" \
+      "$repo_dir/libfprint/drivers/goodix5503-image.c" \
+      "$repo_dir/libfprint/drivers/goodix5503-image.h" \
       "$repo_dir/libfprint/drivers/goodix5503-tls.c" \
       "$repo_dir/libfprint/drivers/goodix5503-tls.h" \
       "$work_dir/source/libfprint/drivers/"
@@ -44,7 +48,7 @@ top.write_text(text.replace(old, new))
 lib = source / "libfprint/meson.build"
 text = lib.read_text()
 old = "    'goodixmoc' :\n        [ 'drivers/goodixmoc/goodix.c', 'drivers/goodixmoc/goodix_proto.c' ],\n"
-new = "    'goodix5503' :\n        [ 'drivers/goodix5503.c', 'drivers/goodix5503-proto.c',\n          'drivers/goodix5503-config.c', 'drivers/goodix5503-tls.c' ],\n" + old
+new = "    'goodix5503' :\n        [ 'drivers/goodix5503.c', 'drivers/goodix5503-proto.c',\n          'drivers/goodix5503-config.c', 'drivers/goodix5503-security.c',\n          'drivers/goodix5503-image.c', 'drivers/goodix5503-tls.c' ],\n" + old
 if text.count(old) != 1:
     raise SystemExit("unexpected libfprint driver source map")
 lib.write_text(text.replace(old, new))

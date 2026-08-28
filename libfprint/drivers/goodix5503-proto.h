@@ -16,6 +16,21 @@ G_BEGIN_DECLS
 
 typedef struct _Goodix5503FrameBuffer Goodix5503FrameBuffer;
 
+typedef struct
+{
+  gboolean ack;
+  gboolean delayed_tls_completion;
+  gboolean image_prelude;
+  gboolean done;
+} Goodix5503CaptureState;
+
+typedef enum
+{
+  GOODIX5503_COMMAND_WAIT_ACK,
+  GOODIX5503_COMMAND_WAIT_DATA,
+  GOODIX5503_COMMAND_DONE,
+} Goodix5503CommandState;
+
 typedef enum
 {
   GOODIX5503_PROTO_ERROR_INVALID,
@@ -53,6 +68,21 @@ gboolean goodix5503_packet_decode (const guint8  *packet,
                                     gboolean       checksum,
                                     GByteArray   **body,
                                     GError       **error);
+
+gboolean goodix5503_capture_consume_frame (Goodix5503CaptureState  *state,
+                                            const guint8            *frame,
+                                            gsize                    frame_len,
+                                            GByteArray             **encrypted_envelope,
+                                            GError                 **error);
+
+gboolean goodix5503_command_consume_frame (guint8                   expected_command,
+                                            gboolean                 expect_data,
+                                            gboolean                 data_checksum,
+                                            Goodix5503CommandState  *state,
+                                            const guint8            *frame,
+                                            gsize                    frame_len,
+                                            GByteArray             **body,
+                                            GError                 **error);
 
 gboolean goodix5503_parse_fdt_response (const guint8  *response,
                                          gsize          response_len,

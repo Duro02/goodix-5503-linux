@@ -128,6 +128,112 @@ test_packet_rejects_mutations (void)
                   GOODIX5503_PROTO_ERROR_INVALID);
 }
 
+static GByteArray *
+encode_outer (guint8 flags, const guint8 *payload, gsize payload_len)
+{
+  guint8 header[4] = {
+    flags,
+    payload_len & 0xff,
+    payload_len >> 8,
+    0,
+  };
+  GByteArray *frame;
+
+  header[3] = (header[0] + header[1] + header[2]) & 0xff;
+  frame = g_byte_array_sized_new (payload_len + 4);
+  g_byte_array_append (frame, header, sizeof header);
+  g_byte_array_append (frame, payload, payload_len);
+  return frame;
+}
+
+static void
+test_capture_router_valid_and_reversed (void)
+{
+  const guint8 ack_payload[] = { 0x20, 0x01 };
+  const guint8 prelude_payload[] = { 0x01 };
+  const guint8 envelope_payload[] = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0,
+    23, 0x03, 0x03, 0x00, 0x01, 0xaa,
+  };
+  g_autoptr(GByteArray) ack = NULL;
+  g_autoptr(GByteArray) delayed = NULL;
+  g_autoptr(GByteArray) prelude = NULL;
+  g_autoptr(GByteArray) encrypted = NULL;
+  g_autoptr(GByteArray) envelope = NULL;
+  g_autoptr(GError) error = NULL;
+  Goodix5503CaptureState state = { 0 };
+
+  ack = goodix5503_packet_encode (0xb0, ack_payload, sizeof ack_payload,
+                                  TRUE, &error);
+  delayed = goodix5503_packet_encode (0xd0, NULL, 0, TRUE, &error);
+  prelude = goodix5503_packet_encode (0x20, prelude_payload,
+                                      sizeof prelude_payload, TRUE, &error);
+  encrypted = encode_outer (0xb2, envelope_payload, sizeof envelope_payload);
+  g_assert_no_error (error);
+
+  g_assert_true (goodix5503_capture_consume_frame (
+    &state, ack->data, ack->len, &envelope, &error));
+  g_assert_true (goodix5503_capture_consume_frame (
+    &state, delayed->data, delayed->len, &envelope, &error));
+  g_assert_true (goodix5503_capture_consume_frame (
+    &state, prelude->data, prelude->len, &envelope, &error));
+  g_assert_true (goodix5503_capture_consume_frame (
+    &state, encrypted->data, encrypted->len, &envelope, &error));
+  g_assert_true (state.done);
+  g_assert_cmpmem (envelope->data, envelope->len, envelope_payload,
+                   sizeof envelope_payload);
+  g_clear_pointer (&envelope, g_byte_array_unref);
+
+  memset (&state, 0, sizeof state);
+  g_assert_true (goodix5503_capture_consume_frame (
+    &state, ack->data, ack->len, &envelope, &error));
+  g_assert_true (goodix5503_capture_consume_frame (
+    &state, prelude->data, prelude->len, &envelope, &error));
+  g_assert_false (goodix5503_capture_consume_frame (
+    &state, delayed->data, delayed->len, &envelope, &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_INVALID);
+}
+
+static void
+test_command_router_ordering (void)
+{
+  const guint8 response[] = { 0x82, 0x01, 0x3f, 0x00 };
+  const guint8 ack_payload[] = { 0x36, 0x01 };
+  g_autoptr(GByteArray) ack = NULL;
+  g_autoptr(GByteArray) data = NULL;
+  g_autoptr(GByteArray) body = NULL;
+  g_autoptr(GError) error = NULL;
+  Goodix5503CommandState state = GOODIX5503_COMMAND_WAIT_ACK;
+
+  ack = goodix5503_packet_encode (0xb0, ack_payload, sizeof ack_payload,
+                                  TRUE, &error);
+  data = goodix5503_packet_encode (0x36, response, sizeof response,
+                                   FALSE, &error);
+  g_assert_no_error (error);
+  g_assert_true (goodix5503_command_consume_frame (
+    0x36, TRUE, FALSE, &state, ack->data, ack->len, &body, &error));
+  g_assert_cmpint (state, ==, GOODIX5503_COMMAND_WAIT_DATA);
+  g_assert_null (body);
+  g_assert_true (goodix5503_command_consume_frame (
+    0x36, TRUE, FALSE, &state, data->data, data->len, &body, &error));
+  g_assert_cmpint (state, ==, GOODIX5503_COMMAND_DONE);
+  g_assert_cmpmem (body->data, body->len, response, sizeof response);
+  g_clear_pointer (&body, g_byte_array_unref);
+
+  g_assert_false (goodix5503_command_consume_frame (
+    0x36, TRUE, FALSE, &state, data->data, data->len, &body, &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_INVALID);
+  g_clear_error (&error);
+
+  state = GOODIX5503_COMMAND_WAIT_ACK;
+  g_assert_false (goodix5503_command_consume_frame (
+    0x36, TRUE, FALSE, &state, data->data, data->len, &body, &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_INVALID);
+}
+
 static void
 test_fdt_response_and_request (void)
 {
@@ -239,6 +345,10 @@ main (int argc, char **argv)
   g_test_add_func ("/goodix5503/packet/no-checksum", test_no_checksum_packet);
   g_test_add_func ("/goodix5503/packet/reject-mutations",
                    test_packet_rejects_mutations);
+  g_test_add_func ("/goodix5503/capture/ordering",
+                   test_capture_router_valid_and_reversed);
+  g_test_add_func ("/goodix5503/command/router-ordering",
+                   test_command_router_ordering);
   g_test_add_func ("/goodix5503/fdt/response-request",
                    test_fdt_response_and_request);
   g_test_add_func ("/goodix5503/image/decode", test_packed_decoder);

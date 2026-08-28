@@ -234,6 +234,231 @@ length_error:
   return FALSE;
 }
 
+static gboolean
+decode_outer (const guint8  *frame,
+              gsize          frame_len,
+              guint8         expected_flags,
+              GByteArray   **payload,
+              GError       **error)
+{
+  guint16 payload_len;
+
+  if (frame == NULL || frame_len < 4 || frame[0] != expected_flags)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_INVALID,
+                           "unexpected Goodix outer frame flags");
+      return FALSE;
+    }
+  if (sum8 (frame, 3) != frame[3])
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_CHECKSUM,
+                           "invalid Goodix outer frame checksum");
+      return FALSE;
+    }
+  payload_len = read_le16 (frame + 1);
+  if (frame_len != (gsize) payload_len + 4)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_LENGTH,
+                           "invalid Goodix outer frame length");
+      return FALSE;
+    }
+  *payload = g_byte_array_sized_new (payload_len);
+  g_byte_array_append (*payload, frame + 4, payload_len);
+  return TRUE;
+}
+
+static gboolean
+validate_image_tls_records (const guint8 *data, gsize length, GError **error)
+{
+  gsize offset = 0;
+
+  if (length == 0)
+    goto invalid;
+  while (offset < length)
+    {
+      guint16 record_len;
+
+      if (length - offset < 5 || data[offset] != 23 ||
+          data[offset + 1] != 0x03 || data[offset + 2] != 0x03)
+        goto invalid;
+      record_len = ((guint16) data[offset + 3] << 8) | data[offset + 4];
+      if (record_len == 0 || record_len > 0x4000 + 2048 ||
+          record_len > length - offset - 5)
+        goto invalid;
+      offset += 5 + record_len;
+    }
+  return TRUE;
+
+invalid:
+  g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                       GOODIX5503_PROTO_ERROR_INVALID,
+                       "invalid Goodix image TLS record boundary");
+  return FALSE;
+}
+
+gboolean
+goodix5503_capture_consume_frame (Goodix5503CaptureState  *state,
+                                   const guint8            *frame,
+                                   gsize                    frame_len,
+                                   GByteArray             **encrypted_envelope,
+                                   GError                 **error)
+{
+  g_autoptr(GByteArray) body = NULL;
+
+  g_return_val_if_fail (state != NULL, FALSE);
+  g_return_val_if_fail (encrypted_envelope != NULL &&
+                        *encrypted_envelope == NULL, FALSE);
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+  if (state->done)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_INVALID,
+                           "duplicate Goodix image frame");
+      return FALSE;
+    }
+
+  if (!state->ack)
+    {
+      if (!goodix5503_packet_decode (frame, frame_len, 0xb0, TRUE,
+                                     &body, error))
+        return FALSE;
+      if (body->len != 2 || body->data[0] != 0x20 ||
+          !(body->data[1] & 1))
+        {
+          g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                               GOODIX5503_PROTO_ERROR_INVALID,
+                               "Goodix image acknowledgement was rejected");
+          return FALSE;
+        }
+      state->ack = TRUE;
+      return TRUE;
+    }
+
+  if (frame_len > 0 && frame[0] == GOODIX_MESSAGE_FLAGS)
+    {
+      guint8 command;
+
+      if (frame_len < 8)
+        {
+          g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                               GOODIX5503_PROTO_ERROR_LENGTH,
+                               "truncated Goodix image prelude");
+          return FALSE;
+        }
+      command = frame[4];
+      if (command == 0xd0 && !state->delayed_tls_completion &&
+          !state->image_prelude)
+        {
+          if (!goodix5503_packet_decode (frame, frame_len, command, TRUE,
+                                         &body, error))
+            return FALSE;
+          if (body->len > 16)
+            {
+              g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                                   GOODIX5503_PROTO_ERROR_LENGTH,
+                                   "delayed Goodix TLS completion is too large");
+              return FALSE;
+            }
+          state->delayed_tls_completion = TRUE;
+          return TRUE;
+        }
+      if (command == 0x20 && !state->image_prelude)
+        {
+          if (!goodix5503_packet_decode (frame, frame_len, command, TRUE,
+                                         &body, error))
+            return FALSE;
+          if (body->len != 1 || body->data[0] != 1)
+            {
+              g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                                   GOODIX5503_PROTO_ERROR_INVALID,
+                                   "Goodix image prelude was rejected");
+              return FALSE;
+            }
+          state->image_prelude = TRUE;
+          return TRUE;
+        }
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_INVALID,
+                           "unexpected Goodix image prelude order");
+      return FALSE;
+    }
+
+  if (!decode_outer (frame, frame_len, 0xb2, encrypted_envelope, error))
+    return FALSE;
+  if ((*encrypted_envelope)->len <= 9)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_LENGTH,
+                           "Goodix encrypted image envelope is too short");
+      g_clear_pointer (encrypted_envelope, g_byte_array_unref);
+      return FALSE;
+    }
+  if (!validate_image_tls_records ((*encrypted_envelope)->data + 9,
+                                   (*encrypted_envelope)->len - 9, error))
+    {
+      g_clear_pointer (encrypted_envelope, g_byte_array_unref);
+      return FALSE;
+    }
+  state->done = TRUE;
+  return TRUE;
+}
+
+gboolean
+goodix5503_command_consume_frame (guint8                   expected_command,
+                                   gboolean                 expect_data,
+                                   gboolean                 data_checksum,
+                                   Goodix5503CommandState  *state,
+                                   const guint8            *frame,
+                                   gsize                    frame_len,
+                                   GByteArray             **body,
+                                   GError                 **error)
+{
+  g_autoptr(GByteArray) decoded = NULL;
+
+  g_return_val_if_fail (state != NULL, FALSE);
+  g_return_val_if_fail (body != NULL && *body == NULL, FALSE);
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+  if (*state == GOODIX5503_COMMAND_DONE)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_INVALID,
+                           "duplicate Goodix command frame");
+      return FALSE;
+    }
+
+  if (*state == GOODIX5503_COMMAND_WAIT_ACK)
+    {
+      if (!goodix5503_packet_decode (frame, frame_len, 0xb0, TRUE,
+                                     &decoded, error))
+        return FALSE;
+      if (decoded->len != 2 || decoded->data[0] != expected_command ||
+          !(decoded->data[1] & 1))
+        {
+          g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                               GOODIX5503_PROTO_ERROR_INVALID,
+                               "Goodix command acknowledgement was rejected");
+          return FALSE;
+        }
+      if (expect_data)
+        {
+          *state = GOODIX5503_COMMAND_WAIT_DATA;
+          return TRUE;
+        }
+      *state = GOODIX5503_COMMAND_DONE;
+      *body = g_byte_array_new ();
+      return TRUE;
+    }
+
+  if (!goodix5503_packet_decode (frame, frame_len, expected_command,
+                                 data_checksum, body, error))
+    return FALSE;
+  *state = GOODIX5503_COMMAND_DONE;
+  return TRUE;
+}
+
 gboolean
 goodix5503_parse_fdt_response (const guint8  *response,
                                 gsize          response_len,
