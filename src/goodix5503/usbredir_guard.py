@@ -98,7 +98,8 @@ def _wipe_packet(packet: Packet | None) -> None:
 def _load_protected_response_digest(path: Path) -> bytes:
     info = path.lstat()
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-            or info.st_mode & 0o077 or info.st_size != PROTECTED_RECORD_LENGTH):
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size != PROTECTED_RECORD_LENGTH):
         raise PermissionError("protected record backup must be owner-only, regular, and exactly 324 bytes")
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
     descriptor = os.open(path, flags)

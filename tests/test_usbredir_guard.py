@@ -121,9 +121,10 @@ class FramingTests(unittest.TestCase):
                 _load_protected_response_digest(path),
                 hashlib.sha256(expected_frame).digest(),
             )
-            path.chmod(0o644)
-            with self.assertRaises(PermissionError):
-                _load_protected_response_digest(path)
+            for mode in (0o400, 0o644, 0o700):
+                path.chmod(mode)
+                with self.subTest(mode=oct(mode)), self.assertRaises(PermissionError):
+                    _load_protected_response_digest(path)
 
     def test_timeout_and_global_buffer_bound(self):
         left, right = socket.socketpair(); left.settimeout(0.01)
