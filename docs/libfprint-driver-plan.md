@@ -49,9 +49,14 @@ rotation, inversion and whether 12-bit values should be linearly reduced to
 8-bit or normalized against the clear frames.
 
 The 5,120-pixel area is small. Quality must be measured with libfprint's image
-pipeline before assuming NBIS can enroll reliably. Clear/background frames may
-need subtraction or gain correction. No raw image, image hash, opaque metadata
-or pixel dump should be logged by default.
+pipeline before assuming NBIS can enroll reliably. The prototype quality gate
+uses the real asynchronous NBIS path, an explicit provisional 500-dpi ppmm
+value, absolute clear-frame subtraction and linear 8-bit normalization. It
+passes the processed frame through a pipe, reports only `usable`/`unusable`,
+and wipes controllable image buffers; it does not create a biometric fixture.
+The 500-dpi value and final orientation remain hypotheses until repeated
+capture/enroll/verify validation. No raw image, image hash, opaque metadata or
+pixel dump should be logged by default.
 
 ## Pairing and configuration deployment
 

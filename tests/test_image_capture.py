@@ -29,6 +29,7 @@ from goodix5503.image_capture import (
     _validate_prepared_config,
     _validate_tls_records,
     _wait_hu_fdt_down_event,
+    build_hu_difference_image,
     decode_packed_image,
     run_prepared_clear_frame_capture,
 )
@@ -127,6 +128,24 @@ class ImageDecodeTests(unittest.TestCase):
             self.assertEqual(IMAGE_WIDTH * IMAGE_HEIGHT, PIXEL_COUNT)
         finally:
             pixels[:] = b"\x00" * len(pixels)
+
+    def test_background_difference_is_normalized_without_retaining_inputs(self):
+        background = bytes(PACKED_IMAGE_LENGTH)
+        group = bytes((0xA5, 0x34, 0x67, 0x89, 0xBC, 0xD2))
+        finger = group * (PACKED_IMAGE_LENGTH // len(group))
+        image = build_hu_difference_image(background, finger)
+        try:
+            self.assertEqual(len(image), PIXEL_COUNT)
+            self.assertEqual(min(image), 0)
+            self.assertEqual(max(image), 255)
+        finally:
+            image[:] = b"\x00" * len(image)
+
+    def test_background_difference_rejects_no_contrast(self):
+        with self.assertRaisesRegex(ImageCaptureError, "no background-relative contrast"):
+            build_hu_difference_image(
+                bytes(PACKED_IMAGE_LENGTH), bytes(PACKED_IMAGE_LENGTH)
+            )
 
     def test_decoder_rejects_every_non_exact_length(self):
         for length in (0, PACKED_IMAGE_LENGTH - 1, PACKED_IMAGE_LENGTH + 1):

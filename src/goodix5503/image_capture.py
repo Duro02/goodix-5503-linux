@@ -10,10 +10,13 @@ import json
 import os
 import socket
 import ssl
+import stat
 import struct
+import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Final
 
 import usb.core
@@ -82,6 +85,7 @@ IMAGE_WIDTH: Final = 80
 IMAGE_HEIGHT: Final = 64
 MAX_FRESH_BASE_ATTEMPTS: Final = 3
 EXPECTED_CHIP_ID: Final = 0x220F
+QUALITY_HELPER_PATH: Final = Path(__file__).resolve().parents[2] / ".tools/goodix5503-quality"
 
 
 class ImageCaptureError(RuntimeError):
@@ -436,6 +440,89 @@ def _validate_config_result(result: bytes) -> None:
 
 def _validate_prepared_config(config: bytes | bytearray) -> None:
     _validate_config_checksum(config)
+
+
+def build_hu_difference_image(
+    background_packed: bytes | bytearray | memoryview,
+    finger_packed: bytes | bytearray | memoryview,
+) -> bytearray:
+    """Return an in-memory 8-bit absolute background-difference image."""
+    background = decode_packed_image(background_packed)
+    finger = decode_packed_image(finger_packed)
+    differences = bytearray(PIXEL_COUNT * 2)
+    output = bytearray(PIXEL_COUNT)
+    try:
+        minimum = 0xFFFF
+        maximum = 0
+        for index in range(PIXEL_COUNT):
+            offset = index * 2
+            first = struct.unpack_from("<H", background, offset)[0]
+            second = struct.unpack_from("<H", finger, offset)[0]
+            difference = abs(first - second)
+            struct.pack_into("<H", differences, offset, difference)
+            minimum = min(minimum, difference)
+            maximum = max(maximum, difference)
+        if maximum == minimum:
+            raise ImageCaptureError("finger frame has no background-relative contrast")
+        scale = maximum - minimum
+        for index in range(PIXEL_COUNT):
+            difference = struct.unpack_from("<H", differences, index * 2)[0]
+            output[index] = (difference - minimum) * 255 // scale
+        return output
+    except BaseException:
+        output[:] = b"\x00" * len(output)
+        raise
+    finally:
+        background[:] = b"\x00" * len(background)
+        finger[:] = b"\x00" * len(finger)
+        differences[:] = b"\x00" * len(differences)
+
+
+def _run_libfprint_quality_gate(image: bytearray) -> str:
+    """Send one processed frame over a pipe to the fixed local NBIS helper."""
+    try:
+        helper_stat = QUALITY_HELPER_PATH.lstat()
+    except OSError as error:
+        raise ImageCaptureError("quality helper is unavailable") from error
+    if not stat.S_ISREG(helper_stat.st_mode) or helper_stat.st_uid != os.getuid():
+        raise ImageCaptureError("quality helper has an unsafe owner or type")
+    if helper_stat.st_mode & 0o022 or not helper_stat.st_mode & stat.S_IXUSR:
+        raise ImageCaptureError("quality helper has unsafe permissions")
+
+    read_fd, write_fd = os.pipe()
+    try:
+        process = subprocess.Popen(
+            (str(QUALITY_HELPER_PATH),),
+            stdin=read_fd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    finally:
+        os.close(read_fd)
+    try:
+        view = memoryview(image)
+        written = 0
+        while written < len(view):
+            count = os.write(write_fd, view[written:])
+            if count <= 0:
+                raise ImageCaptureError("quality helper pipe stopped accepting data")
+            written += count
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        os.close(write_fd)
+    try:
+        stdout, _ = process.communicate(timeout=30.0)
+    except subprocess.TimeoutExpired as error:
+        process.kill()
+        process.wait()
+        raise ImageCaptureError("libfprint quality helper timed out") from error
+    if process.returncode != 0 or stdout not in (b"usable\n", b"unusable\n"):
+        raise ImageCaptureError("libfprint quality helper failed")
+    return stdout.strip().decode("ascii")
 
 
 def decode_packed_image(packed: bytes | bytearray | memoryview) -> bytearray:
@@ -805,6 +892,7 @@ def run_prepared_clear_frame_capture(
     timeout_seconds: float = 5.0,
     *,
     finger_validation: bool = False,
+    quality_validation: bool = False,
 ) -> dict[str, int | str]:
     """Capture one experimental memory-only frame using fixed commands."""
     _disable_core_dumps()
@@ -826,13 +914,17 @@ def run_prepared_clear_frame_capture(
     fdt_event_transformed = bytearray()
     opaque_trailer = bytearray()
     pixels = bytearray()
+    background_packed = bytearray()
+    quality_image = bytearray()
+    quality = ""
     reset_guard: _ResetGuard | None = None
     try:
         session = ReadOnlyUsbSession(timeout_seconds)
         reset_guard = _ResetGuard(session)
+        finger_capture = finger_validation or quality_validation
         operation_deadline = time.monotonic() + min(
-            180.0 if finger_validation else 120.0,
-            max(120.0 if finger_validation else 30.0, timeout_seconds * 12),
+            180.0 if finger_capture else 120.0,
+            max(120.0 if finger_capture else 30.0, timeout_seconds * 12),
         )
         # The pinned Windows USB trace starts directly with command 00. Although
         # Geneva exposes a raw-wake method, no e5 OUT precedes this runtime path.
@@ -902,7 +994,11 @@ def run_prepared_clear_frame_capture(
             image_request,
             operation_deadline,
         )
-        if finger_validation:
+        if finger_capture:
+            if quality_validation:
+                background_packed = bytearray(
+                    memoryview(plaintext)[:PACKED_IMAGE_LENGTH]
+                )
             _ack_only(
                 session,
                 COMMAND_SWITCH_FDT_DOWN,
@@ -919,14 +1015,20 @@ def run_prepared_clear_frame_capture(
             opaque_prefix, plaintext = _receive_hu_plaintext_image(
                 session, tls_server, image_request, operation_deadline
             )
+            if quality_validation:
+                quality_image = build_hu_difference_image(
+                    background_packed,
+                    memoryview(plaintext)[:PACKED_IMAGE_LENGTH],
+                )
+                quality = _run_libfprint_quality_gate(quality_image)
         opaque_trailer = bytearray(memoryview(plaintext)[PACKED_IMAGE_LENGTH:])
         if len(opaque_prefix) != 9 or len(opaque_trailer) != 4:
             raise ImageCaptureError("image opaque metadata has an invalid length")
         pixels = decode_packed_image(memoryview(plaintext)[:PACKED_IMAGE_LENGTH])
-        return {
+        result: dict[str, int | str] = {
             "operation": (
                 "runtime-only-memory-finger-frame"
-                if finger_validation
+                if finger_capture
                 else "runtime-only-memory-clear-frame"
             ),
             "firmware": firmware,
@@ -938,6 +1040,9 @@ def run_prepared_clear_frame_capture(
             "opaque_prefix_length": len(opaque_prefix),
             "opaque_trailer_length": len(opaque_trailer),
         }
+        if quality_validation:
+            result["libfprint_quality"] = quality
+        return result
     finally:
         had_primary_error = sys.exc_info()[0] is not None
         primary_cleanup_error: BaseException | None = None
@@ -973,6 +1078,8 @@ def run_prepared_clear_frame_capture(
             fdt_event_transformed,
             opaque_trailer,
             pixels,
+            background_packed,
+            quality_image,
         ):
             buffer[:] = b"\x00" * len(buffer)
         if primary_cleanup_error is not None and not had_primary_error:
@@ -981,16 +1088,23 @@ def run_prepared_clear_frame_capture(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
+    validation = parser.add_mutually_exclusive_group()
+    validation.add_argument(
         "--finger-validation",
         action="store_true",
         help="arm fixed FDT-down detection and capture one memory-only finger frame",
+    )
+    validation.add_argument(
+        "--quality-validation",
+        action="store_true",
+        help="run a memory-only background-difference frame through libfprint",
     )
     args = parser.parse_args()
     print(
         json.dumps(
             run_prepared_clear_frame_capture(
-                finger_validation=args.finger_validation
+                finger_validation=args.finger_validation,
+                quality_validation=args.quality_validation,
             ),
             sort_keys=True,
         )
