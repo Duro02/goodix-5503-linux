@@ -350,9 +350,23 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
 def authorize_upstream(packet: Packet, state: GuardState) -> str:
     if packet.type == HELLO:
         raise GuardViolation("duplicate hello")
+    # usbredirhost sends interface and endpoint information immediately before
+    # DEVICE_CONNECT so QEMU can apply its device filter at connect time.
+    if packet.type == INTERFACE_INFO:
+        if state.device_connected or state.interface_valid or packet.body != _expected_interface_info():
+            raise GuardViolation("interface 0 topology mismatch")
+        state.interface_valid = True
+        return "interface0-vendor-specific"
+    if packet.type == EP_INFO:
+        if state.device_connected or not state.interface_valid or state.endpoints_valid:
+            raise GuardViolation("endpoint info order denied")
+        if not state.negotiated_caps & (1 << CAP_EP_MAX_PACKET) or packet.body != _expected_ep_info():
+            raise GuardViolation("endpoint topology mismatch")
+        state.endpoints_valid = True
+        return "bulk-out01-in82-maxpacket512"
     if packet.type == DEVICE_CONNECT:
         expected_length = 10 if state.negotiated_caps & (1 << CAP_DEVICE_VERSION) else 8
-        if state.device_connected or len(packet.body) != expected_length:
+        if state.device_connected or not state.interface_valid or not state.endpoints_valid or len(packet.body) != expected_length:
             raise GuardViolation("invalid device connect")
         fields = struct.unpack("<BBBBHH", packet.body[:8])
         if fields[:4] != (2, 0, 0, 0) or fields[4:6] != (0x27C6, 0x5503):
@@ -361,18 +375,6 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         return "goodix-27c6-5503"
     if not state.device_connected:
         raise GuardViolation("packet before device identity")
-    if packet.type == INTERFACE_INFO:
-        if state.interface_valid or packet.body != _expected_interface_info():
-            raise GuardViolation("interface 0 topology mismatch")
-        state.interface_valid = True
-        return "interface0-vendor-specific"
-    if packet.type == EP_INFO:
-        if not state.interface_valid or state.endpoints_valid:
-            raise GuardViolation("endpoint info order denied")
-        if not state.negotiated_caps & (1 << CAP_EP_MAX_PACKET) or packet.body != _expected_ep_info():
-            raise GuardViolation("endpoint topology mismatch")
-        state.endpoints_valid = True
-        return "bulk-out01-in82-maxpacket512"
     status_types = {CONFIGURATION_STATUS: "configuration", ALT_SETTING_STATUS: "alternate",
                     BULK_RECEIVING_STATUS: "bulk-receiving"}
     if packet.type in status_types:

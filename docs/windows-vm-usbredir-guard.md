@@ -18,8 +18,9 @@ Unknown, malformed, class/vendor control, stream, TLS, reset,
 firmware/configuration, PSK, and replay traffic closes both streams without
 forwarding the denied frame or synthesizing a response.
 
-The protocol profile pins interface 0 (`ff/00/00`) and usbredir endpoint-array
-indices 1/18 to bulk OUT `01` and bulk IN `82`, both with max packet 512. The
+The protocol profile pins usbredirhost's actual pre-connect order: interface 0
+(`ff/00/00`), endpoint information, then `DEVICE_CONNECT`. Endpoint-array
+indices 1/18 must be bulk OUT `01` and bulk IN `82`, both with max packet 512. The
 index mapping is usbredirhost 0.15 `EP2I(ep) = ((ep & 0x80) >> 3) | (ep & 0x0f)`.
 Both HELLO packets are validated before either is forwarded; the single
 capability word is preserved and 64-bit IDs are used only when both peers offer
