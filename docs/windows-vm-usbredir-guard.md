@@ -1,11 +1,17 @@
-# Windows VM usbredir guard
+# Windows VM usbredir guard (historical)
+
+The trace-specific proxy implementation and CLI were removed from the active
+codebase after the Windows path reached the blocked A4/IAP boundary. This file
+preserves the evidence and threat model only. Do not use direct passthrough;
+restore and review a minimal exact-OUT guard from Git history only if a concrete
+future Windows experiment requires it.
 
 Direct USB passthrough to a fresh Windows VM is prohibited: the pinned driver
 can replace PSK/protected records and contains firmware-update paths. Disabling
 `WbioSrvc` does not disable its PnP UMDF service.
 
-`goodix-5503-usbredir-guard` is a deliberately single-use stream proxy. It
-accepts only `27c6:5503`, safe standard enumeration, bounded 32 KiB bulk-IN
+The removed `goodix-5503-usbredir-guard` was a deliberately single-use stream
+proxy. It accepted only `27c6:5503`, safe standard enumeration, bounded 32 KiB bulk-IN
 reads, and exactly six pinned bulk-OUT transfers on endpoint 1:
 
 ```text
