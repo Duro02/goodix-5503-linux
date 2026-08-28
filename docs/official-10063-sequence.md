@@ -169,6 +169,16 @@ This dynamically proves ordinary separate ACK/data routing for firmware A8.
 The Linux clear-frame preflight now mirrors the exact official wire payloads:
 command `00/00000000` with ACK only, then `A8/0000` with ACK plus data.
 
+A subsequent owner-only loopback capture identified the denied third OUT as an
+exact replay of the padded `A8/0000` request, not a new opcode. Its usbredir
+packet hash matches the guard denied event, while concurrent usbmon proves it
+was not forwarded. This dynamically confirms the static loader result that the
+normal successful Windows path reads APP identity twice (SelfCheck, then
+ProcessPsk). Loopback capture SHA-256 is
+`042991ada67f905ad958fbd699f3605472b5c8db2b94b412d5d792f5a82a4b2f`;
+usbmon SHA-256 is
+`2b805509c0d2c839d7ed1d076a9fd0272fe17a2cc2a381f2e23e8a802063b36f`.
+
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
 APP identity read and the R verification read `E4/bb020007`, then compares the

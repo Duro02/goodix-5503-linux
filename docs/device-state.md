@@ -106,7 +106,10 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   request and captured separate responses: ACK `a00600a6b00300a8014e`, then
   data frame `a01b00bba818004746333235385f52545345435f4150505f31303036330012`
   containing `GF3258_RTSEC_APP_10063\0`. The next OUT was denied before hardware.
-  This closes official command-00 ACK routing and firmware-A8 ACK/data routing.
+  An owner-only loopback capture identified that denied third OUT as an exact
+  second padded `A8/0000` request, confirming the two normal APP identity reads
+  statically mapped to SelfCheck and ProcessPsk. This closes official command-00
+  ACK routing and the first firmware-A8 ACK/data routing.
 ```
 
 ## Interpretation
