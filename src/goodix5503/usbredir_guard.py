@@ -295,8 +295,8 @@ def _expected_ep_info() -> bytes:
 def authorize_guest(packet: Packet, state: GuardState) -> str:
     if packet.type == HELLO:
         raise GuardViolation("duplicate hello")
-    if state.prefix_step == 1:
-        raise GuardViolation("awaiting A8 completion; further guest traffic denied")
+    if state.prefix_step == 1 and packet.type not in (CONTROL_PACKET, BULK_PACKET):
+        raise GuardViolation("only read-only USB traffic is allowed after A8")
     if packet.type == FILTER_FILTER:
         # usbredir serializes filter rules as a NUL-terminated text string.
         # This is the exact form emitted by pinned QEMU/libvirt for our rule.
@@ -314,6 +314,8 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
         state.reset_count += 1
         return "bounded-enumeration-usb-reset"
     if packet.type == CONTROL_PACKET and state.identity_pinned:
+        if state.prefix_step == 1 and not (_control_fields(packet)[2] & 0x80):
+            raise GuardViolation("only control IN is allowed after A8")
         return _authorize_control_request(packet, state)
     safe_admin = {SET_CONFIGURATION, GET_CONFIGURATION, SET_ALT_SETTING,
                   GET_ALT_SETTING, START_BULK_RECEIVING, STOP_BULK_RECEIVING}
@@ -434,7 +436,7 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         if kind != "a8":
             raise GuardViolation("unexpected OUT completion kind")
         state.a8_completed = True
-        return "a8-out-completion-close"
+        return "a8-out-completion-observe"
     if packet.type == BUFFERED_BULK_PACKET:
         if len(packet.body) < 10:
             raise GuardViolation("short buffered bulk")
@@ -475,39 +477,35 @@ class UsbRedirGuard:
                 with self.state.condition:
                     policy = (authorize_guest(packet, self.state) if direction == "guest"
                               else authorize_upstream(packet, self.state))
-                    completion_close = direction == "upstream" and self.state.a8_completed
                     self.state.condition.notify_all()
-                    self.audit.record(direction, packet, "authorize", "policy", policy)
-                    target.sendall(packet.raw)
-                    self.audit.record(direction, packet, "forwarded", "policy", policy)
-                if completion_close:
-                    self.close()
-                    return
+                self.audit.record(direction, packet, "authorize", "policy", policy)
+                target.sendall(packet.raw)
+                self.audit.record(direction, packet, "forwarded", "policy", policy)
         except BaseException as exc:
             with self.state.lock:
                 already_stopped = self.state.stopped
             if already_stopped:
                 return
             self._failure = self._failure or exc
+            self.close()
             try: self.audit.record(direction, packet, "deny", str(exc))
             except BaseException: pass
-            self.close()
 
     def _completion_watchdog(self) -> None:
         try:
             with self.state.condition:
                 while not self.state.stopped and self.state.a8_deadline is None:
                     self.state.condition.wait()
-                while not self.state.stopped and not self.state.a8_completed:
+                while not self.state.stopped:
                     remaining = self.state.a8_deadline - time.monotonic()  # type: ignore[operator]
                     if remaining <= 0:
-                        raise GuardViolation("A8 completion timeout")
+                        raise GuardViolation("A8 observation timeout")
                     self.state.condition.wait(remaining)
         except BaseException as exc:
             self._failure = self._failure or exc
+            self.close()
             try: self.audit.record("guard", None, "deny", str(exc))
             except BaseException: pass
-            self.close()
 
     def close(self) -> None:
         with self.state.condition:

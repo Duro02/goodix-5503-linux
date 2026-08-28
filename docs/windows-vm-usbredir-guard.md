@@ -14,8 +14,11 @@ a00800a800050000000000a5 + 52 zero bytes (64 bytes total)
 
 This outer-A0 A8 packet is the first application OUT observed dynamically from
 the pinned Windows VM; no preceding `e5` appeared. The guard correlates its
-request ID and forwards the successful A8 OUT completion and immediately closes both streams; a mismatch, failed status,
-or bounded completion timeout closes them without forwarding further traffic.
+request ID and forwards the successful A8 OUT completion. After A8 it permits
+only the already-audited data-free standard controls and bounded endpoint-`82`
+reads needed to observe the response. Any second bulk OUT closes both streams
+before forwarding; so do a mismatched or failed completion and the bounded
+observation deadline.
 At most three normal pre-command USB resets are allowed. They retain the
 already pinned usbredir connection identity; any topology packet that does
 recur must still match exactly. Unknown, malformed,
