@@ -11,7 +11,7 @@ from pathlib import Path
 from goodix5503.usbredir_guard import (
     ALT_SETTING_STATUS, AuditLog, BULK_PACKET, CAP_32BIT_BULK_LENGTH,
     CAP_64BIT_IDS, CONFIGURATION_STATUS, CONTROL_PACKET, DEVICE_CONNECT,
-    EP_INFO, FILTER_FILTER, GOODIX_A8, GuardState, GuardViolation, HELLO,
+    EP_INFO, FILTER_FILTER, GOODIX_A8, GuardState, GuardViolation, HELLO, RESET,
     INTERFACE_INFO, MAX_FRAME, Packet, UsbRedirGuard, _expected_ep_info,
     _expected_interface_info, authorize_guest, authorize_upstream, read_packet,
 )
@@ -176,6 +176,18 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(GuardViolation, "stream"): authorize_guest(streamed, self.state)
         with self.assertRaises(GuardViolation): authorize_guest(bulk(0x82, requested=0x8000), self.state)
         with self.assertRaises(GuardViolation): authorize_guest(bulk(0x82, requested=0x8001), self.state)
+
+    def test_one_enumeration_reset_requires_topology_reannouncement(self):
+        self.assertEqual(authorize_guest(packet(RESET), self.state), "one-enumeration-usb-reset")
+        self.assertFalse(self.state.device_connected)
+        with self.assertRaises(GuardViolation):
+            authorize_guest(packet(RESET), self.state)
+        authorize_upstream(packet(INTERFACE_INFO, _expected_interface_info()), self.state)
+        authorize_upstream(packet(EP_INFO, _expected_ep_info()), self.state)
+        connect = struct.pack("<BBBBHHH", 2, 0, 0, 0, 0x27c6, 0x5503, 0x100)
+        authorize_upstream(packet(DEVICE_CONNECT, connect), self.state)
+        with self.assertRaises(GuardViolation):
+            authorize_guest(packet(RESET), self.state)
 
     def test_standard_control_matrix_denies_class_vendor_and_out(self):
         allowed_in = struct.pack("<BBBBHHH", 0x80, 6, 0x80, 0, 0x100, 0, 18)
