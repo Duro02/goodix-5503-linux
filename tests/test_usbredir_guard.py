@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from goodix5503.usbredir_guard import (
     ALT_SETTING_STATUS, AuditLog, BULK_PACKET, CAP_32BIT_BULK_LENGTH,
@@ -15,9 +16,11 @@ from goodix5503.usbredir_guard import (
     SET_CONFIGURATION,
     EP_INFO, FILTER_FILTER, GOODIX_COMMAND00, GOODIX_COMMAND00_ACK,
     GOODIX_FIRMWARE_A8, GOODIX_FIRMWARE_A8_ACK, GOODIX_FIRMWARE_A8_DATA,
-    GuardState, GuardViolation, HELLO, RESET,
+    GOODIX_PROTECTED_READ, GOODIX_PROTECTED_READ_ACK, GuardState,
+    GuardViolation, HELLO, RESET,
     INTERFACE_INFO, MAX_FRAME, Packet, UsbRedirGuard, _expected_ep_info,
-    _expected_interface_info, authorize_guest, authorize_upstream, read_packet,
+    _expected_interface_info, _wipe_packet, authorize_guest, authorize_upstream,
+    read_packet,
 )
 
 
@@ -186,6 +189,12 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_FIRMWARE_A8_DATA, ident=10), self.state), "exact-firmware-a8-data")
         self.assertEqual(authorize_guest(bulk(1, GOODIX_FIRMWARE_A8, ident=11), self.state), "goodix-usb-outer-a0-firmware-a8-second-64")
         self.assertEqual(authorize_upstream(bulk(1, requested=64, ident=11), self.state), "firmware-a8-second-out-completion-observe")
+        self.assertEqual(authorize_guest(bulk(0x82, requested=0x8000, ident=12), self.state), "bounded-bulk-in-request")
+        self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_FIRMWARE_A8_ACK, ident=12), self.state), "exact-firmware-a8-success-ack")
+        self.assertEqual(authorize_guest(bulk(0x82, requested=0x8000, ident=13), self.state), "bounded-bulk-in-request")
+        self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_FIRMWARE_A8_DATA, ident=13), self.state), "exact-firmware-a8-data")
+        self.assertEqual(authorize_guest(bulk(1, GOODIX_PROTECTED_READ, ident=14), self.state), "goodix-usb-outer-a0-protected-read-bb010002-64")
+        self.assertEqual(authorize_upstream(bulk(1, requested=64, ident=14), self.state), "protected-read-out-completion-observe")
         for first in (b"\xe5", b"\xe4", bytes.fromhex("0a0a0a0aa80300000001") + bytes(54)):
             state = GuardState(); state.bulk_header_size = 10
             state.device_connected = state.interface_valid = state.endpoints_valid = True
@@ -218,6 +227,31 @@ class PolicyTests(unittest.TestCase):
             authorize_upstream(bulk(0x82, bytes(wrong_ack), ident=4), self.state)
         with self.assertRaises(GuardViolation):
             authorize_guest(bulk(1, GOODIX_FIRMWARE_A8, ident=5), self.state)
+
+    def test_protected_response_requires_exact_ack_hash_and_is_wipeable(self):
+        self.state.prefix_step = 4
+        self.state.command00_deadline = time.monotonic() + 1
+        self.state.protected_read_completed = True
+        self.state.pending_in.add(1)
+        self.assertEqual(
+            authorize_upstream(bulk(0x82, GOODIX_PROTECTED_READ_ACK, ident=1), self.state),
+            "exact-protected-read-success-ack",
+        )
+        sensitive = b"test-protected-frame"
+        self.state.pending_in.add(2)
+        with (
+            patch("goodix5503.usbredir_guard.GOODIX_PROTECTED_RESPONSE_LENGTH", len(sensitive)),
+            patch("goodix5503.usbredir_guard.GOODIX_PROTECTED_RESPONSE_SHA256", hashlib.sha256(sensitive).digest()),
+        ):
+            self.assertEqual(
+                authorize_upstream(bulk(0x82, sensitive, ident=2), self.state),
+                "exact-protected-read-data-sensitive",
+            )
+        mutable = packet(BULK_PACKET, bytearray(b"secret"), ident=3)
+        mutable = Packet(mutable.type, mutable.packet_id, bytearray(mutable.body), bytearray(mutable.raw))
+        _wipe_packet(mutable)
+        self.assertFalse(any(mutable.body))
+        self.assertFalse(any(mutable.raw))
 
     def test_endpoint_stream_and_length_matrix(self):
         with self.assertRaises(GuardViolation): authorize_guest(bulk(2, b"\xe5"), self.state)

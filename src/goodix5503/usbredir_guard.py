@@ -2,16 +2,18 @@
 
 This proxy is intentionally not a general USB firewall. It forwards only USB
 setup needed to enumerate the pinned device and the exact padded 64-byte
-outer-A0 command-00 and two firmware-A8 identity reads observed from pinned
-QEMU/Windows. Each stage requires exact prior completion and ACK/data responses;
-afterward only control-IN and bounded bulk-IN reads may pass. A fourth OUT, TLS,
-streams, and unknown protocol operations terminate both connections.
+outer-A0 command-00, two firmware-A8 identity reads, and the protected-record
+read observed from pinned QEMU/Windows. Each stage requires exact prior
+completion and ACK/data responses; afterward only control-IN and bounded bulk-IN
+reads may pass. A fifth OUT, TLS, streams, and unknown operations terminate both
+connections. Sensitive response buffers are explicitly zeroed.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import socket
@@ -62,6 +64,14 @@ GOODIX_FIRMWARE_A8_ACK: Final = bytes.fromhex("a00600a6b00300a8014e")
 GOODIX_FIRMWARE_A8_DATA: Final = bytes.fromhex(
     "a01b00bba818004746333235385f52545345435f4150505f31303036330012"
 )
+GOODIX_PROTECTED_READ: Final = bytes.fromhex(
+    "a00c00ace40900020001bb00000000ff"
+) + bytes(48)
+GOODIX_PROTECTED_READ_ACK: Final = bytes.fromhex("a00600a6b00300e40112")
+GOODIX_PROTECTED_RESPONSE_LENGTH: Final = 341
+GOODIX_PROTECTED_RESPONSE_SHA256: Final = bytes.fromhex(
+    "1554a6044f55b7dc571287c8190bd24ee895d4461b6807725774a25377fc47ac"
+)
 
 
 class GuardViolation(RuntimeError):
@@ -72,8 +82,17 @@ class GuardViolation(RuntimeError):
 class Packet:
     type: int
     packet_id: int
-    body: bytes
-    raw: bytes
+    body: bytes | bytearray
+    raw: bytes | bytearray
+
+
+def _wipe_packet(packet: Packet | None) -> None:
+    if packet is None:
+        return
+    if isinstance(packet.body, bytearray):
+        packet.body[:] = bytes(len(packet.body))
+    if isinstance(packet.raw, bytearray):
+        packet.raw[:] = bytes(len(packet.raw))
 
 
 class AuditLog:
@@ -140,6 +159,9 @@ class GuardState:
         self.firmware_a8_completed_count = 0
         self.firmware_a8_ack_count = 0
         self.firmware_a8_data_count = 0
+        self.protected_read_completed = False
+        self.protected_read_acknowledged = False
+        self.protected_read_received = False
         self.buffered = 0
         self.stopped = False
 
@@ -181,7 +203,7 @@ class GuardState:
             self.buffered -= amount
 
 
-def _recv_exact(sock: socket.socket, size: int) -> bytes:
+def _recv_exact(sock: socket.socket, size: int) -> bytearray:
     data = bytearray(size)
     view = memoryview(data)
     offset = 0
@@ -195,7 +217,7 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes:
             data[:] = bytes(len(data))
             raise GuardViolation("unexpected EOF")
         offset += count
-    return bytes(data)
+    return data
 
 
 def read_packet(sock: socket.socket, state: GuardState, initial: bool) -> Packet:
@@ -224,28 +246,28 @@ def _without_bulk_streams(packet: Packet) -> Packet:
     caps = struct.unpack("<I", body[64:68])[0] & ~1
     body[64:68] = struct.pack("<I", caps)
     header_size = len(packet.raw) - len(packet.body)
-    raw = packet.raw[:header_size] + bytes(body)
-    return Packet(packet.type, packet.packet_id, bytes(body), raw)
+    raw = bytearray(packet.raw[:header_size]) + body
+    return Packet(packet.type, packet.packet_id, body, raw)
 
 
-def _bulk_fields(packet: Packet, state: GuardState) -> tuple[int, int, int, int, bytes]:
+def _bulk_fields(packet: Packet, state: GuardState) -> tuple[int, int, int, int, memoryview]:
     size = state.bulk_header_size
     if len(packet.body) < size:
         raise GuardViolation("short bulk header")
     endpoint, status, low, stream_id = struct.unpack("<BBHI", packet.body[:8])
     high = struct.unpack("<H", packet.body[8:10])[0] if size == 10 else 0
     length = low | (high << 16)
-    data = packet.body[size:]
+    data = memoryview(packet.body)[size:]
     if stream_id != 0:
         raise GuardViolation("nonzero bulk stream denied")
     return endpoint, status, length, stream_id, data
 
 
-def _control_fields(packet: Packet) -> tuple[int, int, int, int, int, int, int, bytes]:
+def _control_fields(packet: Packet) -> tuple[int, int, int, int, int, int, int, memoryview]:
     if len(packet.body) < 10:
         raise GuardViolation("short control header")
     fields = struct.unpack("<BBBBHHH", packet.body[:10])
-    return (*fields, packet.body[10:])
+    return (*fields, memoryview(packet.body)[10:])
 
 
 def _authorize_control_request(packet: Packet, state: GuardState) -> str:
@@ -404,6 +426,13 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
             state.pending_out = (packet.packet_id, "firmware-a8-second")
             state.prefix_step = 3
             return "goodix-usb-outer-a0-firmware-a8-second-64"
+        if (state.prefix_step == 3 and state.firmware_a8_completed_count == 2
+                and state.firmware_a8_ack_count == 2
+                and state.firmware_a8_data_count == 2
+                and data == GOODIX_PROTECTED_READ):
+            state.pending_out = (packet.packet_id, "protected-read")
+            state.prefix_step = 4
+            return "goodix-usb-outer-a0-protected-read-bb010002-64"
         raise GuardViolation("bulk OUT prefix denied")
     raise GuardViolation(f"guest packet type {packet.type} denied")
 
@@ -467,6 +496,21 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
                         raise GuardViolation("exact firmware A8 data required")
                     state.firmware_a8_data_count += 1
                     return "exact-firmware-a8-data"
+            if state.prefix_step == 4:
+                if not state.protected_read_completed:
+                    raise GuardViolation("protected read response before OUT completion")
+                if not state.protected_read_acknowledged:
+                    if data != GOODIX_PROTECTED_READ_ACK:
+                        raise GuardViolation("exact protected-read ACK required")
+                    state.protected_read_acknowledged = True
+                    return "exact-protected-read-success-ack"
+                if not state.protected_read_received:
+                    digest = hashlib.sha256(data).digest()
+                    if (len(data) != GOODIX_PROTECTED_RESPONSE_LENGTH
+                            or not hmac.compare_digest(digest, GOODIX_PROTECTED_RESPONSE_SHA256)):
+                        raise GuardViolation("protected-read response hash mismatch")
+                    state.protected_read_received = True
+                    return "exact-protected-read-data-sensitive"
             return "matched-bulk-in-response"
     status_types = {CONFIGURATION_STATUS: "configuration", ALT_SETTING_STATUS: "alternate",
                     BULK_RECEIVING_STATUS: "bulk-receiving"}
@@ -494,6 +538,9 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         if kind == "firmware-a8-second":
             state.firmware_a8_completed_count = 2
             return "firmware-a8-second-out-completion-observe"
+        if kind == "protected-read":
+            state.protected_read_completed = True
+            return "protected-read-out-completion-observe"
         raise GuardViolation("unexpected OUT completion kind")
     if packet.type == BUFFERED_BULK_PACKET:
         if len(packet.body) < 10:
@@ -518,6 +565,7 @@ class UsbRedirGuard:
 
     def _pump(self, direction: str, source: socket.socket, target: socket.socket) -> None:
         packet: Packet | None = None
+        policy = ""
         try:
             source.settimeout(self.timeout)
             packet = read_packet(source, self.state, initial=True)
@@ -531,6 +579,7 @@ class UsbRedirGuard:
             self.audit.record(direction, packet, "forwarded", "hello")
             while True:
                 packet = None
+                policy = ""
                 packet = read_packet(source, self.state, initial=False)
                 with self.state.condition:
                     policy = (authorize_guest(packet, self.state) if direction == "guest"
@@ -539,14 +588,19 @@ class UsbRedirGuard:
                 self.audit.record(direction, packet, "authorize", "policy", policy)
                 target.sendall(packet.raw)
                 self.audit.record(direction, packet, "forwarded", "policy", policy)
+                if policy == "exact-protected-read-data-sensitive":
+                    _wipe_packet(packet)
         except BaseException as exc:
             with self.state.lock:
                 already_stopped = self.state.stopped
             if already_stopped:
                 return
             self._failure = self._failure or exc
+            sensitive = policy == "exact-protected-read-data-sensitive"
+            if sensitive:
+                _wipe_packet(packet)
             self.close()
-            try: self.audit.record(direction, packet, "deny", str(exc))
+            try: self.audit.record(direction, None if sensitive else packet, "deny", str(exc))
             except BaseException: pass
 
     def _completion_watchdog(self) -> None:
