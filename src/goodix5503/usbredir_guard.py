@@ -354,14 +354,14 @@ def authorize_guest(packet: Packet, state: GuardState) -> str:
         state.pending_status[packet.packet_id] = ("bulk-receiving", struct.pack("<IBB", 0, 0x82, 0))
         return "stop-bulk-in-receiver"
     if packet.type == BULK_PACKET:
-        if not state.device_connected or not state.interface_valid or not state.endpoints_valid:
-            raise GuardViolation("bulk operation before pinned topology")
         endpoint, status, length, _, data = _bulk_fields(packet, state)
         if endpoint == 0x82:
-            if status != 0 or data or not 0 < length <= 0x8000 or packet.packet_id in state.pending_in or len(state.pending_in) >= 8:
+            if not state.identity_pinned or status != 0 or data or not 0 < length <= 0x8000 or packet.packet_id in state.pending_in or len(state.pending_in) >= 8:
                 raise GuardViolation("bulk IN request denied")
             state.pending_in.add(packet.packet_id)
             return "bounded-bulk-in-request"
+        if not state.device_connected or not state.interface_valid or not state.endpoints_valid:
+            raise GuardViolation("bulk OUT before pinned topology")
         if status != 0 or endpoint != 0x01 or length != len(data):
             raise GuardViolation("only exact bulk OUT endpoint 01 is permitted")
         if state.pending_out is not None:
@@ -408,6 +408,13 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         return "goodix-27c6-5503"
     if packet.type == CONTROL_PACKET and state.identity_pinned:
         return _authorize_control_response(packet, state)
+    if packet.type == BULK_PACKET and state.identity_pinned:
+        endpoint, status, length, _, data = _bulk_fields(packet, state)
+        if endpoint == 0x82:
+            if packet.packet_id not in state.pending_in or status != 0 or length != len(data) or length > 0x8000:
+                raise GuardViolation("unmatched bulk IN response")
+            state.pending_in.remove(packet.packet_id)
+            return "matched-bulk-in-response"
     status_types = {CONFIGURATION_STATUS: "configuration", ALT_SETTING_STATUS: "alternate",
                     BULK_RECEIVING_STATUS: "bulk-receiving"}
     if packet.type in status_types and state.identity_pinned:
@@ -419,11 +426,6 @@ def authorize_upstream(packet: Packet, state: GuardState) -> str:
         raise GuardViolation("packet before device identity")
     if packet.type == BULK_PACKET:
         endpoint, status, length, _, data = _bulk_fields(packet, state)
-        if endpoint == 0x82:
-            if packet.packet_id not in state.pending_in or status != 0 or length != len(data) or length > 0x8000:
-                raise GuardViolation("unmatched bulk IN response")
-            state.pending_in.remove(packet.packet_id)
-            return "matched-bulk-in-response"
         if endpoint != 0x01 or status != 0 or length != 0 or data:
             raise GuardViolation("only successful OUT completion is permitted")
         if state.pending_out is None or packet.packet_id != state.pending_out[0]:

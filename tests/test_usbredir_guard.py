@@ -194,6 +194,8 @@ class PolicyTests(unittest.TestCase):
             if reset_index == 0:
                 self.assertEqual(authorize_guest(packet(SET_CONFIGURATION, b"\x01", ident=200), self.state), "set-configuration-1")
                 self.assertEqual(authorize_upstream(packet(CONFIGURATION_STATUS, b"\x00\x01", ident=200), self.state), "matched-protocol-status")
+                self.assertEqual(authorize_guest(bulk(0x82, requested=0x8000, ident=300), self.state), "bounded-bulk-in-request")
+                self.assertEqual(authorize_upstream(bulk(0x82, ident=300), self.state), "matched-bulk-in-response")
             authorize_upstream(packet(INTERFACE_INFO, _expected_interface_info()), self.state)
             authorize_upstream(packet(EP_INFO, _expected_ep_info()), self.state)
             authorize_upstream(packet(DEVICE_CONNECT, connect), self.state)
