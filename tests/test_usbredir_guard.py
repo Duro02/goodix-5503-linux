@@ -194,8 +194,8 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_FIRMWARE_A8_ACK, ident=12), self.state), "exact-firmware-a8-success-ack")
         self.assertEqual(authorize_guest(bulk(0x82, requested=0x8000, ident=13), self.state), "bounded-bulk-in-request")
         self.assertEqual(authorize_upstream(bulk(0x82, GOODIX_FIRMWARE_A8_DATA, ident=13), self.state), "exact-firmware-a8-data")
-        self.assertEqual(authorize_guest(bulk(1, GOODIX_PROTECTED_READ, ident=14), self.state), "goodix-usb-outer-a0-protected-read-bb010002-64")
-        self.assertEqual(authorize_upstream(bulk(1, requested=64, ident=14), self.state), "protected-read-out-completion-observe")
+        self.assertEqual(authorize_guest(bulk(1, GOODIX_PROTECTED_READ, ident=14), self.state), "goodix-usb-outer-a0-protected-query-first-64")
+        self.assertEqual(authorize_upstream(bulk(1, requested=64, ident=14), self.state), "protected-query-first-out-completion-observe")
         for first in (b"\xe5", b"\xe4", bytes.fromhex("0a0a0a0aa80300000001") + bytes(54)):
             state = GuardState(); state.bulk_header_size = 10
             state.device_connected = state.interface_valid = state.endpoints_valid = True
@@ -232,11 +232,11 @@ class PolicyTests(unittest.TestCase):
     def test_protected_query_requires_exact_ack_response_and_is_wipeable(self):
         self.state.prefix_step = 4
         self.state.command00_deadline = time.monotonic() + 1
-        self.state.protected_read_completed = True
+        self.state.protected_query_completed_count = 1
         self.state.pending_in.add(1)
         self.assertEqual(
             authorize_upstream(bulk(0x82, GOODIX_PROTECTED_READ_ACK, ident=1), self.state),
-            "exact-protected-read-success-ack",
+            "exact-protected-query-success-ack",
         )
         with self.assertRaisesRegex(GuardViolation, "buffered bulk denied"):
             authorize_upstream(packet(BUFFERED_BULK_PACKET, b"opaque", ident=7), self.state)
@@ -383,7 +383,7 @@ class IntegrationTests(unittest.TestCase):
             thread.join(2); self.assertFalse(thread.is_alive())
             audit.close(); guest.close(); upstream.close()
 
-    def test_exact_prefix_forwards_wiped_protected_query_then_denies_fifth_out(self):
+    def test_exact_prefix_forwards_two_protected_queries_then_denies_sixth_out(self):
         with tempfile.TemporaryDirectory() as directory:
             guest, upstream, audit, audit_path, thread = self._start(directory)
             self._negotiate_and_topology(guest, upstream)
@@ -437,7 +437,20 @@ class IntegrationTests(unittest.TestCase):
             query_response = bulk(0x82, GOODIX_PROTECTED_QUERY_RESPONSE, ident=21).raw
             upstream.sendall(query_response)
             self.assertEqual(recv_exact(guest, len(query_response)), query_response)
-            guest.sendall(bulk(1, b"forbidden", ident=22).raw)
+            second_query_read = bulk(0x82, requested=0x8000, ident=22).raw
+            guest.sendall(second_query_read); self.assertEqual(recv_exact(upstream, len(second_query_read)), second_query_read)
+            second_query = bulk(1, GOODIX_PROTECTED_READ, ident=23).raw
+            guest.sendall(second_query); self.assertEqual(recv_exact(upstream, len(second_query)), second_query)
+            second_query_completion = bulk(1, requested=64, ident=23).raw
+            upstream.sendall(second_query_completion); self.assertEqual(recv_exact(guest, len(second_query_completion)), second_query_completion)
+            second_query_ack = bulk(0x82, GOODIX_PROTECTED_READ_ACK, ident=22).raw
+            upstream.sendall(second_query_ack); self.assertEqual(recv_exact(guest, len(second_query_ack)), second_query_ack)
+            second_query_response_read = bulk(0x82, requested=0x8000, ident=24).raw
+            guest.sendall(second_query_response_read); self.assertEqual(recv_exact(upstream, len(second_query_response_read)), second_query_response_read)
+            second_query_response = bulk(0x82, GOODIX_PROTECTED_QUERY_RESPONSE, ident=24).raw
+            upstream.sendall(second_query_response)
+            self.assertEqual(recv_exact(guest, len(second_query_response)), second_query_response)
+            guest.sendall(bulk(1, b"forbidden", ident=25).raw)
             self.assert_closed(guest)
             self.assert_closed(upstream)
             thread.join(2); self.assertFalse(thread.is_alive())
@@ -452,9 +465,12 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual([event["decision"] for event in first], ["authorize", "forwarded"])
             self.assertEqual([event["decision"] for event in second], ["authorize", "forwarded"])
             query_events = [event for event in events if event.get("policy") == "exact-protected-query-response"]
-            self.assertEqual(len(query_events), 1)
-            self.assertEqual(query_events[0]["decision"], "forwarded")
-            self.assertTrue({"type", "id", "length", "sha256"}.isdisjoint(query_events[0]))
+            self.assertEqual(len(query_events), 2)
+            self.assertTrue(all(event["decision"] == "forwarded" for event in query_events))
+            self.assertTrue(all(
+                {"type", "id", "length", "sha256"}.isdisjoint(event)
+                for event in query_events
+            ))
 
     def test_rejected_sensitive_response_is_wiped_and_audited_without_packet_hash(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -469,8 +485,8 @@ class IntegrationTests(unittest.TestCase):
             with guard.state.condition:
                 guard.state.prefix_step = 4
                 guard.state.command00_deadline = time.monotonic() + 1
-                guard.state.protected_read_completed = True
-                guard.state.protected_read_acknowledged = True
+                guard.state.protected_query_completed_count = 1
+                guard.state.protected_query_ack_count = 1
                 guard.state.pending_in.add(77)
             upstream.sendall(bulk(0x82, b"wrong-sensitive-data", ident=77).raw)
             self.assert_closed(guest)
@@ -493,8 +509,8 @@ class IntegrationTests(unittest.TestCase):
             with guard.state.condition:
                 guard.state.prefix_step = 4
                 guard.state.command00_deadline = time.monotonic() + 1
-                guard.state.protected_read_completed = True
-                guard.state.protected_read_acknowledged = True
+                guard.state.protected_query_completed_count = 1
+                guard.state.protected_query_ack_count = 1
             upstream.sendall(frame(BUFFERED_BULK_PACKET, b"buffered-sensitive-data", 88, True))
             self.assert_closed(guest)
             thread.join(1); self.assertFalse(thread.is_alive())

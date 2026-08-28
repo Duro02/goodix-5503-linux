@@ -198,7 +198,13 @@ The guard's conservative backup-envelope hypothesis therefore failed closed
 without forwarding the response to Windows. This dynamically reclassifies the
 mode-0 transaction as a protected-record query/status operation; any actual
 record recovery must be a later, separately gated transaction. No fifth OUT
-reached hardware.
+reached hardware in that run.
+
+After the exact `01 01` response was forwarded in a reviewed run, the fifth
+OUT's complete audit hash was matched offline against the fixed candidate set.
+It is an exact second `E4/bb010002/mode0` query, including padding and packet ID,
+not a new command or write. It remained denied before hardware. Thus the pinned
+Windows path performs this same status query twice.
 
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8

@@ -6,13 +6,14 @@ can replace PSK/protected records and contains firmware-update paths. Disabling
 
 `goodix-5503-usbredir-guard` is a deliberately single-use stream proxy. It
 accepts only `27c6:5503`, safe standard enumeration, bounded 32 KiB bulk-IN
-reads, and exactly four pinned bulk-OUT transfers on endpoint 1:
+reads, and exactly five pinned bulk-OUT transfers on endpoint 1:
 
 ```text
 a00800a800050000000000a5 + 52 zero bytes (command 00; 64 bytes)
 a00600a6a803000000ff + 54 zero bytes (firmware-version A8; 64 bytes)
 a00600a6a803000000ff + 54 zero bytes (second identity read; 64 bytes)
 a00c00ace40900020001bb00000000ff + 48 zero bytes (protected query; 64 bytes)
+a00c00ace40900020001bb00000000ff + 48 zero bytes (second query; 64 bytes)
 ```
 
 This is a padded outer-A0 command-00 packet: `a8` is the outer-header checksum,
@@ -25,13 +26,13 @@ transferred length. It requires the exact command-B0 success ACK
 The second identical A8 is allowed only after exact first response frames
 `a00600a6b00300a8014e` and
 `a01b00bba818004746333235385f52545345435f4150505f31303036330012`.
-The fixed read-only `E4/bb010002` mode-0 request is then allowed. Its ACK and
-observed 10-byte command-E4 payload `01 01` response must both be exact. This is
-a query/status transaction, not the 324-byte protected record. The response is
+Two fixed read-only `E4/bb010002` mode-0 requests are then allowed. Each ACK and
+observed 10-byte command-E4 payload `01 01` response must be exact. These are
+query/status transactions, not the 324-byte protected record. Each response is
 still handled conservatively with one mutable backing buffer, no packet
 metadata/content hashing in the audit, and zeroing in a `finally` path.
 Buffered-bulk responses are always denied. Afterward only already-audited
-control-IN requests and bounded endpoint-`82` reads may pass. Any fifth bulk OUT
+control-IN requests and bounded endpoint-`82` reads may pass. Any sixth bulk OUT
 closes both streams before forwarding; so do a mismatched or failed completion,
 a nonexact ACK/data response, and the bounded observation deadline.
 At most three normal pre-command USB resets are allowed. They retain the
