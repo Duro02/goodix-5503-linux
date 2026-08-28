@@ -18,6 +18,7 @@ from goodix5503.image_capture import (
     _fixed_exchange,
     _milan_parse_other_body,
     _read_chip_id_bounded,
+    _read_official_loader_firmware,
     _read_otp_bounded,
     _read_register_exchange,
     _request_encrypted_clear_image,
@@ -126,6 +127,28 @@ class ImageDecodeTests(unittest.TestCase):
 
 
 class ImageEnvelopeTests(unittest.TestCase):
+    def test_official_loader_firmware_uses_command00_ack_then_a8_ack_data(self):
+        session = object.__new__(ReadOnlyUsbSession)
+        writes = []
+        firmware = b"GF3258_RTSEC_APP_10063\x00"
+        frames = iter(
+            (
+                _encode_packet(COMMAND_ACK, b"\x00\x01"),
+                _encode_packet(COMMAND_ACK, b"\xa8\x01"),
+                _encode_packet(0xA8, firmware),
+            )
+        )
+        session._ReadOnlyUsbSession__write_packet = writes.append
+        session._read_frame = lambda: next(frames)
+        self.assertEqual(_read_official_loader_firmware(session), "GF3258_RTSEC_APP_10063")
+        self.assertEqual(
+            writes,
+            [
+                _encode_packet(COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00"),
+                _encode_packet(0xA8, b"\x00\x00"),
+            ],
+        )
+
     def test_fixed_exchange_preserves_checksum_free_milan_payload(self):
         for command, result in (
             (COMMAND_POV_IMAGE_CHECK, b"\x00"),
@@ -859,6 +882,10 @@ class CaptureOrchestratorTests(unittest.TestCase):
             patch("goodix5503.image_capture._disable_core_dumps"),
             patch("goodix5503.image_capture._preflight_tls_runtime"),
             patch(
+                "goodix5503.image_capture._read_official_loader_firmware",
+                return_value="GF3258_RTSEC_APP_10063",
+            ),
+            patch(
                 "goodix5503.image_capture._read_live_verification",
                 return_value=bytearray(32),
             ),
@@ -934,6 +961,8 @@ class CaptureOrchestratorTests(unittest.TestCase):
 
         def fixed_exchange(_session, command, payload, _deadline=None):
             events.append(("exchange", command, payload))
+            if command == 0xA8:
+                return b"GF3258_RTSEC_APP_10063\x00"
             if command == COMMAND_POV_IMAGE_CHECK:
                 return b"\x00"
             return b""
@@ -1007,7 +1036,7 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertEqual(result["pixel_sum"], 0)
         self.assertEqual(result["fdt_response_lengths"], "1,1,1")
         requests = [event for event in events if event[0] == "request"]
-        self.assertEqual(requests, [("request", 0xA8, b"", True)])
+        self.assertEqual(requests, [])
         self.assertEqual(events.count(("verification-read",)), 1)
         self.assertEqual(events.count(("reset",)), 2)
         self.assertEqual(events.count(("read-chip-id",)), 1)
@@ -1015,8 +1044,14 @@ class CaptureOrchestratorTests(unittest.TestCase):
         self.assertLess(events.index(("sleep", 0.050)), events.index(("reset",)))
         self.assertLess(events.index(("reset",)), events.index(("sleep", 0.010)))
         self.assertLess(events.index(("sleep", 0.010)), events.index(("read-chip-id",)))
-        self.assertLess(events.index(("read-chip-id",)), events.index(("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00")))
-        self.assertLess(events.index(("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00")), events.index(("read-otp",)))
+        cold_ack_indices = [
+            index for index, event in enumerate(events)
+            if event == ("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00")
+        ]
+        self.assertEqual(len(cold_ack_indices), 2)
+        self.assertLess(cold_ack_indices[0], events.index(("verification-read",)))
+        self.assertLess(events.index(("read-chip-id",)), cold_ack_indices[1])
+        self.assertLess(cold_ack_indices[1], events.index(("read-otp",)))
         sleep.assert_has_calls([call(0.050), call(0.010)])
         runtime = [
             event for event in events if event[0] in ("exchange", "ack-only")
@@ -1025,17 +1060,22 @@ class CaptureOrchestratorTests(unittest.TestCase):
             runtime[0],
             ("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00"),
         )
+        self.assertEqual(runtime[1], ("exchange", 0xA8, b"\x00\x00"))
         self.assertEqual(
-            runtime[1],
-            ("exchange", COMMAND_POV_IMAGE_CHECK, b"\x00\x00"),
+            runtime[2],
+            ("ack-only", COMMAND_COLD_PRECHECK, b"\x00\x00\x00\x00"),
         )
-        self.assertEqual(runtime[2][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
-        self.assertEqual(len(runtime[2][2]), 256)
         self.assertEqual(
             runtime[3],
+            ("exchange", COMMAND_POV_IMAGE_CHECK, b"\x00\x00"),
+        )
+        self.assertEqual(runtime[4][0:2], ("exchange", COMMAND_UPLOAD_CONFIG))
+        self.assertEqual(len(runtime[4][2]), 256)
+        self.assertEqual(
+            runtime[5],
             ("ack-only", COMMAND_SET_DRIVER_STATE, b"\x01\x00"),
         )
-        self.assertEqual(len(runtime), 4)
+        self.assertEqual(len(runtime), 6)
         self.assertIn(("tls-close",), events)
         self.assertEqual(events[-1], ("close",))
         self.assertTrue(all(not any(otp) for otp in issued_otps))

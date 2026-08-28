@@ -127,6 +127,25 @@ def _ack_only(
     _check_ack(ack, command)
 
 
+def _read_official_loader_firmware(
+    session: ReadOnlyUsbSession,
+    operation_deadline: float | None = None,
+) -> str:
+    _ack_only(
+        session,
+        COMMAND_COLD_PRECHECK,
+        b"\x00\x00\x00\x00",
+        operation_deadline,
+    )
+    body = _fixed_exchange(
+        session,
+        COMMAND_FIRMWARE_VERSION,
+        b"\x00\x00",
+        operation_deadline,
+    )
+    return _decode_c_string(body)
+
+
 def _milan_parse_other_body(body: bytes) -> bytes:
     """Return payload already stripped of the checksum by ``_decode_packet``."""
     # The DLL parser subtracts the trailing protocol checksum from its packet
@@ -758,7 +777,7 @@ def run_prepared_clear_frame_capture(
         )
         session.wake_up(timeout_ms=_remaining_timeout_ms(operation_deadline))
         time.sleep(0.050)
-        firmware = _decode_c_string(session.request(COMMAND_FIRMWARE_VERSION))
+        firmware = _read_official_loader_firmware(session, operation_deadline)
         if firmware != EXPECTED_FIRMWARE:
             raise ImageCaptureError("unexpected firmware")
         live = _read_live_verification(session)

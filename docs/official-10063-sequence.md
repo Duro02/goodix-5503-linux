@@ -150,6 +150,25 @@ not reach the sensor in that run. Loopback capture SHA-256 is
 usbmon SHA-256 is
 `21e65fb9d708cad5eb094b3d06e78c21246353379b63f4e2a525c8aa5cfccb19`.
 
+A reviewed two-OUT guard then completed the firmware-A8 transaction. usbmon
+recorded exact response frames:
+
+```text
+A0 06 00 A6  B0 03 00 A8 01 4E
+A0 1B 00 BB  A8 18 00 47 46 33 32 35 38 5F 52 54 53 45 43 5F 41 50 50 5F 31 30 30 36 33 00 12
+```
+
+The first decodes as ACK for command A8, success; the second is command-A8 data
+`GF3258_RTSEC_APP_10063\0`. OUT completion preceded the ACK by 2.779 ms, and the
+31-byte data frame followed 39.499 ms later. The next application OUT was denied
+before hardware. Capture SHA-256 is
+`21ffdc507804c6f2862512110c858b27e3ec6fb6c5ac17c93b757f36111faa22`;
+guard audit SHA-256 is
+`d7a6f91158d41fbe8f8ee466b925c64ab2624fcc558801a5d197ecdea12b945b`.
+This dynamically proves ordinary separate ACK/data routing for firmware A8.
+The Linux clear-frame preflight now mirrors the exact official wire payloads:
+command `00/00000000` with ACK only, then `A8/0000` with ACK plus data.
+
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
 APP identity read and the R verification read `E4/bb020007`, then compares the

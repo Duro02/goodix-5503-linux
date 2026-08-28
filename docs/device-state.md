@@ -101,7 +101,12 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   A later owner-only loopback capture identified the denied second OUT as
   `a00600a6a803000000ff + 54*00`: command A8 with payload `00 00`, padded to
   64 bytes. Its complete usbredir packet hash exactly matches the denied audit
-  event. Concurrent usbmon proves this second OUT never reached hardware.
+  event. Concurrent usbmon proves this second OUT never reached hardware. A
+  reviewed two-OUT run subsequently forwarded that exact read-only firmware-A8
+  request and captured separate responses: ACK `a00600a6b00300a8014e`, then
+  data frame `a01b00bba818004746333235385f52545345435f4150505f31303036330012`
+  containing `GF3258_RTSEC_APP_10063\0`. The next OUT was denied before hardware.
+  This closes official command-00 ACK routing and firmware-A8 ACK/data routing.
 ```
 
 ## Interpretation
