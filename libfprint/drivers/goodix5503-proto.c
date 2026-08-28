@@ -14,6 +14,13 @@ read_le16 (const guint8 *data)
 }
 
 static void
+write_le16 (guint8 *data, guint16 value)
+{
+  data[0] = value & 0xff;
+  data[1] = value >> 8;
+}
+
+static void
 append_le16 (GByteArray *array, guint16 value)
 {
   const guint8 encoded[2] = { value & 0xff, value >> 8 };
@@ -141,6 +148,79 @@ length_error:
                        GOODIX5503_PROTO_ERROR_LENGTH,
                        "invalid Goodix packet length");
   return FALSE;
+}
+
+gboolean
+goodix5503_parse_fdt_response (const guint8  *response,
+                                gsize          response_len,
+                                guint16       *interrupt,
+                                guint16       *touch_flag,
+                                guint8         raw_base[GOODIX5503_FDT_BASE_SIZE],
+                                guint8         transformed_base[GOODIX5503_FDT_BASE_SIZE],
+                                GError       **error)
+{
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+  if (response == NULL || interrupt == NULL || touch_flag == NULL ||
+      raw_base == NULL || transformed_base == NULL ||
+      response_len != GOODIX5503_FDT_RESPONSE_SIZE)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_LENGTH,
+                           "invalid Goodix FDT response length");
+      return FALSE;
+    }
+
+  *interrupt = read_le16 (response);
+  *touch_flag = read_le16 (response + 2);
+  memcpy (raw_base, response + 4, GOODIX5503_FDT_BASE_SIZE);
+  for (gsize offset = 0; offset < GOODIX5503_FDT_BASE_SIZE; offset += 2)
+    {
+      guint16 word = read_le16 (raw_base + offset);
+
+      write_le16 (transformed_base + offset,
+                  ((((guint32) word >> 1) << 8) | 0x0080) & 0xffff);
+    }
+  return TRUE;
+}
+
+gboolean
+goodix5503_build_fdt_request (guint8         selector,
+                               const guint8   dac[GOODIX5503_DAC_SIZE],
+                               const guint8   base[GOODIX5503_FDT_BASE_SIZE],
+                               guint8         request[GOODIX5503_FDT_REQUEST_SIZE],
+                               GError       **error)
+{
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+  if ((selector & 0x0f) < 0x0c || (selector & 0x0f) > 0x0e ||
+      dac == NULL || base == NULL || request == NULL)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_INVALID,
+                           "invalid Goodix FDT request");
+      return FALSE;
+    }
+
+  request[0] = selector;
+  request[1] = 1;
+  memcpy (request + 2, dac, GOODIX5503_DAC_SIZE);
+  for (gsize offset = 0; offset < GOODIX5503_FDT_BASE_SIZE; offset += 2)
+    write_le16 (request + 2 + GOODIX5503_DAC_SIZE + offset,
+                (read_le16 (base + offset) & 0xff00) | 0x0080);
+  return TRUE;
+}
+
+gboolean
+goodix5503_fdt_bases_within_delta (const guint8 first[GOODIX5503_FDT_BASE_SIZE],
+                                    const guint8 second[GOODIX5503_FDT_BASE_SIZE],
+                                    guint16      delta)
+{
+  g_return_val_if_fail (first != NULL && second != NULL, FALSE);
+
+  for (gsize offset = 0; offset < GOODIX5503_FDT_BASE_SIZE; offset += 2)
+    if (ABS ((gint) read_le16 (first + offset) -
+             (gint) read_le16 (second + offset)) > delta)
+      return FALSE;
+  return TRUE;
 }
 
 gboolean

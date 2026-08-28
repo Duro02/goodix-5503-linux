@@ -77,6 +77,54 @@ test_packet_rejects_mutations (void)
 }
 
 static void
+test_fdt_response_and_request (void)
+{
+  const guint8 response[GOODIX5503_FDT_RESPONSE_SIZE] = {
+    0x82, 0x01, 0x3f, 0x00, 0x65, 0x01, 0x4b, 0x01,
+    0x6b, 0x01, 0x50, 0x01, 0x6b, 0x01, 0x47, 0x01,
+  };
+  const guint8 dac[GOODIX5503_DAC_SIZE] =
+    { 0x8b, 0x00, 0x84, 0x00, 0x8c, 0x00, 0x88, 0x00 };
+  const guint8 zero_base[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  const guint8 expected_request[GOODIX5503_FDT_REQUEST_SIZE] = {
+    0x0d, 0x01, 0x8b, 0x00, 0x84, 0x00, 0x8c, 0x00,
+    0x88, 0x00, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00,
+    0x80, 0x00, 0x80, 0x00, 0x80, 0x00,
+  };
+  const guint8 expected_raw[GOODIX5503_FDT_BASE_SIZE] = {
+    0x65, 0x01, 0x4b, 0x01, 0x6b, 0x01,
+    0x50, 0x01, 0x6b, 0x01, 0x47, 0x01,
+  };
+  guint8 raw[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 transformed[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 request[GOODIX5503_FDT_REQUEST_SIZE] = { 0 };
+  guint16 interrupt = 0;
+  guint16 touch_flag = 0;
+  g_autoptr(GError) error = NULL;
+
+  g_assert_true (goodix5503_parse_fdt_response (
+    response, sizeof response, &interrupt, &touch_flag, raw, transformed,
+    &error));
+  g_assert_no_error (error);
+  g_assert_cmphex (interrupt, ==, 0x0182);
+  g_assert_cmphex (touch_flag, ==, 0x003f);
+  g_assert_cmpmem (raw, sizeof raw, expected_raw, sizeof expected_raw);
+  g_assert_true (goodix5503_fdt_bases_within_delta (raw, raw, 0));
+
+  g_assert_true (goodix5503_build_fdt_request (
+    0x0d, dac, zero_base, request, &error));
+  g_assert_no_error (error);
+  g_assert_cmpmem (request, sizeof request, expected_request,
+                   sizeof expected_request);
+
+  g_assert_false (goodix5503_parse_fdt_response (
+    response, sizeof response - 1, &interrupt, &touch_flag, raw, transformed,
+    &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_LENGTH);
+}
+
+static void
 test_packed_decoder (void)
 {
   const guint8 group[] = { 0xa5, 0x34, 0x67, 0x89, 0xbc, 0xd2 };
@@ -135,6 +183,8 @@ main (int argc, char **argv)
   g_test_add_func ("/goodix5503/packet/no-checksum", test_no_checksum_packet);
   g_test_add_func ("/goodix5503/packet/reject-mutations",
                    test_packet_rejects_mutations);
+  g_test_add_func ("/goodix5503/fdt/response-request",
+                   test_fdt_response_and_request);
   g_test_add_func ("/goodix5503/image/decode", test_packed_decoder);
   g_test_add_func ("/goodix5503/image/difference", test_difference_image);
   return g_test_run ();

@@ -9,6 +9,10 @@ G_BEGIN_DECLS
 #define GOODIX5503_IMAGE_HEIGHT 64
 #define GOODIX5503_PIXEL_COUNT (GOODIX5503_IMAGE_WIDTH * GOODIX5503_IMAGE_HEIGHT)
 #define GOODIX5503_PACKED_IMAGE_SIZE 7680
+#define GOODIX5503_FDT_BASE_SIZE 12
+#define GOODIX5503_FDT_RESPONSE_SIZE 16
+#define GOODIX5503_DAC_SIZE 8
+#define GOODIX5503_FDT_REQUEST_SIZE 22
 
 typedef enum
 {
@@ -33,6 +37,24 @@ gboolean goodix5503_packet_decode (const guint8  *packet,
                                     gboolean       checksum,
                                     GByteArray   **body,
                                     GError       **error);
+
+gboolean goodix5503_parse_fdt_response (const guint8  *response,
+                                         gsize          response_len,
+                                         guint16       *interrupt,
+                                         guint16       *touch_flag,
+                                         guint8         raw_base[GOODIX5503_FDT_BASE_SIZE],
+                                         guint8         transformed_base[GOODIX5503_FDT_BASE_SIZE],
+                                         GError       **error);
+
+gboolean goodix5503_build_fdt_request (guint8         selector,
+                                        const guint8   dac[GOODIX5503_DAC_SIZE],
+                                        const guint8   base[GOODIX5503_FDT_BASE_SIZE],
+                                        guint8         request[GOODIX5503_FDT_REQUEST_SIZE],
+                                        GError       **error);
+
+gboolean goodix5503_fdt_bases_within_delta (const guint8 first[GOODIX5503_FDT_BASE_SIZE],
+                                             const guint8 second[GOODIX5503_FDT_BASE_SIZE],
+                                             guint16      delta);
 
 gboolean goodix5503_decode_packed_image (const guint8  *packed,
                                           gsize          packed_len,
