@@ -44,6 +44,7 @@ GQuark goodix5503_proto_error_quark (void);
 
 Goodix5503FrameBuffer *goodix5503_frame_buffer_new (void);
 void goodix5503_frame_buffer_free (Goodix5503FrameBuffer *buffer);
+gsize goodix5503_frame_buffer_length (Goodix5503FrameBuffer *buffer);
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (Goodix5503FrameBuffer,
                                goodix5503_frame_buffer_free)
 

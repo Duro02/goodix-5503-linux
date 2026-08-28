@@ -11,10 +11,15 @@ G_BEGIN_DECLS
 typedef enum
 {
   GOODIX5503_SECURITY_ERROR_CRYPTO,
+  GOODIX5503_SECURITY_ERROR_STATE,
 } Goodix5503SecurityError;
 
 #define GOODIX5503_SECURITY_ERROR (goodix5503_security_error_quark ())
 GQuark goodix5503_security_error_quark (void);
+
+gboolean goodix5503_load_host_psk (
+  guint8   psk[GOODIX5503_SECURITY_PSK_SIZE],
+  GError **error);
 
 gboolean goodix5503_derive_verification_record (
   const guint8 psk[GOODIX5503_SECURITY_PSK_SIZE],

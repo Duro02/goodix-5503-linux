@@ -62,6 +62,13 @@ goodix5503_frame_buffer_free (Goodix5503FrameBuffer *buffer)
   g_free (buffer);
 }
 
+gsize
+goodix5503_frame_buffer_length (Goodix5503FrameBuffer *buffer)
+{
+  g_return_val_if_fail (buffer != NULL, 0);
+  return buffer->bytes->len;
+}
+
 gboolean
 goodix5503_frame_buffer_append (Goodix5503FrameBuffer  *buffer,
                                  const guint8           *data,

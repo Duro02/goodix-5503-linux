@@ -1,11 +1,70 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "goodix5503-security.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 
 G_DEFINE_QUARK (goodix5503-security-error-quark, goodix5503_security_error)
+
+#define GOODIX5503_PSK_PATH "/var/lib/fprint/goodix5503/psk.bin"
+
+gboolean
+goodix5503_load_host_psk (guint8   psk[GOODIX5503_SECURITY_PSK_SIZE],
+                           GError **error)
+{
+  struct stat status;
+  gsize offset = 0;
+  guint8 extra;
+  int descriptor = -1;
+  gboolean result = FALSE;
+
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+  if (psk == NULL)
+    goto state_error;
+  descriptor = open (GOODIX5503_PSK_PATH,
+                     O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY);
+  if (descriptor < 0 || fstat (descriptor, &status) != 0 ||
+      !S_ISREG (status.st_mode) || status.st_uid != 0 || status.st_nlink != 1 ||
+      (status.st_mode & 0777) != 0600 ||
+      status.st_size != GOODIX5503_SECURITY_PSK_SIZE)
+    goto state_error;
+
+  while (offset < GOODIX5503_SECURITY_PSK_SIZE)
+    {
+      ssize_t count = read (descriptor, psk + offset,
+                            GOODIX5503_SECURITY_PSK_SIZE - offset);
+
+      if (count < 0 && errno == EINTR)
+        continue;
+      if (count <= 0)
+        goto state_error;
+      offset += count;
+    }
+  if (read (descriptor, &extra, 1) != 0)
+    goto state_error;
+  result = TRUE;
+  goto out;
+
+state_error:
+  g_set_error_literal (error, GOODIX5503_SECURITY_ERROR,
+                       GOODIX5503_SECURITY_ERROR_STATE,
+                       "Goodix host PSK state is unavailable or unsafe");
+  if (psk)
+    OPENSSL_cleanse (psk, GOODIX5503_SECURITY_PSK_SIZE);
+out:
+  if (descriptor >= 0)
+    close (descriptor);
+  return result;
+}
 
 gboolean
 goodix5503_derive_verification_record (
