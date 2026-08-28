@@ -543,7 +543,9 @@ class TlsPlaintextBoundaryTests(unittest.TestCase):
 class FreshBaseCoordinatorTests(unittest.TestCase):
     @staticmethod
     def base(value):
-        return struct.pack("<6H", *(value for _index in range(6)))
+        return b"\x82\x01\x3f\x00" + struct.pack(
+            "<6H", *(value for _index in range(6))
+        )
 
     def test_runs_proven_fresh_base_sequence_and_returns_image_base(self):
         responses = iter((self.base(1000), self.base(1002), self.base(1004)))
@@ -604,17 +606,17 @@ class FreshBaseCoordinatorTests(unittest.TestCase):
             prefix[:] = b"\x00" * len(prefix)
             plaintext[:] = b"\x00" * len(plaintext)
 
-    def test_rejects_oversized_command36_body_before_image(self):
+    def test_rejects_malformed_command36_body_before_image(self):
         with (
             patch(
                 "goodix5503.image_capture._fixed_exchange",
-                return_value=bytes(13),
+                return_value=bytes(17),
             ),
             patch(
                 "goodix5503.image_capture._receive_hu_plaintext_image"
             ) as receive,
         ):
-            with self.assertRaisesRegex(ImageCaptureError, "exceeds 12"):
+            with self.assertRaisesRegex(ImageCaptureError, "exactly 16"):
                 _acquire_hu_fresh_base_frame(
                     object(),
                     object(),

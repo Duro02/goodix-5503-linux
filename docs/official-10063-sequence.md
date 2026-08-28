@@ -423,16 +423,15 @@ content-dependent failure: it is a fixed row copy. The free coordinator performs
 the same decode and crop and retains the result through the later acquisitions
 before wiping it; no proprietary enclave implementation is required.
 
-Each command-36 call requests a bounded 12-byte payload after its separate ACK.
-`McuParseOther` at `0x1800a74e0` subtracts the trailing wire checksum represented
-in its packet-object length and copies from the unchanged payload pointer; it
-does **not** remove a leading result byte. The free `_decode_packet()` has
-already removed that checksum, so the payload must pass unchanged to the HU
-parser. Payloads 0..12 are right-zero-padded and anything over 12 remains an
-error. A raw usbmon capture at commit `d6d7a4f` independently confirmed the
-current 16-byte result is not stale data or leftover framing. Frames 191/193/195
-contain the exact 22-byte command-36 request, exact success ACK, and full A0
-response respectively:
+Each command-36 call ultimately returns a bounded 12-byte HU base after its
+separate ACK, but wire command 36 uses the dedicated `McuParseFdt` parser at
+`0x1800a6650`, not `McuParseOther`. `McuParseFdt` consumes two LE16 header fields,
+then copies the profile's exact base size from payload offset four. Its packet
+length includes the trailing checksum, so for a six-word HU base the minimum
+wire data is 4 + 12 + 1 checksum bytes; `_decode_packet()` removes that checksum
+and presents an exact 16-byte body to the free parser. A raw usbmon capture at
+commit `d6d7a4f` independently confirmed that body. Frames 191/193/195 contain
+the exact 22-byte command-36 request, exact success ACK, and full A0 response:
 
 ```text
 OUT: a01a00ba 361700 0d018b0083008c008700800080008000800080008000 2e
@@ -445,24 +444,24 @@ response read was queued after the ACK under a distinct URB, command matching
 was correct, and cleanup sent only A2 reset after the fatal result. No command
 20 was sent. Capture SHA-256 is
 `d20ac47a7f631b07203e03e05e9c2036911ce0fcb38536764a7a86aa0ddd1674`.
-The eight plausible LE16 values are not sufficient evidence to reinterpret or
-truncate the official six-word result. The pinned Milan `McuParseOther` subtracts only the trailing protocol checksum
-represented in its packet-object length and copies from the unchanged payload
-pointer. Because the 16 bytes above are already checksum-free payload, all 16
-reach the manual-FDT caller's 12-byte capacity check and the normal IoHub path
-rejects them. The official consumer does not silently remove the leading four
-bytes.
+Public vendor logs from `tlambertz/goodix-fingerprint-reversing` independently
+show the same parser contract on an older Milan profile: a successful raw body
+starts with two LE16 fields, `McuParseFdt` logs the second as `fdt touch flag`,
+and copies the remaining profile-sized base. The pinned parser proves the same
+layout for HU: it reads the interrupt word, derives the touch flag from bytes
+2..3, and copies 12 bytes starting at offset four. For manual operation it
+selects the manual-base branch before that copy. The observed body therefore
+parses losslessly as header `82 01 3f 00` followed by the six raw LE16 base
+words; this is official field removal, not truncation or guessed normalization.
+Bodies other than exactly 16 checksum-free bytes remain fatal in the free path.
 
 A combined read-only 8051 image, formed from the low `0x2000` bytes of the
 embedded `MILAN_RTSEC_IAP_10027` resident image and the 10063 APP at `0x2000`,
-allows lower generic-pointer helpers to be resolved. Bounded analysis still
-finds no serializer or data-flow proof for a `status + bitmap + six words`
-layout. It confirms only that internal code can write `0x3f` to XDATA `0xc0d0`;
-no read/copy from that location to the wire buffer has been established.
-Consequently the observed body remains an extended/unknown response, not a
-normal result that may be normalized locally.
+provides supporting but nonessential evidence: internal code writes `0x3f` to
+XDATA `0xc0d0`. The host parser, rather than this unclosed MCU data flow, is the
+authority for the four-byte header boundary.
 
-Output1 remains the padded raw six-word response. Output2 transforms each
+Output1 is the exact six-word body after `McuParseFdt`. Output2 transforms each
 raw LE16 word `x` to `((x >> 1) << 8) | 0x80`; accepted output2 becomes the base
 for later requests. The DLL retries inconsistent pairs without a numeric bound;
 the free implementation must instead use the existing operation deadline and a
@@ -496,8 +495,8 @@ addresses are consistent with ROM services. Radare2 recovers a candidate state-s
 `0x0c`, `0x0d`, and `0x0e`; case `0x0d` reaches mapped address `0x49f2`.
 Static evidence does not yet tie those selector values to wire commands 32, 34,
 and 36, so they must not be labelled down, up, and manual solely from their
-ordering. A nearby `0x3f` write and 16-byte copy are likewise not evidence of
-the response layout: the copy source uses the 8051 generic-pointer code-space
-tag and points into the lower resident image. The data flow to the four leading
-response bytes remains unclosed, so none of these observations authorizes
-slicing the observed 16-byte command-36 body.
+ordering. A nearby `0x3f` write and 16-byte copy are likewise not independent
+evidence of the response layout: the copy source uses the 8051 generic-pointer
+code-space tag and points into the lower resident image. MCU data flow to the
+four leading response bytes remains unclosed; their parsing is instead justified
+by the pinned host `McuParseFdt` implementation described above.

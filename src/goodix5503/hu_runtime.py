@@ -127,15 +127,15 @@ def build_hu_image_request(dac_field: bytes | bytearray) -> bytes:
 def parse_hu_manual_fdt_response(
     response: bytes | bytearray,
 ) -> tuple[bytearray, bytearray]:
-    """Return exact raw and driver-transformed forms of a command-36 body."""
-    if len(response) > 12:
+    """Parse the HU FDT header and return its six-word base forms."""
+    # McuParseFdt consumes two LE16 header fields before copying the
+    # profile-sized base. The protocol checksum was already removed by the
+    # packet decoder, so the normal HU body is exactly 4 + 12 bytes.
+    if len(response) != 16:
         raise HuRuntimeError(
-            f"HU manual FDT response length {len(response)} exceeds 12 bytes"
+            f"HU manual FDT response must be exactly 16 bytes, got {len(response)}"
         )
-    # The pinned wrapper supplies a zeroed 12-byte destination and accepts any
-    # transport body up to that capacity before processing all 12 bytes.
-    raw = bytearray(12)
-    raw[: len(response)] = response
+    raw = bytearray(response[4:])
     transformed = bytearray(12)
     try:
         for offset in range(0, 12, 2):

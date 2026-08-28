@@ -160,10 +160,11 @@ class HuRuntimeTests(unittest.TestCase):
         )
 
     def test_manual_fdt_response_builds_raw_and_transformed_forms(self):
-        response = bytes.fromhex("349678915592aa85008cfe86")
+        base = bytes.fromhex("349678915592aa85008cfe86")
+        response = bytes.fromhex("82013f00") + base
         raw, transformed = parse_hu_manual_fdt_response(response)
         try:
-            self.assertEqual(raw, response)
+            self.assertEqual(raw, base)
             self.assertEqual(
                 transformed,
                 bytearray.fromhex("801a80bc802a80d58000807f"),
@@ -171,16 +172,9 @@ class HuRuntimeTests(unittest.TestCase):
         finally:
             raw[:] = b"\x00" * len(raw)
             transformed[:] = b"\x00" * len(transformed)
-        for short in (b"", b"\x34", bytes.fromhex("349678915592aa85008cfe")):
-            padded, transformed = parse_hu_manual_fdt_response(short)
-            try:
-                self.assertEqual(padded[: len(short)], short)
-                self.assertEqual(padded[len(short) :], bytes(12 - len(short)))
-            finally:
-                padded[:] = b"\x00" * len(padded)
-                transformed[:] = b"\x00" * len(transformed)
-        with self.assertRaisesRegex(HuRuntimeError, "exceeds 12"):
-            parse_hu_manual_fdt_response(bytes(13))
+        for malformed in (bytes(15), bytes(17)):
+            with self.assertRaisesRegex(HuRuntimeError, "exactly 16"):
+                parse_hu_manual_fdt_response(malformed)
 
     def test_fdt_delta_comparison_is_inclusive_for_all_six_words(self):
         first = bytes.fromhex("100020003000400050006000")
