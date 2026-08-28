@@ -138,6 +138,18 @@ hardware and that IN was cancelled. Thus the first official transaction closes
 as ordinary command-00 ACK routing; it is not an A8 firmware response and does
 not supply a separate data frame.
 
+A separate owner-only loopback capture then identified that denied second OUT
+without forwarding it to hardware:
+`a00600a6a803000000ff + 54*00`. This is the ordinary outer-A0 command-A8
+firmware-version request with payload `00 00`, padded to 64 bytes. Its complete
+usbredir packet SHA-256 exactly matches the guard's denied-frame audit hash
+`35e9cd3f285a2dc31c1d98c22ce1cdab2ce15ddf810967f7ba63245e5dd92e68`.
+Concurrent usbmon contains only command 00 and its ACK, proving command A8 did
+not reach the sensor in that run. Loopback capture SHA-256 is
+`ebd77807a2615937d277d793b3443cc543119bad8798ebf2dbf980a2194e0665`;
+usbmon SHA-256 is
+`21e65fb9d708cad5eb094b3d06e78c21246353379b63f4e2a525c8aa5cfccb19`.
+
 The free preflight is an explicit **functional PSK substitution**, not a
 byte-for-byte replay of the paired Windows loader: it performs one bounded A8
 APP identity read and the R verification read `E4/bb020007`, then compares the

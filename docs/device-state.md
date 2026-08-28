@@ -98,6 +98,10 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   `3bc86861dfea11d5838e6e0fb406151b5a60c5ee87889b184a852a08a2f80a10`;
   guard audit SHA-256 is
   `f1908bb21fa3eb6d0589943c5adec1c36a0d4ed1edd49f7226e85befc436d998`.
+  A later owner-only loopback capture identified the denied second OUT as
+  `a00600a6a803000000ff + 54*00`: command A8 with payload `00 00`, padded to
+  64 bytes. Its complete usbredir packet hash exactly matches the denied audit
+  event. Concurrent usbmon proves this second OUT never reached hardware.
 ```
 
 ## Interpretation
