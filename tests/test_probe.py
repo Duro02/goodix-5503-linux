@@ -21,6 +21,7 @@ from goodix5503.probe import (
     _decode_r_read_response,
     _decode_packet,
     _encode_packet,
+    _official_device_layout,
     _official_loader_usb_reset_sequence,
     _usb_identity,
     _verify_secure_backup,
@@ -52,6 +53,69 @@ def reader_session(*chunks):
     return session
 
 
+class OfficialEndpoint:
+    def __init__(self, address, *, attributes=2, packet_size=512):
+        self.bEndpointAddress = address
+        self.bmAttributes = attributes
+        self.wMaxPacketSize = packet_size
+
+    def read(self, _size, timeout):
+        import usb.core
+
+        self.timeout = timeout
+        raise usb.core.USBTimeoutError("quiet")
+
+
+class OfficialInterface:
+    def __init__(self, *, number=0, alternate=0, endpoints=None):
+        self.bInterfaceNumber = number
+        self.bAlternateSetting = alternate
+        self.bInterfaceClass = 0xFF
+        self.bInterfaceSubClass = 0
+        self.bInterfaceProtocol = 0
+        self.endpoints = endpoints or [OfficialEndpoint(0x01), OfficialEndpoint(0x82)]
+
+    def __iter__(self):
+        return iter(self.endpoints)
+
+
+class OfficialConfig:
+    bConfigurationValue = 1
+
+    def __init__(self, interface=None):
+        self.interface = interface or OfficialInterface()
+
+    def __iter__(self):
+        return iter((self.interface,))
+
+
+class OfficialDevice:
+    idVendor = 0x27C6
+    idProduct = 0x5503
+    bus = 3
+    address = 2
+    port_numbers = (3,)
+    bDeviceClass = 0xEF
+    bDeviceSubClass = 2
+    bDeviceProtocol = 1
+
+    def __init__(self, *, config=None, driver=False):
+        self.config = config or OfficialConfig()
+        self.driver = driver
+        self.reset_calls = 0
+
+    def get_active_configuration(self):
+        return self.config
+
+    def is_kernel_driver_active(self, interface):
+        if interface != 0:
+            raise AssertionError("unexpected interface ownership query")
+        return self.driver
+
+    def reset(self):
+        self.reset_calls += 1
+
+
 class PacketTests(unittest.TestCase):
     def test_session_refuses_ambiguous_identical_devices(self):
         with (
@@ -75,7 +139,15 @@ class PacketTests(unittest.TestCase):
                 self.reset_calls += 1
 
         devices = [Device() for _ in range(4)]
+
+        def layout(device, expected=None):
+            identity = _usb_identity(device)
+            if expected is not None and identity != expected:
+                raise RuntimeError("identity/topology changed")
+            return identity, None, None, None
+
         with (
+            patch("goodix5503.probe._official_device_layout", side_effect=layout),
             patch(
                 "goodix5503.probe._find_unique_device",
                 side_effect=devices[1:],
@@ -117,6 +189,12 @@ class PacketTests(unittest.TestCase):
                 devices = [Device(index == failing_index) for index in range(3)]
                 with (
                     patch(
+                        "goodix5503.probe._official_device_layout",
+                        side_effect=lambda device, _expected=None: (
+                            _usb_identity(device), None, None, None
+                        ),
+                    ),
+                    patch(
                         "goodix5503.probe._find_unique_device",
                         side_effect=devices[1:],
                     ),
@@ -127,6 +205,27 @@ class PacketTests(unittest.TestCase):
                     _official_loader_usb_reset_sequence(devices[0])
                 self.assertEqual(sum(device.reset_calls for device in devices), failing_index + 1)
                 self.assertEqual(dispose.call_count, failing_index + 1)
+
+    def test_official_loader_reset_sequence_disposes_on_clock_failure(self):
+        devices = [OfficialDevice() for _ in range(4)]
+        with (
+            patch(
+                "goodix5503.probe._find_unique_device",
+                side_effect=devices[1:],
+            ),
+            patch("goodix5503.probe.usb.util.dispose_resources") as dispose,
+            patch("goodix5503.probe.time.sleep"),
+            patch(
+                "goodix5503.probe.time.monotonic",
+                side_effect=RuntimeError("clock failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "clock failed"),
+        ):
+            _official_loader_usb_reset_sequence(devices[0])
+        self.assertEqual(
+            dispose.call_args_list,
+            [call(device) for device in devices],
+        )
 
     def test_official_loader_reset_sequence_rejects_reconnect_or_topology_drift(self):
         class Device:
@@ -142,7 +241,14 @@ class PacketTests(unittest.TestCase):
         initial = Device()
         changed = Device()
         changed.address = 4
+        def layout(device, expected=None):
+            identity = _usb_identity(device)
+            if expected is not None and identity != expected:
+                raise RuntimeError("identity/topology changed")
+            return identity, None, None, None
+
         with (
+            patch("goodix5503.probe._official_device_layout", side_effect=layout),
             patch("goodix5503.probe._find_unique_device", return_value=changed),
             patch("goodix5503.probe.usb.util.dispose_resources") as dispose,
             patch("goodix5503.probe.time.sleep"),
@@ -150,6 +256,57 @@ class PacketTests(unittest.TestCase):
         ):
             _official_loader_usb_reset_sequence(initial)
         self.assertEqual(dispose.call_args_list, [call(initial), call(changed)])
+
+    def test_official_layout_rejects_driver_before_any_reset(self):
+        device = OfficialDevice(driver=True)
+        with self.assertRaisesRegex(RuntimeError, "refusing USB reset"):
+            _official_device_layout(device)
+        self.assertEqual(device.reset_calls, 0)
+
+    def test_official_reset_rejects_driver_between_resets(self):
+        initial = OfficialDevice()
+        claimed = OfficialDevice(driver=True)
+        with (
+            patch("goodix5503.probe._find_unique_device", return_value=claimed),
+            patch("goodix5503.probe.usb.util.dispose_resources") as dispose,
+            patch("goodix5503.probe.time.sleep"),
+            self.assertRaisesRegex(RuntimeError, "refusing USB reset"),
+        ):
+            _official_loader_usb_reset_sequence(initial)
+        self.assertEqual(initial.reset_calls, 1)
+        self.assertEqual(claimed.reset_calls, 0)
+        self.assertEqual(dispose.call_args_list, [call(initial), call(claimed)])
+
+    def test_official_layout_pins_interface_alt_and_endpoint_attributes(self):
+        for interface in (
+            OfficialInterface(number=1),
+            OfficialInterface(alternate=1),
+            OfficialInterface(
+                endpoints=[
+                    OfficialEndpoint(0x01, attributes=3),
+                    OfficialEndpoint(0x82),
+                ]
+            ),
+        ):
+            with self.subTest(interface=interface):
+                device = OfficialDevice(config=OfficialConfig(interface))
+                with self.assertRaisesRegex(RuntimeError, "descriptor"):
+                    _official_device_layout(device)
+
+    def test_official_reset_disposes_when_descriptor_property_raises(self):
+        class BrokenDevice(OfficialDevice):
+            @property
+            def bDeviceClass(self):
+                raise RuntimeError("descriptor read failed")
+
+        device = BrokenDevice()
+        with (
+            patch("goodix5503.probe.usb.util.dispose_resources") as dispose,
+            self.assertRaisesRegex(RuntimeError, "descriptor read failed"),
+        ):
+            _official_loader_usb_reset_sequence(device)
+        self.assertEqual(device.reset_calls, 0)
+        dispose.assert_called_once_with(device)
 
     def test_official_loader_session_reacquires_exact_descriptors_and_settles(self):
         import usb.core
@@ -167,6 +324,7 @@ class PacketTests(unittest.TestCase):
 
         class Interface:
             bInterfaceNumber = 0
+            bAlternateSetting = 0
             bInterfaceClass = 0xFF
             bInterfaceSubClass = 0
             bInterfaceProtocol = 0
@@ -178,6 +336,8 @@ class PacketTests(unittest.TestCase):
                 return iter(self.endpoints)
 
         class Config:
+            bConfigurationValue = 1
+
             def __init__(self, interface):
                 self.interface = interface
 
@@ -228,6 +388,41 @@ class PacketTests(unittest.TestCase):
         self.assertAlmostEqual(sleep.call_args.args[0], 0.4)
         dispose.assert_called_once_with(device)
 
+    def test_official_loader_settle_uses_elapsed_time_without_extra_sleep(self):
+        device = OfficialDevice()
+        identity = _usb_identity(device)
+        with (
+            patch("goodix5503.probe._find_unique_device", side_effect=(device, device)),
+            patch(
+                "goodix5503.probe._official_loader_usb_reset_sequence",
+                return_value=(device, 10.0, identity),
+            ),
+            patch("goodix5503.probe.usb.util.claim_interface"),
+            patch("goodix5503.probe.usb.util.release_interface"),
+            patch("goodix5503.probe.usb.util.dispose_resources"),
+            patch("goodix5503.probe.time.monotonic", return_value=10.7),
+            patch("goodix5503.probe.time.sleep") as sleep,
+        ):
+            session = ReadOnlyUsbSession._for_official_loader()
+            session.close()
+        sleep.assert_not_called()
+
+    def test_generic_session_performs_zero_usb_resets(self):
+        device = OfficialDevice()
+        with (
+            patch("goodix5503.probe._find_unique_device", return_value=device),
+            patch("goodix5503.probe._official_loader_usb_reset_sequence") as resets,
+            patch("goodix5503.probe.usb.util.claim_interface"),
+            patch("goodix5503.probe.usb.util.release_interface"),
+            patch("goodix5503.probe.usb.util.dispose_resources"),
+            patch("goodix5503.probe.time.sleep") as sleep,
+        ):
+            session = ReadOnlyUsbSession()
+            session.close()
+        resets.assert_not_called()
+        self.assertEqual(device.reset_calls, 0)
+        sleep.assert_not_called()
+
     def test_official_loader_session_rejects_descriptor_drift_before_claim(self):
         class Endpoint:
             bmAttributes = 2
@@ -238,12 +433,19 @@ class PacketTests(unittest.TestCase):
 
         class Interface:
             bInterfaceNumber = 0
+            bAlternateSetting = 0
             bInterfaceClass = 0xFF
             bInterfaceSubClass = 0
             bInterfaceProtocol = 0
 
             def __iter__(self):
                 return iter((Endpoint(0x02), Endpoint(0x82)))
+
+        class Config:
+            bConfigurationValue = 1
+
+            def __iter__(self):
+                return iter((Interface(),))
 
         class Device:
             idVendor = 0x27C6
@@ -256,7 +458,7 @@ class PacketTests(unittest.TestCase):
             bDeviceProtocol = 1
 
             def get_active_configuration(self):
-                return (Interface(),)
+                return Config()
 
             def is_kernel_driver_active(self, _interface):
                 return False
@@ -275,6 +477,76 @@ class PacketTests(unittest.TestCase):
             ReadOnlyUsbSession._for_official_loader()
         claim.assert_not_called()
         dispose.assert_called_once_with(device)
+
+    def test_official_loader_final_check_closes_on_identity_owner_or_descriptor_drift(self):
+        class BrokenDescriptorDevice(OfficialDevice):
+            @property
+            def bDeviceClass(self):
+                raise RuntimeError("descriptor read failed")
+
+        for kind in ("identity", "owner", "descriptor"):
+            with self.subTest(kind=kind):
+                device = OfficialDevice()
+                observed = (
+                    BrokenDescriptorDevice()
+                    if kind == "descriptor"
+                    else OfficialDevice(driver=kind == "owner")
+                )
+                if kind == "identity":
+                    observed.address = 4
+                identity = _usb_identity(device)
+                with (
+                    patch(
+                        "goodix5503.probe._find_unique_device",
+                        side_effect=(device, observed),
+                    ),
+                    patch(
+                        "goodix5503.probe._official_loader_usb_reset_sequence",
+                        return_value=(device, 10.0, identity),
+                    ),
+                    patch("goodix5503.probe.usb.util.claim_interface"),
+                    patch("goodix5503.probe.usb.util.release_interface") as release,
+                    patch("goodix5503.probe.usb.util.dispose_resources") as dispose,
+                    patch("goodix5503.probe.time.monotonic", return_value=10.7),
+                    self.assertRaises(RuntimeError),
+                ):
+                    ReadOnlyUsbSession._for_official_loader()
+                release.assert_called_once_with(device, 0)
+                self.assertEqual(
+                    dispose.call_args_list,
+                    [call(observed), call(device)],
+                )
+
+    def test_official_loader_claim_and_drain_failures_close(self):
+        for phase in ("claim", "drain"):
+            with self.subTest(phase=phase):
+                device = OfficialDevice()
+                identity = _usb_identity(device)
+                if phase == "drain":
+                    device.config.interface.endpoints[1].read = lambda *_a, **_k: (
+                        (_ for _ in ()).throw(RuntimeError("drain failed"))
+                    )
+                claim_error = RuntimeError("claim failed") if phase == "claim" else None
+                with (
+                    patch("goodix5503.probe._find_unique_device", return_value=device),
+                    patch(
+                        "goodix5503.probe._official_loader_usb_reset_sequence",
+                        return_value=(device, 10.0, identity),
+                    ),
+                    patch(
+                        "goodix5503.probe.usb.util.claim_interface",
+                        side_effect=claim_error,
+                    ),
+                    patch("goodix5503.probe.usb.util.release_interface") as release,
+                    patch("goodix5503.probe.usb.util.dispose_resources") as dispose,
+                    self.assertRaisesRegex(RuntimeError, f"{phase} failed"),
+                ):
+                    ReadOnlyUsbSession._for_official_loader()
+                if phase == "claim":
+                    release.assert_not_called()
+                else:
+                    release.assert_called_once_with(device, 0)
+                dispose.assert_called_once_with(device)
 
     def test_raw_wake_writes_exactly_one_unframed_byte(self):
         class Endpoint:
