@@ -159,8 +159,6 @@ test_capture_router_valid_and_reversed (void)
   g_assert_true (goodix5503_capture_consume_frame (
     &state, ack->data, ack->len, &envelope, &error));
   g_assert_true (goodix5503_capture_consume_frame (
-    &state, delayed->data, delayed->len, &envelope, &error));
-  g_assert_true (goodix5503_capture_consume_frame (
     &state, prelude->data, prelude->len, &envelope, &error));
   g_assert_true (goodix5503_capture_consume_frame (
     &state, encrypted->data, encrypted->len, &envelope, &error));
@@ -172,8 +170,6 @@ test_capture_router_valid_and_reversed (void)
   memset (&state, 0, sizeof state);
   g_assert_true (goodix5503_capture_consume_frame (
     &state, ack->data, ack->len, &envelope, &error));
-  g_assert_true (goodix5503_capture_consume_frame (
-    &state, prelude->data, prelude->len, &envelope, &error));
   g_assert_false (goodix5503_capture_consume_frame (
     &state, delayed->data, delayed->len, &envelope, &error));
   g_assert_error (error, GOODIX5503_PROTO_ERROR,

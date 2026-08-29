@@ -18,7 +18,7 @@
 #define GOODIX5503_EP_IN 0x82
 #define GOODIX5503_TRANSFER_SIZE 32768
 #define GOODIX5503_TRANSFER_TIMEOUT_MS 1500
-#define GOODIX5503_CAPTURE_OUT_DELAY_MS 25
+#define GOODIX5503_QUEUED_OUT_DELAY_MS 25
 #define GOODIX5503_USB_PACKET_SIZE 64
 #define GOODIX5503_COMMAND_ACK 0xb0
 #define GOODIX5503_COMMAND_NOP 0x00
@@ -171,6 +171,16 @@ goodix5503_disable_process_dumps (GError **error)
 
 static void goodix5503_submit_read (FpiDeviceGoodix5503 *self);
 static void goodix5503_command_submit_out (FpiDeviceGoodix5503 *self);
+
+static void
+goodix5503_command_delayed_out (FpDevice *device, gpointer user_data)
+{
+  FpiDeviceGoodix5503 *self = FPI_DEVICE_GOODIX5503 (device);
+
+  (void) user_data;
+  self->delay_source = NULL;
+  goodix5503_command_submit_out (self);
+}
 static void goodix5503_outer_submit_out (FpiDeviceGoodix5503 *self);
 static void goodix5503_close_finish (FpiDeviceGoodix5503 *self);
 
@@ -407,7 +417,9 @@ goodix5503_command_start (FpiDeviceGoodix5503  *self,
   /* Queue endpoint-82 IN before the fixed endpoint-01 OUT. */
   goodix5503_submit_read (self);
   goodix5503_usb_out_set (self, packet);
-  goodix5503_command_submit_out (self);
+  self->delay_source = fpi_device_add_timeout (
+    FP_DEVICE (self), GOODIX5503_QUEUED_OUT_DELAY_MS,
+    goodix5503_command_delayed_out, NULL, NULL);
 }
 
 static void
@@ -492,7 +504,11 @@ goodix5503_outer_out_done (FpiUsbTransfer *transfer,
       return;
     }
   else
-    self->out_done = TRUE;
+    {
+      self->out_done = TRUE;
+      if (self->image_callback)
+        self->stage = "image capture response";
+    }
   goodix5503_outer_maybe_complete (self);
 }
 
@@ -586,6 +602,8 @@ goodix5503_outer_delayed_out (FpDevice *device, gpointer user_data)
 
   (void) user_data;
   self->delay_source = NULL;
+  if (self->image_callback)
+    self->stage = "image capture OUT";
   goodix5503_outer_submit_out (self);
 }
 
@@ -737,6 +755,10 @@ goodix5503_capture_frame_done (FpiDeviceGoodix5503 *self,
     OPENSSL_cleanse (frame->data, frame->len);
   if (!self->capture_state.done)
     {
+      if (self->capture_state.image_prelude)
+        self->stage = "image capture encrypted envelope";
+      else if (self->capture_state.ack)
+        self->stage = "image capture after ACK";
       goodix5503_outer_start (self, NULL, TRUE,
                               goodix5503_capture_frame_done);
       return;
@@ -802,10 +824,10 @@ goodix5503_capture_image (FpiDeviceGoodix5503 *self,
   self->capture_destination = destination;
   self->image_callback = callback;
   self->stage = destination == GOODIX5503_CAPTURE_BACKGROUND
-                  ? "fresh-base background capture"
-                  : "image capture";
+                  ? "fresh-base background capture queued read"
+                  : "image capture queued read";
   goodix5503_outer_start_delayed (self, packet, TRUE,
-                                  GOODIX5503_CAPTURE_OUT_DELAY_MS,
+                                  GOODIX5503_QUEUED_OUT_DELAY_MS,
                                   goodix5503_capture_frame_done);
 }
 
@@ -1060,6 +1082,44 @@ goodix5503_config_done (FpiDeviceGoodix5503 *self,
 }
 
 static void
+goodix5503_tls_completion_done (FpiDeviceGoodix5503 *self,
+                                 GByteArray          *frame,
+                                 GError              *error)
+{
+  g_autoptr(GByteArray) owned_frame = frame;
+  g_autoptr(GByteArray) body = NULL;
+
+  if (error && g_error_matches (error, G_USB_DEVICE_ERROR,
+                                G_USB_DEVICE_ERROR_TIMED_OUT))
+    g_clear_error (&error);
+  if (error ||
+      (frame &&
+       (!goodix5503_packet_decode (frame->data, frame->len,
+                                   GOODIX5503_COMMAND_TLS, TRUE,
+                                   &body, &error) ||
+        body->len > 16)))
+    {
+      if (error == NULL)
+        error = fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                          "invalid Goodix TLS completion");
+      if (frame)
+        OPENSSL_cleanse (frame->data, frame->len);
+      if (body)
+        OPENSSL_cleanse (body->data, body->len);
+      goodix5503_activation_fail (self, error);
+      return;
+    }
+  if (frame)
+    OPENSSL_cleanse (frame->data, frame->len);
+  if (body)
+    OPENSSL_cleanse (body->data, body->len);
+  self->stage = "configuration upload";
+  goodix5503_command_start (self, GOODIX5503_COMMAND_CONFIG,
+                            self->config, sizeof self->config, TRUE, TRUE,
+                            goodix5503_config_done);
+}
+
+static void
 goodix5503_tls_final_sent (FpiDeviceGoodix5503 *self,
                            GByteArray          *frame,
                            GError              *error)
@@ -1070,10 +1130,9 @@ goodix5503_tls_final_sent (FpiDeviceGoodix5503 *self,
       goodix5503_activation_fail (self, error);
       return;
     }
-  self->stage = "configuration upload";
-  goodix5503_command_start (self, GOODIX5503_COMMAND_CONFIG,
-                            self->config, sizeof self->config, TRUE, TRUE,
-                            goodix5503_config_done);
+  self->stage = "TLS device completion";
+  goodix5503_outer_start (self, NULL, TRUE,
+                          goodix5503_tls_completion_done);
 }
 
 static void
@@ -1097,15 +1156,15 @@ goodix5503_tls_client_finished (FpiDeviceGoodix5503 *self,
       return;
     }
   self->tls_client_frames++;
-  if (!goodix5503_tls_is_established (self->tls) &&
-      self->tls_client_frames < GOODIX5503_MAX_TLS_CLIENT_FRAMES)
+  if (self->tls_client_frames < GOODIX5503_MAX_TLS_CLIENT_FRAMES)
     {
       self->stage = "TLS client handshake frames";
       goodix5503_outer_start (self, NULL, TRUE,
                               goodix5503_tls_client_finished);
       return;
     }
-  if (!goodix5503_tls_is_established (self->tls))
+  if (self->tls_client_frames != GOODIX5503_MAX_TLS_CLIENT_FRAMES ||
+      !goodix5503_tls_is_established (self->tls))
     {
       goodix5503_activation_fail (
         self, g_error_new_literal (GOODIX5503_TLS_ERROR,

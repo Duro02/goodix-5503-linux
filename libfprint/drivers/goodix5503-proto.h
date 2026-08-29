@@ -19,7 +19,6 @@ typedef struct _Goodix5503FrameBuffer Goodix5503FrameBuffer;
 typedef struct
 {
   gboolean ack;
-  gboolean delayed_tls_completion;
   gboolean image_prelude;
   gboolean done;
 } Goodix5503CaptureState;

@@ -164,6 +164,14 @@ not to incompatible base firmware. Runtime therefore accepts only these two
 exact official 10063 identities and still requires fixed PSK, chip-ID and OTP
 profile checks. No firmware write occurred.
 
+The first end-to-end development `FpImageDevice` run then completed fresh-base,
+finger-down, encrypted command-20 transfer, in-process TLS decryption, image
+submission, and finger-up. The smoke helper reported only categorical success;
+no image, minutiae, hash, or biometric statistics were saved or logged. The
+critical ordering fix was to consume the optional post-final-flight A0/D0 as the
+TLS request's completion before starting config/image work, while preserving the
+25 ms queued-IN barrier used by the proven Python transport.
+
 ## Interpretation
 
 The firmware and IAP versions match the newer firmware family embedded in the

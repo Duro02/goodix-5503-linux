@@ -396,22 +396,6 @@ goodix5503_capture_consume_frame (Goodix5503CaptureState  *state,
           return FALSE;
         }
       command = frame[4];
-      if (command == 0xd0 && !state->delayed_tls_completion &&
-          !state->image_prelude)
-        {
-          if (!goodix5503_packet_decode (frame, frame_len, command, TRUE,
-                                         &body, error))
-            return FALSE;
-          if (body->len > 16)
-            {
-              g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
-                                   GOODIX5503_PROTO_ERROR_LENGTH,
-                                   "delayed Goodix TLS completion is too large");
-              return FALSE;
-            }
-          state->delayed_tls_completion = TRUE;
-          return TRUE;
-        }
       if (command == 0x20 && !state->image_prelude)
         {
           if (!goodix5503_packet_decode (frame, frame_len, command, TRUE,
