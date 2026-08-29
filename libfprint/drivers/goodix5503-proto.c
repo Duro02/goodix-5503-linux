@@ -555,11 +555,12 @@ goodix5503_build_fdt_request (guint8         selector,
 gboolean
 goodix5503_build_fdt_up_request (
   const guint8 dac[GOODIX5503_DAC_SIZE],
-  guint8       request[GOODIX5503_FDT_UP_REQUEST_SIZE],
+  const guint8 base[GOODIX5503_FDT_BASE_SIZE],
+  guint8       request[GOODIX5503_FDT_REQUEST_SIZE],
   GError     **error)
 {
   g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
-  if (dac == NULL || request == NULL)
+  if (dac == NULL || base == NULL || request == NULL)
     {
       g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
                            GOODIX5503_PROTO_ERROR_INVALID,
@@ -568,8 +569,10 @@ goodix5503_build_fdt_up_request (
     }
 
   request[0] = 0x0e;
-  request[1] = 0;
+  request[1] = 1;
   memcpy (request + 2, dac, GOODIX5503_DAC_SIZE);
+  memcpy (request + 2 + GOODIX5503_DAC_SIZE, base,
+          GOODIX5503_FDT_BASE_SIZE);
   return TRUE;
 }
 
@@ -592,15 +595,31 @@ goodix5503_fdt_event_action (Goodix5503FdtPhase phase,
                               guint8             armed_command,
                               guint              arm_generation,
                               guint              event_generation,
-                              guint8             received_command)
+                              guint8             received_command,
+                              guint16            event_flags)
 {
   if (arm_generation == 0 || arm_generation != event_generation ||
       armed_command != received_command)
     return GOODIX5503_FDT_EVENT_REJECT;
-  if (phase == GOODIX5503_FDT_PHASE_WAIT_DOWN && received_command == 0x32)
-    return GOODIX5503_FDT_EVENT_CAPTURE_DOWN;
-  if (phase == GOODIX5503_FDT_PHASE_WAIT_UP && received_command == 0x34)
-    return GOODIX5503_FDT_EVENT_REPORT_UP;
+
+  /* The pinned dispatcher gives accepted down/up bits priority over bit 5.
+   * Only a pure mask event reaches the persistent-mask replacement branch. */
+  if ((event_flags & (1u << 3)) != 0)
+    return phase == GOODIX5503_FDT_PHASE_WAIT_DOWN &&
+           received_command == 0x32 ?
+             GOODIX5503_FDT_EVENT_CAPTURE_DOWN :
+             GOODIX5503_FDT_EVENT_REJECT;
+  if ((event_flags & (1u << 4)) != 0)
+    return phase == GOODIX5503_FDT_PHASE_WAIT_UP &&
+           received_command == 0x34 ?
+             GOODIX5503_FDT_EVENT_REPORT_UP :
+             GOODIX5503_FDT_EVENT_REJECT;
+  if ((event_flags & (1u << 5)) != 0 &&
+      ((phase == GOODIX5503_FDT_PHASE_WAIT_DOWN &&
+        received_command == 0x32) ||
+       (phase == GOODIX5503_FDT_PHASE_WAIT_UP &&
+        received_command == 0x34)))
+    return GOODIX5503_FDT_EVENT_UPDATE_MASK;
   return GOODIX5503_FDT_EVENT_REJECT;
 }
 
@@ -633,9 +652,10 @@ goodix5503_fdt_update_area_mask (guint16 current_mask,
                                   guint16 event_flags,
                                   guint16 event_touch_flag)
 {
-  /* The pinned event structure's flags field is the first LE16 response word.
-   * Bit 5 replaces, rather than accumulates, the persistent area mask. */
-  return (event_flags & (1u << 5)) != 0 ? event_touch_flag : current_mask;
+  /* Accepted down/up bits return from the pinned dispatcher before bit 5.
+   * Only a pure bit-5 event replaces the persistent area mask. */
+  return (event_flags & ((1u << 3) | (1u << 4))) == 0 &&
+         (event_flags & (1u << 5)) != 0 ? event_touch_flag : current_mask;
 }
 
 gboolean
@@ -683,9 +703,12 @@ goodix5503_fdt_next_down_base (
   g_return_if_fail (accepted_up_readings != NULL && output != NULL);
 
   for (gsize offset = 0; offset < GOODIX5503_FDT_BASE_SIZE; offset += 2)
-    write_le16 (output + offset,
-                (read_le16 (accepted_up_readings + offset) & 0xff00) |
-                0x0080);
+    {
+      guint16 raw = read_le16 (accepted_up_readings + offset);
+
+      write_le16 (output + offset,
+                  ((((guint32) raw >> 1) << 8) | 0x0080) & 0xffff);
+    }
 }
 
 gboolean

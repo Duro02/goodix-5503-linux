@@ -15,7 +15,6 @@ G_BEGIN_DECLS
 #define GOODIX5503_FDT_RESPONSE_SIZE 16
 #define GOODIX5503_DAC_SIZE 8
 #define GOODIX5503_FDT_REQUEST_SIZE 22
-#define GOODIX5503_FDT_UP_REQUEST_SIZE 10
 
 typedef struct _Goodix5503FrameBuffer Goodix5503FrameBuffer;
 
@@ -49,6 +48,7 @@ typedef enum
   GOODIX5503_FDT_EVENT_REJECT,
   GOODIX5503_FDT_EVENT_CAPTURE_DOWN,
   GOODIX5503_FDT_EVENT_REPORT_UP,
+  GOODIX5503_FDT_EVENT_UPDATE_MASK,
 } Goodix5503FdtEventAction;
 
 typedef enum
@@ -140,7 +140,8 @@ gboolean goodix5503_build_fdt_request (guint8         selector,
 
 gboolean goodix5503_build_fdt_up_request (
   const guint8 dac[GOODIX5503_DAC_SIZE],
-  guint8       request[GOODIX5503_FDT_UP_REQUEST_SIZE],
+  const guint8 base[GOODIX5503_FDT_BASE_SIZE],
+  guint8       request[GOODIX5503_FDT_REQUEST_SIZE],
   GError     **error);
 
 gboolean goodix5503_fdt_bases_within_delta (const guint8 first[GOODIX5503_FDT_BASE_SIZE],
@@ -152,7 +153,8 @@ Goodix5503FdtEventAction goodix5503_fdt_event_action (
   guint8             armed_command,
   guint              arm_generation,
   guint              event_generation,
-  guint8             received_command);
+  guint8             received_command,
+  guint16            event_flags);
 
 Goodix5503FdtStateAction goodix5503_fdt_state_action (
   Goodix5503FdtPhase phase,

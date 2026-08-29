@@ -280,21 +280,30 @@ test_fdt_up_request (void)
 {
   const guint8 dac[GOODIX5503_DAC_SIZE] =
     { 0x8b, 0x00, 0x83, 0x00, 0x8c, 0x00, 0x87, 0x00 };
-  const guint8 expected_request[GOODIX5503_FDT_UP_REQUEST_SIZE] = {
-    0x0e, 0x00, 0x8b, 0x00, 0x83, 0x00, 0x8c, 0x00, 0x87, 0x00,
+  const guint8 base[GOODIX5503_FDT_BASE_SIZE] = {
+    0x80, 0x29, 0x80, 0x13, 0x80, 0x3d,
+    0x80, 0x13, 0x80, 0x13, 0x80, 0x13,
+  };
+  const guint8 expected_request[GOODIX5503_FDT_REQUEST_SIZE] = {
+    0x0e, 0x01, 0x8b, 0x00, 0x83, 0x00, 0x8c, 0x00, 0x87, 0x00,
+    0x80, 0x29, 0x80, 0x13, 0x80, 0x3d,
+    0x80, 0x13, 0x80, 0x13, 0x80, 0x13,
   };
   const guint8 expected_frame[] = {
-    0xa0, 0x0e, 0x00, 0xae, 0x34, 0x0b, 0x00, 0x0e, 0x00,
-    0x8b, 0x00, 0x83, 0x00, 0x8c, 0x00, 0x87, 0x00, 0x3c,
+    0xa0, 0x1a, 0x00, 0xba, 0x34, 0x17, 0x00, 0x0e, 0x01,
+    0x8b, 0x00, 0x83, 0x00, 0x8c, 0x00, 0x87, 0x00,
+    0x80, 0x29, 0x80, 0x13, 0x80, 0x3d,
+    0x80, 0x13, 0x80, 0x13, 0x80, 0x13, 0x7d,
   };
-  guint8 request[GOODIX5503_FDT_UP_REQUEST_SIZE] = { 0 };
+  guint8 request[GOODIX5503_FDT_REQUEST_SIZE] = { 0 };
   g_autoptr(GByteArray) frame = NULL;
   g_autoptr(GError) error = NULL;
 
-  g_assert_true (goodix5503_build_fdt_up_request (dac, request, &error));
+  g_assert_true (goodix5503_build_fdt_up_request (dac, base, request, &error));
   g_assert_no_error (error);
   g_assert_cmpmem (request, sizeof request, expected_request,
                    sizeof expected_request);
+  g_assert_cmpmem (base, sizeof base, expected_request + 10, sizeof base);
 
   frame = goodix5503_packet_encode (0x34, request, sizeof request, TRUE,
                                     &error);
@@ -304,11 +313,17 @@ test_fdt_up_request (void)
   g_assert_cmpmem (frame->data, frame->len, expected_frame,
                    sizeof expected_frame);
 
-  g_assert_false (goodix5503_build_fdt_up_request (NULL, request, &error));
+  g_assert_false (goodix5503_build_fdt_up_request (NULL, base, request,
+                                                    &error));
   g_assert_error (error, GOODIX5503_PROTO_ERROR,
                   GOODIX5503_PROTO_ERROR_INVALID);
   g_clear_error (&error);
-  g_assert_false (goodix5503_build_fdt_up_request (dac, NULL, &error));
+  g_assert_false (goodix5503_build_fdt_up_request (dac, NULL, request,
+                                                    &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_INVALID);
+  g_clear_error (&error);
+  g_assert_false (goodix5503_build_fdt_up_request (dac, base, NULL, &error));
   g_assert_error (error, GOODIX5503_PROTO_ERROR,
                   GOODIX5503_PROTO_ERROR_INVALID);
 }
@@ -320,13 +335,13 @@ test_fdt_stage_separation (void)
 
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
-                     generation, 0x32), ==,
+                     generation, 0x32, 1u << 3), ==,
                    GOODIX5503_FDT_EVENT_CAPTURE_DOWN);
   /* A read timeout does not mutate the armed generation; the same wait may
    * remain cancellable and accept a later exact event. */
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
-                     generation, 0x32), ==,
+                     generation, 0x32, 1u << 3), ==,
                    GOODIX5503_FDT_EVENT_CAPTURE_DOWN);
 
   /* The accepted down event must enter command-20 capture.  Only the generic
@@ -350,31 +365,60 @@ test_fdt_stage_separation (void)
                      GOODIX5503_FDT_PHASE_WAIT_DOWN, FALSE), ==,
                    GOODIX5503_FDT_STATE_REJECT);
 
+  /* The pinned accepted-up path arms the next enrollment down watch before
+   * reporting OFF.  A later AWAIT_ON notification must not arm it twice. */
+  g_assert_cmpint (goodix5503_fdt_state_action (
+                     GOODIX5503_FDT_PHASE_ARM_DOWN, TRUE), ==,
+                   GOODIX5503_FDT_STATE_NOOP);
+  g_assert_cmpint (goodix5503_fdt_state_action (
+                     GOODIX5503_FDT_PHASE_WAIT_DOWN, TRUE), ==,
+                   GOODIX5503_FDT_STATE_NOOP);
+
   /* No event is accepted while command-20 capture or later manual/up-base
    * preparation is in progress. */
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_PREPARE_UP_BASE, 0x32, generation,
-                     generation, 0x32), ==, GOODIX5503_FDT_EVENT_REJECT);
+                     generation, 0x32, 1u << 3), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_CAPTURE, 0x32, generation,
-                     generation, 0x32), ==, GOODIX5503_FDT_EVENT_REJECT);
+                     generation, 0x32, 1u << 3), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_CAPTURE, 0x34, generation,
-                     generation, 0x34), ==, GOODIX5503_FDT_EVENT_REJECT);
+                     generation, 0x34, 1u << 4), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation + 1,
-                     generation, 0x32), ==, GOODIX5503_FDT_EVENT_REJECT);
+                     generation, 0x32, 1u << 3), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
+
+  /* Accepted down/up bits have priority over bit 5. */
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
+                     generation, 0x32, (1u << 3) | (1u << 5)), ==,
+                   GOODIX5503_FDT_EVENT_CAPTURE_DOWN);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_UP, 0x34, generation,
+                     generation, 0x34, (1u << 4) | (1u << 5)), ==,
+                   GOODIX5503_FDT_EVENT_REPORT_UP);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
+                     generation, 0x32, 1u << 5), ==,
+                   GOODIX5503_FDT_EVENT_UPDATE_MASK);
 
   /* Only the exact up command in the armed WAIT_UP generation may report OFF. */
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_WAIT_UP, 0x34, generation,
-                     generation, 0x32), ==, GOODIX5503_FDT_EVENT_REJECT);
+                     generation, 0x32, 1u << 4), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_WAIT_UP, 0x32, generation,
-                     generation, 0x34), ==, GOODIX5503_FDT_EVENT_REJECT);
+                     generation, 0x34, 1u << 4), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_WAIT_UP, 0x34, generation,
-                     generation, 0x34), ==,
+                     generation, 0x34, 1u << 4), ==,
                    GOODIX5503_FDT_EVENT_REPORT_UP);
 }
 
@@ -405,6 +449,10 @@ test_fdt_up_base_generation (void)
                    ==, 0);
   g_assert_cmphex (goodix5503_fdt_update_area_mask (0, 1u << 5, 0x003f),
                    ==, 0x003f);
+  g_assert_cmphex (goodix5503_fdt_update_area_mask (
+                     0x0033, (1u << 3) | (1u << 5), 0x0004), ==, 0x0033);
+  g_assert_cmphex (goodix5503_fdt_update_area_mask (
+                     0x0033, (1u << 4) | (1u << 5), 0x0004), ==, 0x0033);
 
   memset (output, 0, sizeof output);
   g_assert_false (goodix5503_generate_fdt_up_base (
@@ -426,13 +474,24 @@ test_fdt_next_down_base (void)
     0xfe, 0xff, 0x80, 0x80, 0x00, 0x7f,
   };
   const guint8 expected[GOODIX5503_FDT_BASE_SIZE] = {
-    0x80, 0x12, 0x80, 0xab, 0x80, 0x00,
-    0x80, 0xff, 0x80, 0x80, 0x80, 0x7f,
+    0x80, 0x1a, 0x80, 0xe6, 0x80, 0x00,
+    0x80, 0xff, 0x80, 0x40, 0x80, 0x80,
   };
+  const guint8 dac[GOODIX5503_DAC_SIZE] = { 0 };
   guint8 output[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 request[GOODIX5503_FDT_REQUEST_SIZE] = { 0 };
+  g_autoptr(GError) error = NULL;
 
   goodix5503_fdt_next_down_base (accepted_up, output);
   g_assert_cmpmem (output, sizeof output, expected, sizeof expected);
+
+  /* The command-32 constructor must send the transformed next-down base
+   * unchanged; it must not apply the accepted-up transform a second time. */
+  g_assert_true (goodix5503_build_fdt_request (
+    0x0c, dac, output, request, &error));
+  g_assert_no_error (error);
+  g_assert_cmpmem (request + 2 + GOODIX5503_DAC_SIZE,
+                   GOODIX5503_FDT_BASE_SIZE, expected, sizeof expected);
 }
 
 static void

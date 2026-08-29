@@ -30,17 +30,21 @@ Use separate bounded `FpiSsm` machines for activation, capture and cleanup:
    selector-`0x0d` read using the calibrated down base. The runtime takes the
    unsigned wordwise minima, combines the persistent and event area masks,
    generates and retains the exact six-word GF3258 up base with the configured
-   delta, then arms `0x34`. The pinned selected up call sends exactly the
-   10-byte payload `0e 00 || DAC[8]`; unlike down/manual, it has no optional
-   12-byte base suffix. The earlier `0e 01 || DAC || generated-up-base` wire
-   assumption was incorrect. The generated base remains bounded host state for
-   official-flow conformance and is wiped normally, but is never appended to
-   the up request. A bit-5 event flag replaces the persistent 16-bit area mask;
-   it is not a finger-state predicate. Duplicate state notifications cannot repeat
-   manual preparation or arming. Only an exact `0x34` event in the matching
-   WAIT_UP generation reports OFF, and its transformed raw words become the
-   dedicated next down base. The failed TX-off/delta qualification experiment
-   is not retained, and no 12-area community arithmetic is used.
+   delta, then arms `0x34`. The pinned normal accepted-down call sends the exact
+   22-byte payload `0e 01 || DAC[8] || generated-up-base[12]`. The suffix is
+   copied unchanged and is neither optional nor transformed a second time on
+   this path. Dispatcher bit-3 down and bit-4 up actions have priority over bit
+   5; only a pure bit-5 event replaces the persistent 16-bit area mask. A bit-5
+   flag is not a finger-state predicate. Duplicate state notifications cannot
+   repeat manual preparation or arming. Only an exact bit-4 `0x34` event in the
+   matching WAIT_UP generation reports OFF. Its raw body words are transformed
+   once with `((x >> 1) << 8) | 0x80` into the dedicated next down base. During
+   enrollment, that accepted up immediately arms the next `0x32` before OFF is
+   reported and before matcher completion; non-enrollment keeps libfprint's
+   deactivation-safe deferred behavior. The generated up base remains until it
+   is overwritten by the next down or wiped by reset/cleanup. The failed
+   TX-off/delta qualification experiment is not retained, and no 12-area
+   community arithmetic is used.
 3. **Capture:** parse command-36 data through its dedicated FDT policy (two
    LE16 header fields followed by the exact profile-sized base), then send fixed
    `0x20`; route ACK/A0 command completions separately from B2 encrypted data;
