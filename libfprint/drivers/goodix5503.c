@@ -1817,12 +1817,14 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
   if (action == GOODIX5503_FDT_EVENT_CONFIRM_DOWN)
     {
       guint8 request[GOODIX5503_FDT_REQUEST_SIZE];
-      guint8 zero_base[GOODIX5503_FDT_BASE_SIZE] = { 0 };
 
       memcpy (self->fdt_pending_raw, raw, sizeof self->fdt_pending_raw);
       self->fdt_pending_valid = TRUE;
       self->fdt_phase = GOODIX5503_FDT_PHASE_CONFIRM_DOWN;
-      if (!goodix5503_build_fdt_request (0x0d, self->dac, zero_base,
+      /* Bit 7 disables TX for the manual 0x36 drift check.  With TX enabled,
+       * a real held finger remains close to the down-event reading and is
+       * incorrectly rejected as drift. */
+      if (!goodix5503_build_fdt_request (0x8d, self->dac, self->fdt_base,
                                          request, &error))
         {
           OPENSSL_cleanse (self->fdt_pending_raw,

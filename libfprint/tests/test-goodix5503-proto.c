@@ -256,6 +256,13 @@ test_fdt_response_and_request (void)
   g_assert_cmpmem (request, sizeof request, expected_request,
                    sizeof expected_request);
 
+  g_assert_true (goodix5503_build_fdt_request (
+    0x8d, dac, zero_base, request, &error));
+  g_assert_no_error (error);
+  g_assert_cmphex (request[0], ==, 0x8d);
+  g_assert_cmpmem (request + 1, sizeof request - 1,
+                   expected_request + 1, sizeof expected_request - 1);
+
   g_assert_false (goodix5503_parse_fdt_response (
     response, sizeof response - 1, &interrupt, &touch_flag, raw, transformed,
     &error));
