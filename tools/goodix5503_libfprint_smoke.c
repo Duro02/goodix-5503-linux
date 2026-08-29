@@ -92,7 +92,8 @@ main (void)
   image = fp_device_capture_sync (device, TRUE, NULL, &error);
   if (image == NULL)
     {
-      fprintf (stderr, "Goodix 5503 memory-only capture failed\n");
+      fprintf (stderr, "Goodix 5503 memory-only capture failed: %s\n",
+               error ? error->message : "unknown bounded runtime error");
       goto close;
     }
   puts ("LIBFPRINT MEMORY-ONLY CAPTURE SUCCEEDED");

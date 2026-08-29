@@ -214,13 +214,6 @@ class ReadOnlyUsbSession:
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
         self.close()
 
-    def wake_up(self, *, timeout_ms: int | None = None) -> None:
-        """Emit the pinned Geneva loader's single raw wake byte."""
-        timeout = self.timeout_ms if timeout_ms is None else timeout_ms
-        written = self.endpoint_out.write(b"\xe5", timeout)
-        if written != 1:
-            raise ProtocolError("raw wake byte was not fully written")
-
     def _drain_input(self) -> None:
         self._rx_buffer.clear()
         for completed in range(5):

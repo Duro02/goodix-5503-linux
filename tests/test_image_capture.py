@@ -891,9 +891,6 @@ class CaptureOrchestratorTests(unittest.TestCase):
             def __init__(self, _timeout):
                 pass
 
-            def wake_up(self, *, timeout_ms):
-                self.timeout_ms = timeout_ms
-
             def request(self, command, payload=b"", *, checksum=True):
                 if command == 0xA8:
                     return b"GF3258_RTSEC_APP_10063\x00"
@@ -939,9 +936,6 @@ class CaptureOrchestratorTests(unittest.TestCase):
         class FakeSession:
             def __init__(self, timeout):
                 events.append(("open", timeout))
-
-            def wake_up(self, *, timeout_ms):
-                events.append(("wake", timeout_ms))
 
             def request(self, command, payload=b"", *, checksum=True):
                 events.append(("request", command, payload, checksum))

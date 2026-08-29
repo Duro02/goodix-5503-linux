@@ -10,12 +10,15 @@
 #include "goodix5503-security.h"
 #include "goodix5503-tls.h"
 
+#include <errno.h>
 #include <openssl/crypto.h>
+#include <sys/prctl.h>
 
 #define GOODIX5503_EP_OUT 0x01
 #define GOODIX5503_EP_IN 0x82
 #define GOODIX5503_TRANSFER_SIZE 32768
 #define GOODIX5503_TRANSFER_TIMEOUT_MS 1500
+#define GOODIX5503_USB_PACKET_SIZE 64
 #define GOODIX5503_COMMAND_ACK 0xb0
 #define GOODIX5503_COMMAND_NOP 0x00
 #define GOODIX5503_COMMAND_FIRMWARE 0xa8
@@ -31,6 +34,7 @@
 #define GOODIX5503_COMMAND_IDLE 0x70
 #define GOODIX5503_TLS_FLAGS 0xb0
 #define GOODIX5503_MAX_FRESH_ATTEMPTS 3
+#define GOODIX5503_MAX_TLS_CLIENT_FRAMES 3
 #define GOODIX5503_CAPTURE_DISCARD 0
 #define GOODIX5503_CAPTURE_BACKGROUND 1
 #define GOODIX5503_CAPTURE_FINGER 2
@@ -38,6 +42,20 @@
 #define GOODIX5503_EXPECTED_CHIP_ID 0x220f
 
 static const char expected_firmware[] = "GF3258_RTSEC_APP_10063";
+
+static gboolean
+goodix5503_firmware_identity_matches (GByteArray *body, const gchar *expected)
+{
+  gsize expected_len = strlen (expected) + 1;
+
+  if (body->len < expected_len ||
+      memcmp (body->data, expected, expected_len) != 0)
+    return FALSE;
+  for (gsize index = expected_len; index < body->len; index++)
+    if (body->data[index] != 0)
+      return FALSE;
+  return TRUE;
+}
 
 typedef struct _FpiDeviceGoodix5503 FpiDeviceGoodix5503;
 typedef void (*Goodix5503CommandCallback) (FpiDeviceGoodix5503 *self,
@@ -67,15 +85,19 @@ struct _FpiDeviceGoodix5503
   gboolean interface_claimed;
   gboolean out_done;
   gboolean read_active;
+  GByteArray *usb_out;
+  gsize usb_out_offset;
   gboolean outer_expect_read;
   gboolean deactivating;
   gboolean closing;
+  const gchar *stage;
   guint8 psk[GOODIX5503_SECURITY_PSK_SIZE];
   guint8 expected_verification[GOODIX5503_VERIFICATION_SIZE];
   guint8 otp[GOODIX5503_OTP_SIZE];
   guint8 dac[GOODIX5503_DAC_SIZE];
   guint8 config[GOODIX5503_CONFIG_SIZE];
   Goodix5503Tls *tls;
+  guint tls_client_frames;
   Goodix5503CaptureState capture_state;
   Goodix5503ImageCallback image_callback;
   GError *primary_error;
@@ -99,13 +121,85 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGoodix5503, fpi_device_goodix5503,
 G_DEFINE_TYPE (FpiDeviceGoodix5503, fpi_device_goodix5503,
                FP_TYPE_IMAGE_DEVICE)
 
+typedef struct
+{
+  gsize length;
+  guint8 data[];
+} Goodix5503OutBuffer;
+
+static guint8 *
+goodix5503_padded_out_buffer (const guint8 *data, gsize length,
+                              gsize *padded_length)
+{
+  Goodix5503OutBuffer *buffer;
+  gsize padded;
+
+  g_assert (data != NULL && length > 0);
+  padded = ((length + GOODIX5503_USB_PACKET_SIZE - 1) /
+            GOODIX5503_USB_PACKET_SIZE) * GOODIX5503_USB_PACKET_SIZE;
+  buffer = g_malloc0 (sizeof *buffer + padded);
+  buffer->length = padded;
+  memcpy (buffer->data, data, length);
+  *padded_length = padded;
+  return buffer->data;
+}
+
+static void
+goodix5503_out_buffer_free (gpointer data)
+{
+  Goodix5503OutBuffer *buffer;
+
+  if (data == NULL)
+    return;
+  buffer = (Goodix5503OutBuffer *) ((guint8 *) data -
+                                    G_STRUCT_OFFSET (Goodix5503OutBuffer, data));
+  OPENSSL_cleanse (buffer->data, buffer->length);
+  g_free (buffer);
+}
+
+static gboolean
+goodix5503_disable_process_dumps (GError **error)
+{
+  if (prctl (PR_SET_DUMPABLE, 0, 0, 0, 0) == 0)
+    return TRUE;
+  g_set_error_literal (error, G_IO_ERROR, g_io_error_from_errno (errno),
+                       "failed to disable process dumps before loading PSK");
+  return FALSE;
+}
+
 static void goodix5503_submit_read (FpiDeviceGoodix5503 *self);
+static void goodix5503_command_submit_out (FpiDeviceGoodix5503 *self);
+static void goodix5503_outer_submit_out (FpiDeviceGoodix5503 *self);
 static void goodix5503_close_finish (FpiDeviceGoodix5503 *self);
+
+static void
+goodix5503_usb_out_clear (FpiDeviceGoodix5503 *self)
+{
+  if (self->usb_out)
+    OPENSSL_cleanse (self->usb_out->data, self->usb_out->len);
+  g_clear_pointer (&self->usb_out, g_byte_array_unref);
+  self->usb_out_offset = 0;
+}
+
+static void
+goodix5503_usb_out_set (FpiDeviceGoodix5503 *self, GByteArray *packet)
+{
+  gsize padded = ((packet->len + GOODIX5503_USB_PACKET_SIZE - 1) /
+                  GOODIX5503_USB_PACKET_SIZE) * GOODIX5503_USB_PACKET_SIZE;
+
+  g_assert (self->usb_out == NULL);
+  self->usb_out = g_byte_array_sized_new (padded);
+  g_byte_array_set_size (self->usb_out, padded);
+  memset (self->usb_out->data, 0, padded);
+  memcpy (self->usb_out->data, packet->data, packet->len);
+  self->usb_out_offset = 0;
+}
 
 static void
 goodix5503_command_clear (FpiDeviceGoodix5503 *self)
 {
   g_clear_object (&self->transaction_cancel);
+  goodix5503_usb_out_clear (self);
   g_clear_pointer (&self->command_response, g_byte_array_unref);
   g_clear_error (&self->command_error);
   self->command_callback = NULL;
@@ -171,10 +265,42 @@ goodix5503_out_done (FpiUsbTransfer *transfer,
 
   (void) transfer;
   (void) user_data;
-  self->out_done = TRUE;
   if (error)
-    goodix5503_command_fail (self, error);
+    {
+      self->out_done = TRUE;
+      goodix5503_command_fail (self, error);
+    }
+  else if (self->usb_out_offset < self->usb_out->len)
+    {
+      goodix5503_command_submit_out (self);
+      return;
+    }
+  else
+    self->out_done = TRUE;
   goodix5503_command_maybe_complete (self);
+}
+
+static void
+goodix5503_command_submit_out (FpiDeviceGoodix5503 *self)
+{
+  FpiUsbTransfer *transfer;
+  guint8 *chunk;
+  gsize chunk_len;
+
+  g_assert (self->usb_out &&
+            self->usb_out_offset + GOODIX5503_USB_PACKET_SIZE <=
+              self->usb_out->len);
+  chunk = goodix5503_padded_out_buffer (
+    self->usb_out->data + self->usb_out_offset,
+    GOODIX5503_USB_PACKET_SIZE, &chunk_len);
+  self->usb_out_offset += GOODIX5503_USB_PACKET_SIZE;
+  transfer = fpi_usb_transfer_new (FP_DEVICE (self));
+  fpi_usb_transfer_fill_bulk_full (transfer, GOODIX5503_EP_OUT, chunk,
+                                   chunk_len, goodix5503_out_buffer_free);
+  transfer->short_is_error = TRUE;
+  fpi_usb_transfer_submit (transfer, GOODIX5503_TRANSFER_TIMEOUT_MS,
+                           self->transaction_cancel, goodix5503_out_done,
+                           NULL);
 }
 
 static void
@@ -256,10 +382,6 @@ goodix5503_command_start (FpiDeviceGoodix5503  *self,
 {
   g_autoptr(GByteArray) packet = NULL;
   g_autoptr(GError) error = NULL;
-  FpiUsbTransfer *transfer;
-  guint8 *out_buffer;
-  gsize out_len;
-
   g_assert (self->command_callback == NULL);
   packet = goodix5503_packet_encode (command, payload, payload_len, TRUE,
                                      &error);
@@ -282,21 +404,15 @@ goodix5503_command_start (FpiDeviceGoodix5503  *self,
 
   /* Queue endpoint-82 IN before the fixed endpoint-01 OUT. */
   goodix5503_submit_read (self);
-  out_len = packet->len;
-  out_buffer = g_memdup2 (packet->data, out_len);
-  transfer = fpi_usb_transfer_new (FP_DEVICE (self));
-  fpi_usb_transfer_fill_bulk_full (transfer, GOODIX5503_EP_OUT, out_buffer,
-                                   out_len, g_free);
-  transfer->short_is_error = TRUE;
-  fpi_usb_transfer_submit (transfer, GOODIX5503_TRANSFER_TIMEOUT_MS,
-                           self->transaction_cancel, goodix5503_out_done,
-                           NULL);
+  goodix5503_usb_out_set (self, packet);
+  goodix5503_command_submit_out (self);
 }
 
 static void
 goodix5503_outer_clear (FpiDeviceGoodix5503 *self)
 {
   g_clear_object (&self->transaction_cancel);
+  goodix5503_usb_out_clear (self);
   g_clear_pointer (&self->outer_response, g_byte_array_unref);
   g_clear_error (&self->outer_error);
   self->outer_callback = NULL;
@@ -363,10 +479,42 @@ goodix5503_outer_out_done (FpiUsbTransfer *transfer,
 
   (void) transfer;
   (void) user_data;
-  self->out_done = TRUE;
   if (error)
-    goodix5503_outer_fail (self, error);
+    {
+      self->out_done = TRUE;
+      goodix5503_outer_fail (self, error);
+    }
+  else if (self->usb_out_offset < self->usb_out->len)
+    {
+      goodix5503_outer_submit_out (self);
+      return;
+    }
+  else
+    self->out_done = TRUE;
   goodix5503_outer_maybe_complete (self);
+}
+
+static void
+goodix5503_outer_submit_out (FpiDeviceGoodix5503 *self)
+{
+  FpiUsbTransfer *transfer;
+  guint8 *chunk;
+  gsize chunk_len;
+
+  g_assert (self->usb_out &&
+            self->usb_out_offset + GOODIX5503_USB_PACKET_SIZE <=
+              self->usb_out->len);
+  chunk = goodix5503_padded_out_buffer (
+    self->usb_out->data + self->usb_out_offset,
+    GOODIX5503_USB_PACKET_SIZE, &chunk_len);
+  self->usb_out_offset += GOODIX5503_USB_PACKET_SIZE;
+  transfer = fpi_usb_transfer_new (FP_DEVICE (self));
+  fpi_usb_transfer_fill_bulk_full (transfer, GOODIX5503_EP_OUT, chunk,
+                                   chunk_len, goodix5503_out_buffer_free);
+  transfer->short_is_error = TRUE;
+  fpi_usb_transfer_submit (transfer, GOODIX5503_TRANSFER_TIMEOUT_MS,
+                           self->transaction_cancel, goodix5503_outer_out_done,
+                           NULL);
 }
 
 static void goodix5503_outer_submit_read (FpiDeviceGoodix5503 *self);
@@ -435,8 +583,6 @@ goodix5503_outer_start (FpiDeviceGoodix5503 *self,
                          gboolean             expect_read,
                          Goodix5503OuterCallback callback)
 {
-  FpiUsbTransfer *transfer;
-
   g_assert (self->command_callback == NULL && self->outer_callback == NULL);
   g_assert (packet != NULL || expect_read);
   self->transaction_cancel = g_cancellable_new ();
@@ -457,15 +603,8 @@ goodix5503_outer_start (FpiDeviceGoodix5503 *self,
     goodix5503_outer_submit_read (self);
   if (packet)
     {
-      guint8 *out_buffer = g_memdup2 (packet->data, packet->len);
-
-      transfer = fpi_usb_transfer_new (FP_DEVICE (self));
-      fpi_usb_transfer_fill_bulk_full (transfer, GOODIX5503_EP_OUT,
-                                       out_buffer, packet->len, g_free);
-      transfer->short_is_error = TRUE;
-      fpi_usb_transfer_submit (transfer, GOODIX5503_TRANSFER_TIMEOUT_MS,
-                               self->transaction_cancel,
-                               goodix5503_outer_out_done, NULL);
+      goodix5503_usb_out_set (self, packet);
+      goodix5503_outer_submit_out (self);
     }
 }
 
@@ -475,6 +614,8 @@ static void goodix5503_activation_fail (FpiDeviceGoodix5503 *self,
 static void
 goodix5503_pre_reset_fail (FpiDeviceGoodix5503 *self, GError *error)
 {
+  if (error && self->stage)
+    g_prefix_error (&error, "%s: ", self->stage);
   g_clear_pointer (&self->tls, goodix5503_tls_free);
   g_clear_pointer (&self->frame_buffer, goodix5503_frame_buffer_free);
   OPENSSL_cleanse (self->psk, sizeof self->psk);
@@ -530,6 +671,8 @@ goodix5503_activation_fail (FpiDeviceGoodix5503 *self, GError *error)
 {
   static const guint8 reset_payload[] = { 0x05, 0x14 };
 
+  if (error && self->primary_error == NULL && self->stage)
+    g_prefix_error (&error, "%s: ", self->stage);
   if (self->primary_error == NULL)
     self->primary_error = error;
   else
@@ -631,6 +774,9 @@ goodix5503_capture_image (FpiDeviceGoodix5503 *self,
   memset (&self->capture_state, 0, sizeof self->capture_state);
   self->capture_destination = destination;
   self->image_callback = callback;
+  self->stage = destination == GOODIX5503_CAPTURE_BACKGROUND
+                  ? "fresh-base background capture"
+                  : "image capture";
   goodix5503_outer_start (self, packet, TRUE,
                           goodix5503_capture_frame_done);
 }
@@ -712,6 +858,7 @@ goodix5503_candidate_done (FpiDeviceGoodix5503 *self, GError *error)
       goodix5503_activation_fail (self, error);
       return;
     }
+  self->stage = "fresh-base FDT 3";
   goodix5503_command_start (self, GOODIX5503_COMMAND_FDT_MANUAL,
                             request, sizeof request, TRUE, FALSE,
                             goodix5503_fdt2_done);
@@ -762,6 +909,7 @@ goodix5503_idle_done (FpiDeviceGoodix5503 *self,
       goodix5503_activation_fail (self, error);
       return;
     }
+  self->stage = "fresh-base delta read";
   goodix5503_command_start (self, GOODIX5503_COMMAND_READ_REGISTER,
                             delta_payload, sizeof delta_payload, TRUE, TRUE,
                             goodix5503_delta_done);
@@ -780,6 +928,7 @@ goodix5503_fdt1_done (FpiDeviceGoodix5503 *self,
       goodix5503_activation_fail (self, error);
       return;
     }
+  self->stage = "fresh-base idle";
   goodix5503_command_start (self, GOODIX5503_COMMAND_IDLE,
                             idle_payload, sizeof idle_payload, FALSE, TRUE,
                             goodix5503_idle_done);
@@ -797,6 +946,7 @@ goodix5503_nav_done (FpiDeviceGoodix5503 *self, GError *error)
       goodix5503_activation_fail (self, error);
       return;
     }
+  self->stage = "fresh-base FDT 2";
   goodix5503_command_start (self, GOODIX5503_COMMAND_FDT_MANUAL,
                             request, sizeof request, TRUE, FALSE,
                             goodix5503_fdt1_done);
@@ -815,6 +965,7 @@ goodix5503_fdt0_done (FpiDeviceGoodix5503 *self,
       goodix5503_activation_fail (self, error);
       return;
     }
+  self->stage = "fresh-base discard capture";
   goodix5503_capture_image (self, GOODIX5503_CAPTURE_DISCARD,
                             goodix5503_nav_done);
 }
@@ -832,6 +983,7 @@ goodix5503_fresh_attempt_start (FpiDeviceGoodix5503 *self)
       goodix5503_activation_fail (self, g_steal_pointer (&error));
       return;
     }
+  self->stage = "fresh-base FDT 1";
   goodix5503_command_start (self, GOODIX5503_COMMAND_FDT_MANUAL,
                             request, sizeof request, TRUE, FALSE,
                             goodix5503_fdt0_done);
@@ -873,6 +1025,7 @@ goodix5503_config_done (FpiDeviceGoodix5503 *self,
                                         "Goodix config upload was rejected"));
       return;
     }
+  self->stage = "driver-state command";
   goodix5503_command_start (self, GOODIX5503_COMMAND_DRIVER_STATE,
                             state_payload, sizeof state_payload, FALSE, TRUE,
                             goodix5503_driver_state_done);
@@ -889,6 +1042,7 @@ goodix5503_tls_final_sent (FpiDeviceGoodix5503 *self,
       goodix5503_activation_fail (self, error);
       return;
     }
+  self->stage = "configuration upload";
   goodix5503_command_start (self, GOODIX5503_COMMAND_CONFIG,
                             self->config, sizeof self->config, TRUE, TRUE,
                             goodix5503_config_done);
@@ -909,14 +1063,26 @@ goodix5503_tls_client_finished (FpiDeviceGoodix5503 *self,
                                 frame ? frame->len : 0,
                                 GOODIX5503_TLS_FLAGS, &payload, &error) ||
       !goodix5503_tls_feed_ciphertext (self->tls, payload->data,
-                                       payload->len, &error) ||
-      !goodix5503_tls_is_established (self->tls))
+                                       payload->len, &error))
     {
-      if (error == NULL)
-        error = g_error_new_literal (GOODIX5503_TLS_ERROR,
-                                     GOODIX5503_TLS_ERROR_PROTOCOL,
-                                     "Goodix TLS handshake did not finish");
       goodix5503_activation_fail (self, error);
+      return;
+    }
+  self->tls_client_frames++;
+  if (!goodix5503_tls_is_established (self->tls) &&
+      self->tls_client_frames < GOODIX5503_MAX_TLS_CLIENT_FRAMES)
+    {
+      self->stage = "TLS client handshake frames";
+      goodix5503_outer_start (self, NULL, TRUE,
+                              goodix5503_tls_client_finished);
+      return;
+    }
+  if (!goodix5503_tls_is_established (self->tls))
+    {
+      goodix5503_activation_fail (
+        self, g_error_new_literal (GOODIX5503_TLS_ERROR,
+                                   GOODIX5503_TLS_ERROR_PROTOCOL,
+                                   "Goodix TLS handshake did not finish"));
       return;
     }
   flight = goodix5503_tls_drain_ciphertext (self->tls, &error);
@@ -932,6 +1098,7 @@ goodix5503_tls_client_finished (FpiDeviceGoodix5503 *self,
       goodix5503_activation_fail (self, error);
       return;
     }
+  self->stage = "TLS final server flight";
   goodix5503_outer_start (self, packet, FALSE, goodix5503_tls_final_sent);
 }
 
@@ -968,6 +1135,8 @@ goodix5503_tls_client_hello (FpiDeviceGoodix5503 *self,
       goodix5503_activation_fail (self, error);
       return;
     }
+  self->tls_client_frames = 0;
+  self->stage = "TLS client handshake frames";
   goodix5503_outer_start (self, packet, TRUE,
                           goodix5503_tls_client_finished);
 }
@@ -989,6 +1158,7 @@ goodix5503_tls_request_done (FpiDeviceGoodix5503 *self,
       goodix5503_activation_fail (self, error);
       return;
     }
+  self->stage = "TLS client hello";
   goodix5503_outer_start (self, NULL, TRUE, goodix5503_tls_client_hello);
 }
 
@@ -1012,6 +1182,7 @@ goodix5503_pov_done (FpiDeviceGoodix5503 *self,
                                         "invalid Goodix POV response"));
       return;
     }
+  self->stage = "TLS command";
   goodix5503_command_start (self, GOODIX5503_COMMAND_TLS,
                             tls_payload, sizeof tls_payload, FALSE, TRUE,
                             goodix5503_tls_request_done);
@@ -1049,6 +1220,7 @@ goodix5503_otp_done (FpiDeviceGoodix5503 *self,
       goodix5503_activation_fail (self, error);
       return;
     }
+  self->stage = "POV check";
   goodix5503_command_start (self, GOODIX5503_COMMAND_POV_CHECK,
                             pov_payload, sizeof pov_payload, TRUE, TRUE,
                             goodix5503_pov_done);
@@ -1067,6 +1239,7 @@ goodix5503_cold_nop_done (FpiDeviceGoodix5503 *self,
       goodix5503_activation_fail (self, error);
       return;
     }
+  self->stage = "OTP read";
   goodix5503_command_start (self, GOODIX5503_COMMAND_READ_OTP,
                             otp_payload, sizeof otp_payload, TRUE, TRUE,
                             goodix5503_otp_done);
@@ -1105,6 +1278,7 @@ goodix5503_chip_done (FpiDeviceGoodix5503 *self,
                                         "unsupported Goodix MCU chip ID"));
       return;
     }
+  self->stage = "post-reset NOP";
   goodix5503_command_start (self, GOODIX5503_COMMAND_NOP,
                             nop_payload, sizeof nop_payload, FALSE, TRUE,
                             goodix5503_cold_nop_done);
@@ -1117,6 +1291,7 @@ goodix5503_read_chip_after_reset (FpDevice *device, gpointer user_data)
 
   (void) user_data;
   FPI_DEVICE_GOODIX5503 (device)->delay_source = NULL;
+  FPI_DEVICE_GOODIX5503 (device)->stage = "chip-ID read";
   goodix5503_command_start (FPI_DEVICE_GOODIX5503 (device),
                             GOODIX5503_COMMAND_READ_REGISTER,
                             payload, sizeof payload, TRUE, TRUE,
@@ -1184,6 +1359,7 @@ goodix5503_verification_done (FpiDeviceGoodix5503 *self,
     static const guint8 reset_payload[] = { 0x05, 0x14 };
 
     self->reset_attempted = TRUE;
+    self->stage = "device reset";
     goodix5503_command_start (self, GOODIX5503_COMMAND_RESET,
                               reset_payload, sizeof reset_payload, TRUE, TRUE,
                               goodix5503_reset_done);
@@ -1202,16 +1378,29 @@ goodix5503_firmware_done (FpiDeviceGoodix5503 *self,
       goodix5503_pre_reset_fail (self, error);
       return;
     }
-  if (body->len != sizeof expected_firmware ||
-      memcmp (body->data, expected_firmware, sizeof expected_firmware) != 0)
+  if (!goodix5503_firmware_identity_matches (body, expected_firmware))
     {
+      g_autofree gchar *identity = NULL;
+      gsize text_len = 0;
+      gboolean printable = TRUE;
+
+      while (text_len < body->len && body->data[text_len] != 0)
+        {
+          printable &= g_ascii_isprint (body->data[text_len]);
+          text_len++;
+        }
+      if (printable && text_len < body->len)
+        identity = g_strndup ((const gchar *) body->data, text_len);
       goodix5503_pre_reset_fail (
-        self, fpi_device_error_new_msg (FP_DEVICE_ERROR_NOT_SUPPORTED,
-                                        "unsupported Goodix 5503 firmware"));
+        self, fpi_device_error_new_msg (
+          FP_DEVICE_ERROR_NOT_SUPPORTED,
+          "unsupported Goodix 5503 firmware identity: %s",
+          identity ? identity : "non-printable response"));
       return;
     }
 
-  if (!goodix5503_load_host_psk (self->psk, &error) ||
+  if (!goodix5503_disable_process_dumps (&error) ||
+      !goodix5503_load_host_psk (self->psk, &error) ||
       !goodix5503_derive_verification_record (
         self->psk, self->expected_verification, &error))
     {
@@ -1223,6 +1412,7 @@ goodix5503_firmware_done (FpiDeviceGoodix5503 *self,
       0x07, 0x00, 0x02, 0xbb, 0x00, 0x00, 0x00, 0x00,
     };
 
+    self->stage = "PSK verification";
     goodix5503_command_start (self, GOODIX5503_COMMAND_READ_PSK,
                               payload, sizeof payload, TRUE, TRUE,
                               goodix5503_verification_done);
@@ -1242,6 +1432,7 @@ goodix5503_nop_done (FpiDeviceGoodix5503 *self,
       goodix5503_pre_reset_fail (self, error);
       return;
     }
+  self->stage = "firmware identity";
   goodix5503_command_start (self, GOODIX5503_COMMAND_FIRMWARE,
                             payload, sizeof payload, TRUE, TRUE,
                             goodix5503_firmware_done);
@@ -1322,6 +1513,7 @@ goodix5503_activate (FpImageDevice *device)
 {
   static const guint8 payload[] = { 0x00, 0x00, 0x00, 0x00 };
 
+  FPI_DEVICE_GOODIX5503 (device)->stage = "preflight NOP";
   goodix5503_command_start (FPI_DEVICE_GOODIX5503 (device),
                             GOODIX5503_COMMAND_NOP,
                             payload, sizeof payload, FALSE, TRUE,

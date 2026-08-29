@@ -9,6 +9,7 @@ test_frame_buffer_split_and_coalesced (void)
 {
   const guint8 first_payload[] = { 0x01, 0x02 };
   const guint8 second_payload[] = { 0x03, 0x04, 0x05 };
+  const guint8 usb_padding[7] = { 0 };
   g_autoptr(GByteArray) first = NULL;
   g_autoptr(GByteArray) second = NULL;
   g_autoptr(GByteArray) joined = g_byte_array_new ();
@@ -24,6 +25,7 @@ test_frame_buffer_split_and_coalesced (void)
   g_assert_no_error (error);
   g_byte_array_append (joined, first->data, first->len);
   g_byte_array_append (joined, second->data, second->len);
+  g_byte_array_append (joined, usb_padding, sizeof usb_padding);
 
   g_assert_true (goodix5503_frame_buffer_append (buffer, joined->data, 3,
                                                  &error));

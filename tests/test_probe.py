@@ -58,25 +58,6 @@ class PacketTests(unittest.TestCase):
         ):
             ReadOnlyUsbSession()
 
-    def test_raw_wake_writes_exactly_one_unframed_byte(self):
-        class Endpoint:
-            def __init__(self):
-                self.calls = []
-
-            def write(self, payload, timeout):
-                self.calls.append((payload, timeout))
-                return len(payload)
-
-        session = object.__new__(ReadOnlyUsbSession)
-        session.timeout_ms = 5000
-        session.endpoint_out = Endpoint()
-        session.wake_up(timeout_ms=123)
-        self.assertEqual(session.endpoint_out.calls, [(b"\xe5", 123)])
-
-        session.endpoint_out.write = lambda _payload, _timeout: 0
-        with self.assertRaisesRegex(ProtocolError, "not fully"):
-            session.wake_up()
-
     def test_initial_drain_wipes_buffers_and_is_capacity_bounded(self):
         class Endpoint:
             def __init__(self, count):

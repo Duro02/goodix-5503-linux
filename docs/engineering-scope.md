@@ -41,7 +41,7 @@ descriptor fields.
 
 Windows tracing stopped at the driver's A4/IAP boundary and its trace-specific
 proxy is archived in Git history. Raw-wake and three-reset hypotheses were tested
-and falsified; their active implementations were removed. The next transport
-question is only whether a genuinely pre-submitted bulk-IN transfer changes the
-fixed command-00 result. Any implementation should stay command-00-only until
-that question is answered.
+and falsified; their active implementations were removed. Pre-submitted bulk-IN
+was confirmed and is now part of the fixed C transport, including 64-byte USB
+chunking and bounded frame reassembly. Current work is limited to validating the
+`FpImageDevice` capture/enroll/verify path and packaging it for `fprintd`.

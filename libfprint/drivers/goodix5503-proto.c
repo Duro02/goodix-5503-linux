@@ -127,6 +127,15 @@ goodix5503_frame_buffer_take (Goodix5503FrameBuffer  *buffer,
   *frame = g_byte_array_sized_new (frame_len);
   g_byte_array_append (*frame, buffer->bytes->data, frame_len);
   g_byte_array_remove_range (buffer->bytes, 0, frame_len);
+  if (buffer->bytes->len > 0)
+    {
+      gboolean padding_only = TRUE;
+
+      for (gsize index = 0; index < buffer->bytes->len; index++)
+        padding_only &= buffer->bytes->data[index] == 0;
+      if (padding_only)
+        g_byte_array_set_size (buffer->bytes, 0);
+    }
   return TRUE;
 }
 
