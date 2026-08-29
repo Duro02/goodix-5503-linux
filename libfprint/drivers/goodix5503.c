@@ -18,6 +18,7 @@
 #define GOODIX5503_EP_IN 0x82
 #define GOODIX5503_TRANSFER_SIZE 32768
 #define GOODIX5503_TRANSFER_TIMEOUT_MS 1500
+#define GOODIX5503_IMAGE_TIMEOUT_MS 10000
 #define GOODIX5503_USB_PACKET_SIZE 64
 #define GOODIX5503_COMMAND_ACK 0xb0
 #define GOODIX5503_COMMAND_NOP 0x00
@@ -88,6 +89,7 @@ struct _FpiDeviceGoodix5503
   GByteArray *usb_out;
   gsize usb_out_offset;
   gboolean outer_expect_read;
+  guint outer_timeout_ms;
   gboolean deactivating;
   gboolean closing;
   const gchar *stage;
@@ -512,7 +514,7 @@ goodix5503_outer_submit_out (FpiDeviceGoodix5503 *self)
   fpi_usb_transfer_fill_bulk_full (transfer, GOODIX5503_EP_OUT, chunk,
                                    chunk_len, goodix5503_out_buffer_free);
   transfer->short_is_error = TRUE;
-  fpi_usb_transfer_submit (transfer, GOODIX5503_TRANSFER_TIMEOUT_MS,
+  fpi_usb_transfer_submit (transfer, self->outer_timeout_ms,
                            self->transaction_cancel, goodix5503_outer_out_done,
                            NULL);
 }
@@ -572,16 +574,17 @@ goodix5503_outer_submit_read (FpiDeviceGoodix5503 *self)
   self->read_active = TRUE;
   fpi_usb_transfer_fill_bulk (transfer, GOODIX5503_EP_IN,
                               GOODIX5503_TRANSFER_SIZE);
-  fpi_usb_transfer_submit (transfer, GOODIX5503_TRANSFER_TIMEOUT_MS,
+  fpi_usb_transfer_submit (transfer, self->outer_timeout_ms,
                            self->transaction_cancel,
                            goodix5503_outer_read_done, NULL);
 }
 
 static void
-goodix5503_outer_start (FpiDeviceGoodix5503 *self,
-                         GByteArray          *packet,
-                         gboolean             expect_read,
-                         Goodix5503OuterCallback callback)
+goodix5503_outer_start_timeout (FpiDeviceGoodix5503 *self,
+                                 GByteArray          *packet,
+                                 gboolean             expect_read,
+                                 guint                timeout_ms,
+                                 Goodix5503OuterCallback callback)
 {
   g_assert (self->command_callback == NULL && self->outer_callback == NULL);
   g_assert (packet != NULL || expect_read);
@@ -590,6 +593,7 @@ goodix5503_outer_start (FpiDeviceGoodix5503 *self,
     self->frame_buffer = goodix5503_frame_buffer_new ();
   self->outer_callback = callback;
   self->outer_expect_read = expect_read;
+  self->outer_timeout_ms = timeout_ms;
   self->out_done = packet == NULL;
   self->read_active = FALSE;
 
@@ -606,6 +610,16 @@ goodix5503_outer_start (FpiDeviceGoodix5503 *self,
       goodix5503_usb_out_set (self, packet);
       goodix5503_outer_submit_out (self);
     }
+}
+
+static void
+goodix5503_outer_start (FpiDeviceGoodix5503 *self,
+                         GByteArray          *packet,
+                         gboolean             expect_read,
+                         Goodix5503OuterCallback callback)
+{
+  goodix5503_outer_start_timeout (self, packet, expect_read,
+                                  GOODIX5503_TRANSFER_TIMEOUT_MS, callback);
 }
 
 static void goodix5503_activation_fail (FpiDeviceGoodix5503 *self,
@@ -710,8 +724,9 @@ goodix5503_capture_frame_done (FpiDeviceGoodix5503 *self,
     OPENSSL_cleanse (frame->data, frame->len);
   if (!self->capture_state.done)
     {
-      goodix5503_outer_start (self, NULL, TRUE,
-                              goodix5503_capture_frame_done);
+      goodix5503_outer_start_timeout (self, NULL, TRUE,
+                                      GOODIX5503_IMAGE_TIMEOUT_MS,
+                                      goodix5503_capture_frame_done);
       return;
     }
 
@@ -777,8 +792,9 @@ goodix5503_capture_image (FpiDeviceGoodix5503 *self,
   self->stage = destination == GOODIX5503_CAPTURE_BACKGROUND
                   ? "fresh-base background capture"
                   : "image capture";
-  goodix5503_outer_start (self, packet, TRUE,
-                          goodix5503_capture_frame_done);
+  goodix5503_outer_start_timeout (self, packet, TRUE,
+                                  GOODIX5503_IMAGE_TIMEOUT_MS,
+                                  goodix5503_capture_frame_done);
 }
 
 static void goodix5503_fresh_attempt_start (FpiDeviceGoodix5503 *self);
