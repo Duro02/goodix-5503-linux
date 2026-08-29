@@ -163,6 +163,9 @@ run_overlap (DetectKind owner_kind, DetectKind rejected_kind)
 int
 main (void)
 {
+  g_log_set_always_fatal (G_LOG_FATAL_MASK |
+                          G_LOG_LEVEL_CRITICAL |
+                          G_LOG_LEVEL_WARNING);
   run_overlap (DETECT_SIGFM, DETECT_SIGFM);
   run_overlap (DETECT_NBIS, DETECT_SIGFM);
   run_nbis_lifecycle ();

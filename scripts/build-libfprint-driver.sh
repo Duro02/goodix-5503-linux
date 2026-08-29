@@ -4,13 +4,13 @@ set -euo pipefail
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ -n ${LIBFPRINT_SOURCE:-} ]]; then
   source_dir=$LIBFPRINT_SOURCE
-elif [[ -f "$repo_dir/.tools/libfprint-v1.94.10-source/libfprint/meson.build" ]]; then
-  source_dir="$repo_dir/.tools/libfprint-v1.94.10-source"
+elif [[ -f "$repo_dir/.tools/libfprint-v1.94.100-source/libfprint/meson.build" ]]; then
+  source_dir="$repo_dir/.tools/libfprint-v1.94.100-source"
 else
-  source_dir=/tmp/libfprint-v1.94.10
+  source_dir=/tmp/libfprint-v1.94.100
 fi
 work_dir="$repo_dir/.tools/libfprint-goodix5503"
-pinned_source_commit=0c97a47d8ef405cd577b87058c1e89cae9d242e7
+pinned_source_commit=80a4b5ec612892c5c056c48dddaa561452cf37ec
 if pkg-config --exists opencv5; then
   opencv_pkg=opencv5
   opencv_features_lib=-lopencv_features
@@ -25,12 +25,12 @@ read -r -a opencv_cflags <<< "$(pkg-config --cflags "$opencv_pkg")"
 opencv_libs=(-lopencv_core "$opencv_features_lib" -lopencv_flann -lopencv_imgproc)
 
 if [[ ! -f "$source_dir/libfprint/meson.build" ]]; then
-  printf 'Set LIBFPRINT_SOURCE to a clean libfprint v1.94.10 checkout\n' >&2
+  printf 'Set LIBFPRINT_SOURCE to a clean libfprint v1.94.100 checkout\n' >&2
   exit 1
 fi
 if [[ $(git -C "$source_dir" rev-parse HEAD 2>/dev/null || true) != "$pinned_source_commit" ]] ||
    [[ -n $(git -C "$source_dir" status --porcelain=v1 2>/dev/null || true) ]]; then
-  printf 'libfprint source must be the clean pinned v1.94.10 commit %s\n' \
+  printf 'libfprint source must be the clean pinned v1.94.100 commit %s\n' \
     "$pinned_source_commit" >&2
   exit 1
 fi
@@ -39,7 +39,7 @@ mkdir -p -- "$work_dir"
 cp -a --reflink=auto "$source_dir/." "$work_dir/source"
 cp -a -- "$repo_dir/libfprint/sigfm" "$work_dir/source/libfprint/"
 patch -d "$work_dir/source" -p1 --forward --batch \
-  < "$repo_dir/libfprint/patches/sigfm-core-v1.94.10.patch"
+  < "$repo_dir/libfprint/patches/sigfm-core-v1.94.100.patch"
 cp -- "$repo_dir/libfprint/tests/test-goodix5503-sigfm-core.cpp" \
       "$repo_dir/libfprint/tests/test-goodix5503-sigfm-detection.c" \
       "$repo_dir/libfprint/tests/test-goodix5503-sigfm-gallery.cpp" \
@@ -64,23 +64,16 @@ import sys
 source = Path(sys.argv[1])
 top = source / "meson.build"
 text = top.read_text()
-old = "all_drivers = default_drivers + virtual_drivers\n"
-new = "all_drivers = default_drivers + virtual_drivers + [ 'goodix5503' ]\n"
+old = "    'goodixmoc': {},\n"
+new = "    'goodix5503': { 'helper': ['openssl'] },\n" + old
 if text.count(old) != 1:
-    raise SystemExit("unexpected top-level driver list")
-top.write_text(text.replace(old, new))
-
-text = top.read_text()
-old = "    'uru4000' : [ 'openssl' ],\n"
-new = old + "    'goodix5503' : [ 'openssl' ],\n"
-if text.count(old) != 1:
-    raise SystemExit("unexpected driver helper map")
+    raise SystemExit("unexpected driver metadata map")
 top.write_text(text.replace(old, new))
 
 lib = source / "libfprint/meson.build"
 text = lib.read_text()
-old = "    'goodixmoc' :\n        [ 'drivers/goodixmoc/goodix.c', 'drivers/goodixmoc/goodix_proto.c' ],\n"
-new = "    'goodix5503' :\n        [ 'drivers/goodix5503.c', 'drivers/goodix5503-proto.c',\n          'drivers/goodix5503-config.c', 'drivers/goodix5503-security.c',\n          'drivers/goodix5503-image.c', 'drivers/goodix5503-tls.c' ],\n" + old
+old = "    'goodixmoc' : files(\n        'drivers/goodixmoc/goodix.c',\n        'drivers/goodixmoc/goodix_proto.c',\n    ),\n"
+new = "    'goodix5503' : files(\n        'drivers/goodix5503.c', 'drivers/goodix5503-proto.c',\n        'drivers/goodix5503-config.c', 'drivers/goodix5503-security.c',\n        'drivers/goodix5503-image.c', 'drivers/goodix5503-tls.c',\n    ),\n" + old
 if text.count(old) != 1:
     raise SystemExit("unexpected libfprint driver source map")
 lib.write_text(text.replace(old, new))
@@ -88,7 +81,7 @@ PY
 
 meson setup "$work_dir/build" "$work_dir/source" \
   -Ddrivers=goodix5503 \
-  -Dintrospection=false \
+  -Dintrospection=true \
   -Ddoc=false \
   -Dudev_rules=disabled \
   -Dudev_hwdb=disabled

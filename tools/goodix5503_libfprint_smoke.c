@@ -1,16 +1,54 @@
 /* Memory-only capture/enroll smoke tests for the development libfprint driver. */
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef GOODIX5503_REQUIRE_INSTALLED_LIBFPRINT
+#include <dlfcn.h>
+#include <limits.h>
+#endif
 #include <sys/prctl.h>
 #include <sys/resource.h>
 
 #include <fprint.h>
+#ifndef GOODIX5503_REQUIRE_INSTALLED_LIBFPRINT
 #include "fpi-image-device.h"
+#else
+typedef enum
+{
+  FPI_IMAGE_DEVICE_STATE_INACTIVE,
+  FPI_IMAGE_DEVICE_STATE_ACTIVATING,
+  FPI_IMAGE_DEVICE_STATE_DEACTIVATING,
+  FPI_IMAGE_DEVICE_STATE_IDLE,
+  FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON,
+  FPI_IMAGE_DEVICE_STATE_CAPTURE,
+  FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF,
+} FpiImageDeviceState;
+#endif
 
 static gboolean expect_different_finger;
+
+#ifdef GOODIX5503_REQUIRE_INSTALLED_LIBFPRINT
+static void
+require_installed_libfprint (void)
+{
+  const char expected[] = "/usr/lib/libfprint-2.so.2.0.0";
+  char resolved[PATH_MAX];
+  Dl_info info;
+  void *symbol;
+
+  symbol = dlsym (RTLD_DEFAULT, "fp_context_new");
+  if (symbol == NULL || dladdr (symbol, &info) == 0 || info.dli_fname == NULL ||
+      realpath (info.dli_fname, resolved) == NULL ||
+      strcmp (resolved, expected) != 0)
+    {
+      fputs ("Installed libfprint validation refused non-/usr library\n", stderr);
+      _Exit (2);
+    }
+}
+#endif
 
 static void
 disable_core_dumps (void)
@@ -75,13 +113,28 @@ main (int argc, char **argv)
 
   if (argc == 2 && g_strcmp0 (argv[1], "--enroll-verify") == 0)
     enroll_verify = TRUE;
+#ifdef GOODIX5503_REQUIRE_INSTALLED_LIBFPRINT
+  else if (argc == 2 &&
+           g_strcmp0 (argv[1], "--check-installed-library") == 0)
+    {
+      disable_core_dumps ();
+      require_installed_libfprint ();
+      puts ("INSTALLED LIBFPRINT PATH VERIFIED");
+      return 0;
+    }
+#endif
   else if (argc != 1)
     {
-      fprintf (stderr, "usage: %s [--enroll-verify]\n", argv[0]);
+      fprintf (stderr,
+               "usage: %s [--enroll-verify|--check-installed-library]\n",
+               argv[0]);
       return 2;
     }
 
   disable_core_dumps ();
+#ifdef GOODIX5503_REQUIRE_INSTALLED_LIBFPRINT
+  require_installed_libfprint ();
+#endif
   context = fp_context_new ();
   devices = fp_context_get_devices (context);
   for (guint index = 0; index < devices->len; index++)

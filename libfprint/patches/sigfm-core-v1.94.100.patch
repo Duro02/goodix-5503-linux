@@ -1,0 +1,1229 @@
+diff --git i/libfprint/fp-image-device-private.h w/libfprint/fp-image-device-private.h
+index b075634..27c3cf0 100644
+--- i/libfprint/fp-image-device-private.h
++++ w/libfprint/fp-image-device-private.h
+@@ -36,7 +36,9 @@ typedef struct
+   GError             *action_error;
+   FpImage            *capture_image;
+ 
+-  gint                bz3_threshold;
++  gint                    bz3_threshold;
++  gint                    sigfm_threshold;
++  FpiImageDeviceAlgorithm algorithm;
+ } FpImageDevicePrivate;
+ 
+ 
+diff --git i/libfprint/fp-image-device.c w/libfprint/fp-image-device.c
+index ac88ffd..3b0d784 100644
+--- i/libfprint/fp-image-device.c
++++ w/libfprint/fp-image-device.c
+@@ -125,8 +125,10 @@ fp_image_device_start_capture_action (FpDevice *device)
+ 
+       fpi_device_get_enroll_data (device, &enroll_print);
+       g_object_get (enroll_print, "fpi-type", &print_type, NULL);
+-      if (print_type != FPI_PRINT_NBIS)
+-        fpi_print_set_type (enroll_print, FPI_PRINT_NBIS);
++      FpiPrintType expected = priv->algorithm == FPI_DEVICE_ALGO_SIGFM ?
++                              FPI_PRINT_SIGFM : FPI_PRINT_NBIS;
++      if (print_type != expected)
++        fpi_print_set_type (enroll_print, expected);
+     }
+ 
+   priv->enroll_stage = 0;
+@@ -192,10 +194,16 @@ fp_image_device_constructed (GObject *obj)
+   FpImageDevicePrivate *priv = fp_image_device_get_instance_private (self);
+   FpImageDeviceClass *cls = FP_IMAGE_DEVICE_GET_CLASS (self);
+ 
+-  /* Set default threshold. */
++  /* NBIS is the default for every image driver unless explicitly selected. */
++  priv->algorithm = cls->algorithm;
++  g_assert (priv->algorithm == FPI_DEVICE_ALGO_NBIS ||
++            priv->algorithm == FPI_DEVICE_ALGO_SIGFM);
+   priv->bz3_threshold = BOZORTH3_DEFAULT_THRESHOLD;
+   if (cls->bz3_threshold > 0)
+     priv->bz3_threshold = cls->bz3_threshold;
++  priv->sigfm_threshold = cls->sigfm_threshold;
++  if (priv->algorithm == FPI_DEVICE_ALGO_SIGFM)
++    g_assert (priv->sigfm_threshold > 0);
+ 
+   G_OBJECT_CLASS (fp_image_device_parent_class)->constructed (obj);
+ }
+diff --git i/libfprint/fp-image.c w/libfprint/fp-image.c
+index f9c60b3..6e02ab1 100644
+--- i/libfprint/fp-image.c
++++ w/libfprint/fp-image.c
+@@ -23,6 +23,8 @@
+ #include "fpi-compat.h"
+ #include "fpi-image.h"
+ #include "fpi-log.h"
++#include "fpi-minutiae.h"
++#include "sigfm/sigfm.hpp"
+ 
+ #include <config.h>
+ #include <nbis.h>
+@@ -47,6 +49,67 @@ enum {
+ 
+ static GParamSpec *properties[N_PROPS];
+ 
++static void
++secure_wipe (gpointer buffer, gsize length)
++{
++  volatile guint8 *cursor = buffer;
++
++  while (length-- > 0)
++    *cursor++ = 0;
++}
++
++static void
++secure_minutia_free (struct fp_minutia *minutia)
++{
++  gsize ridge_count = 0;
++
++  if (minutia == NULL)
++    return;
++  if (minutia->num_nbrs >= 0 && minutia->num_nbrs <= MAX_NBRS)
++    ridge_count = minutia->num_nbrs;
++  if (minutia->nbrs)
++    {
++      secure_wipe (minutia->nbrs, MAX_NBRS * sizeof *minutia->nbrs);
++      g_clear_pointer (&minutia->nbrs, g_free);
++    }
++  if (minutia->ridge_counts)
++    {
++      secure_wipe (minutia->ridge_counts,
++                   ridge_count * sizeof *minutia->ridge_counts);
++      g_clear_pointer (&minutia->ridge_counts, g_free);
++    }
++  secure_wipe (minutia, sizeof *minutia);
++  g_free (minutia);
++}
++
++static void
++secure_minutiae_array_free (GPtrArray *minutiae)
++{
++  if (minutiae == NULL)
++    return;
++  g_ptr_array_set_free_func (minutiae, NULL);
++  for (guint i = 0; i < minutiae->len; i++)
++    secure_minutia_free (g_ptr_array_index (minutiae, i));
++  g_ptr_array_unref (minutiae);
++}
++
++static void
++secure_nbis_minutiae_free (struct fp_minutiae *minutiae)
++{
++  if (minutiae == NULL)
++    return;
++  for (gint i = 0; i < minutiae->num; i++)
++    secure_minutia_free (minutiae->list[i]);
++  if (minutiae->list)
++    {
++      secure_wipe (minutiae->list,
++                   minutiae->num * sizeof *minutiae->list);
++      g_clear_pointer (&minutiae->list, g_free);
++    }
++  secure_wipe (minutiae, sizeof *minutiae);
++  g_free (minutiae);
++}
++
+ FpImage *
+ fp_image_new (gint width, gint height)
+ {
+@@ -61,9 +124,14 @@ fp_image_finalize (GObject *object)
+ {
+   FpImage *self = (FpImage *) object;
+ 
++  if (self->data)
++    secure_wipe (self->data, self->width * self->height);
+   g_clear_pointer (&self->data, g_free);
++  if (self->binarized)
++    secure_wipe (self->binarized, self->width * self->height);
+   g_clear_pointer (&self->binarized, g_free);
+-  g_clear_pointer (&self->minutiae, g_ptr_array_unref);
++  g_clear_pointer (&self->minutiae, secure_minutiae_array_free);
++  g_clear_pointer (&self->sigfm_info, sigfm_free_info);
+ 
+   G_OBJECT_CLASS (fp_image_parent_class)->finalize (object);
+ }
+@@ -165,16 +233,22 @@ typedef struct
+   FpiImageFlags       flags;
+   unsigned char      *image;
+   gboolean            image_changed;
++  gsize               image_len;
+ } DetectMinutiaeNbisData;
+ 
+ static void
+ fp_image_detect_minutiae_free (DetectMinutiaeNbisData *data)
+ {
+-  g_clear_pointer (&data->minutiae, free_minutiae);
++  g_clear_pointer (&data->minutiae, secure_nbis_minutiae_free);
++  if (data->binarized)
++    secure_wipe (data->binarized, data->image_len);
+   g_clear_pointer (&data->binarized, g_free);
+ 
+   if (data->image_changed)
+-    g_clear_pointer (&data->image, g_free);
++    {
++      secure_wipe (data->image, data->image_len);
++      g_clear_pointer (&data->image, g_free);
++    }
+ 
+   g_free (data);
+ }
+@@ -197,14 +271,17 @@ fp_image_detect_minutiae_nbis_finish (FpImage *self,
+ 
+       if (data->image_changed)
+         {
++          secure_wipe (self->data, self->width * self->height);
+           g_clear_pointer (&self->data, g_free);
+           self->data = g_steal_pointer (&data->image);
+         }
+ 
++      if (self->binarized)
++        secure_wipe (self->binarized, self->width * self->height);
+       g_clear_pointer (&self->binarized, g_free);
+       self->binarized = g_steal_pointer (&data->binarized);
+ 
+-      g_clear_pointer (&self->minutiae, g_ptr_array_unref);
++      g_clear_pointer (&self->minutiae, secure_minutiae_array_free);
+       self->minutiae = g_ptr_array_new_full (data->minutiae->num,
+                                              (GDestroyNotify) free_minutia);
+ 
+@@ -212,7 +289,9 @@ fp_image_detect_minutiae_nbis_finish (FpImage *self,
+         g_ptr_array_add (self->minutiae,
+                          g_steal_pointer (&data->minutiae->list[i]));
+ 
+-      /* Don't let free_minutiae delete the minutiae that we now own. */
++      /* Don't let secure_nbis_minutiae_free delete transferred minutiae. */
++      secure_wipe (data->minutiae->list,
++                   data->minutiae->num * sizeof *data->minutiae->list);
+       data->minutiae->num = 0;
+ 
+       return TRUE;
+@@ -303,6 +382,7 @@ fp_image_detect_minutiae_nbis_thread_func (GTask        *task,
+   ret_data = g_new0 (DetectMinutiaeNbisData, 1);
+   ret_data->flags = minutiae_flags;
+   ret_data->image = image;
++  ret_data->image_len = self->width * self->height;
+   ret_data->image_changed = image != self->data;
+ 
+   /* Normalize the image first */
+@@ -327,7 +407,7 @@ fp_image_detect_minutiae_nbis_thread_func (GTask        *task,
+   g_timer_stop (timer);
+   fp_dbg ("Minutiae scan completed in %f secs", g_timer_elapsed (timer, NULL));
+ 
+-  if (g_task_had_error (thread_task))
++  if (g_task_return_error_if_cancelled (thread_task))
+     return;
+ 
+   if (r)
+@@ -448,6 +528,31 @@ fp_image_get_minutiae (FpImage *self)
+   return self->minutiae;
+ }
+ 
++typedef struct
++{
++  gboolean owns_detection;
++} DetectionTaskData;
++
++static DetectionTaskData *
++detection_task_data_new (void)
++{
++  return g_new0 (DetectionTaskData, 1);
++}
++
++static void
++detection_task_release (FpImage *self, GTask *task)
++{
++  DetectionTaskData *data = g_task_get_task_data (task);
++  gboolean changed;
++
++  if (!data->owns_detection)
++    return;
++  changed = g_atomic_int_compare_and_exchange (&self->detection_in_progress,
++                                               TRUE, FALSE);
++  g_assert (changed);
++  data->owns_detection = FALSE;
++}
++
+ /**
+  * fp_image_detect_minutiae:
+  * @self: A #FpImage
+@@ -471,6 +576,7 @@ fp_image_detect_minutiae (FpImage            *self,
+   task = g_task_new (self, cancellable, callback, user_data);
+   g_task_set_source_tag (task, fp_image_detect_minutiae);
+   g_task_set_check_cancellable (task, TRUE);
++  g_task_set_task_data (task, detection_task_data_new (), g_free);
+ 
+   if (!g_atomic_int_compare_and_exchange (&self->detection_in_progress,
+                                           FALSE, TRUE))
+@@ -480,6 +586,7 @@ fp_image_detect_minutiae (FpImage            *self,
+       return;
+     }
+ 
++  ((DetectionTaskData *) g_task_get_task_data (task))->owns_detection = TRUE;
+   g_task_run_in_thread (g_steal_pointer (&task),
+                         fp_image_detect_minutiae_nbis_thread_func);
+ }
+@@ -500,7 +607,6 @@ fp_image_detect_minutiae_finish (FpImage      *self,
+                                  GError      **error)
+ {
+   GTask *task;
+-  gboolean changed;
+ 
+   g_return_val_if_fail (FP_IS_IMAGE (self), FALSE);
+   g_return_val_if_fail (g_task_is_valid (result, self), FALSE);
+@@ -508,9 +614,7 @@ fp_image_detect_minutiae_finish (FpImage      *self,
+                         fp_image_detect_minutiae, FALSE);
+ 
+   task = G_TASK (result);
+-  changed = g_atomic_int_compare_and_exchange (&self->detection_in_progress,
+-                                               TRUE, FALSE);
+-  g_assert (changed);
++  detection_task_release (self, task);
+ 
+   if (g_task_had_error (task))
+     {
+diff --git i/libfprint/fp-print.c w/libfprint/fp-print.c
+index d541437..21658aa 100644
+--- i/libfprint/fp-print.c
++++ w/libfprint/fp-print.c
+@@ -23,6 +23,11 @@
+ #include "fp-print-private.h"
+ #include "fpi-compat.h"
+ #include "fpi-log.h"
++#include "fpi-sensitive-data.h"
++#include "sigfm/sigfm.hpp"
++
++#define SIGFM_ENROLL_SAMPLES 8
++#define SIGFM_MAX_SAMPLE_SIZE (1024 * 1024)
+ 
+ /**
+  * SECTION: fp-print
+@@ -67,6 +72,64 @@ enum {
+ 
+ static GParamSpec *properties[N_PROPS];
+ 
++typedef struct
++{
++  gsize length;
++  guchar data[];
++} SensitiveVariantData;
++
++static void
++sensitive_variant_data_free (SensitiveVariantData *holder)
++{
++  volatile guchar *cursor;
++  gsize length;
++
++  if (holder == NULL)
++    return;
++  cursor = holder->data;
++  length = holder->length;
++  while (length-- > 0)
++    *cursor++ = 0;
++  g_free (holder);
++}
++
++static GPtrArray *
++serialize_sigfm_gallery (FpPrint *print, GError **error)
++{
++  g_autoptr(GPtrArray) samples =
++    g_ptr_array_new_with_free_func ((GDestroyNotify) sensitive_variant_data_free);
++
++  if (print->prints == NULL ||
++      print->prints->len != SIGFM_ENROLL_SAMPLES)
++    {
++      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
++                           "SIGFM gallery must contain exactly eight samples");
++      return NULL;
++    }
++  for (guint i = 0; i < print->prints->len; i++)
++    {
++      gsize serialized_len = 0;
++      guchar *serialized = sigfm_serialize (
++        g_ptr_array_index (print->prints, i), &serialized_len);
++      SensitiveVariantData *holder;
++
++      if (serialized == NULL || serialized_len == 0 ||
++          serialized_len > SIGFM_MAX_SAMPLE_SIZE)
++        {
++          sigfm_free_serialized (serialized, serialized_len);
++          g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
++                               "SIGFM sample serialization failed");
++          return NULL;
++        }
++      holder = g_malloc (sizeof *holder + serialized_len);
++      holder->length = serialized_len;
++      memcpy (holder->data, serialized, serialized_len);
++      sigfm_free_serialized (serialized, serialized_len);
++      g_ptr_array_add (samples, holder);
++    }
++  return g_steal_pointer (&samples);
++}
++
+ static void
+ fp_print_finalize (GObject *object)
+ {
+@@ -628,6 +691,16 @@ fp_print_equal (FpPrint *self, FpPrint *other)
+ 
+       return TRUE;
+ 
++    case FPI_PRINT_SIGFM:
++      if (self->prints == NULL || other->prints == NULL ||
++          self->prints->len != other->prints->len)
++        return FALSE;
++      for (guint i = 0; i < self->prints->len; i++)
++        if (!sigfm_equal (g_ptr_array_index (self->prints, i),
++                          g_ptr_array_index (other->prints, i)))
++          return FALSE;
++      return TRUE;
++
+     case FPI_PRINT_UNDEFINED:
+       g_assert_not_reached ();
+     }
+@@ -658,11 +731,21 @@ fp_print_serialize (FpPrint *print,
+                     GError **error)
+ {
+   g_autoptr(GVariant) result = NULL;
++  g_autoptr(GPtrArray) sigfm_samples = NULL;
+   GVariantBuilder builder = G_VARIANT_BUILDER_INIT (FPI_PRINT_VARIANT_TYPE);
++  SensitiveVariantData *stored = NULL;
+   gsize len;
+ 
+   g_assert (data);
+   g_assert (length);
++  *data = NULL;
++  *length = 0;
++  if (print->type == FPI_PRINT_SIGFM)
++    {
++      sigfm_samples = serialize_sigfm_gallery (print, error);
++      if (sigfm_samples == NULL)
++        return FALSE;
++    }
+ 
+   g_variant_builder_add (&builder, "i", print->type);
+   g_variant_builder_add (&builder, "s", print->driver);
+@@ -716,6 +799,24 @@ fp_print_serialize (FpPrint *print,
+       g_variant_builder_close (&nested);
+       g_variant_builder_add (&builder, "v", g_variant_builder_end (&nested));
+     }
++  else if (print->type == FPI_PRINT_SIGFM)
++    {
++      GVariantBuilder nested = G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE ("(aay)"));
++
++      g_variant_builder_open (&nested, G_VARIANT_TYPE ("aay"));
++      while (sigfm_samples->len > 0)
++        {
++          SensitiveVariantData *holder =
++            g_ptr_array_steal_index (sigfm_samples, 0);
++          g_variant_builder_add_value (
++            &nested,
++            fpi_sensitive_byte_array_new_take (
++              holder->data, holder->length,
++              (GDestroyNotify) sensitive_variant_data_free, holder));
++        }
++      g_variant_builder_close (&nested);
++      g_variant_builder_add (&builder, "v", g_variant_builder_end (&nested));
++    }
+   else
+     {
+       g_variant_builder_add (&builder, "v", g_variant_new_variant (print->data));
+@@ -725,6 +826,12 @@ fp_print_serialize (FpPrint *print,
+ 
+ #if (G_BYTE_ORDER == G_BIG_ENDIAN)
+   GVariant *tmp;
++  if (print->type == FPI_PRINT_SIGFM)
++    {
++      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
++                           "SIGFM persistence requires little-endian GVariant storage");
++      return FALSE;
++    }
+   tmp = g_variant_byteswap (result);
+   g_variant_unref (result);
+   result = tmp;
+@@ -734,15 +841,17 @@ fp_print_serialize (FpPrint *print,
+   /* Add 3 bytes of header */
+   len += 3;
+ 
++  stored = g_malloc (sizeof *stored + len - 3);
++  stored->length = len - 3;
++  g_variant_store (result, stored->data);
++
+   *data = g_malloc (len);
+   *length = len;
+-
+   (*data)[0] = (guchar) 'F';
+   (*data)[1] = (guchar) 'P';
+   (*data)[2] = (guchar) '3';
+-
+-  g_variant_get_data (result);
+-  g_variant_store (result, (*data) + 3);
++  memcpy ((*data) + 3, stored->data, stored->length);
++  sensitive_variant_data_free (stored);
+ 
+   return TRUE;
+ }
+@@ -768,6 +877,7 @@ fp_print_deserialize (const guchar *data,
+   g_autoptr(GVariant) print_data = NULL;
+   g_autoptr(GDate) date = NULL;
+   g_autoptr(GBytes) bytes = NULL;
++  SensitiveVariantData *aligned_holder = NULL;
+   guint8 finger_int8;
+   FpFinger finger;
+   g_autofree gchar *username = NULL;
+@@ -789,18 +899,38 @@ fp_print_deserialize (const guchar *data,
+    * of this function (meaning we don't need to keep the data around.
+    */
+ 
+-  /* We need to copy the backing store for the raw data that we may keep for
+-   * longer. Using a GBytes also ensures the data is correctly aligned. */
+-  bytes = g_bytes_new (data + 3, length - 3);
++  /* Copy into aligned, wipe-aware backing storage. */
++  aligned_holder = g_malloc (sizeof *aligned_holder + length - 3);
++  aligned_holder->length = length - 3;
++  memcpy (aligned_holder->data, data + 3, length - 3);
++  bytes = g_bytes_new_with_free_func (
++    aligned_holder->data, aligned_holder->length,
++    (GDestroyNotify) sensitive_variant_data_free, aligned_holder);
++  aligned_holder = NULL;
+   raw_value = g_variant_new_from_bytes (FPI_PRINT_VARIANT_TYPE, bytes, FALSE);
+ 
+   if (!raw_value)
+     goto invalid_format;
+ 
+ #if (G_BYTE_ORDER == G_BIG_ENDIAN)
+-  value = g_variant_byteswap (raw_value);
++  {
++    guint32 stored_type;
++
++    if (length - 3 < sizeof stored_type)
++      goto invalid_format;
++    memcpy (&stored_type, g_bytes_get_data (bytes, NULL), sizeof stored_type);
++    if (GUINT32_FROM_LE (stored_type) == FPI_PRINT_SIGFM)
++      {
++        g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
++                             "SIGFM persistence requires little-endian GVariant storage");
++        return NULL;
++      }
++    value = g_variant_byteswap (raw_value);
++  }
+ #else
+-  value = g_variant_get_normal_form (raw_value);
++  if (!g_variant_is_normal_form (raw_value))
++    goto invalid_format;
++  value = g_variant_ref (raw_value);
+ #endif
+ 
+   g_variant_get (value,
+@@ -872,6 +1002,48 @@ fp_print_deserialize (const guchar *data,
+       }
+       break;
+ 
++    case FPI_PRINT_SIGFM:
++      {
++        g_autoptr(GVariant) prints = NULL;
++        gsize sample_count;
++
++        if (!g_variant_is_of_type (print_data, G_VARIANT_TYPE ("(aay)")) ||
++            g_variant_n_children (print_data) != 1)
++          goto invalid_format;
++        prints = g_variant_get_child_value (print_data, 0);
++        if (!g_variant_is_of_type (prints, G_VARIANT_TYPE ("aay")))
++          goto invalid_format;
++        sample_count = g_variant_n_children (prints);
++        if (sample_count != SIGFM_ENROLL_SAMPLES)
++          goto invalid_format;
++        result = g_object_new (FP_TYPE_PRINT,
++                               "driver", driver,
++                               "device-id", device_id,
++                               "device-stored", device_stored,
++                               NULL);
++        g_object_ref_sink (result);
++        fpi_print_set_type (result, FPI_PRINT_SIGFM);
++        for (gsize i = 0; i < sample_count; i++)
++          {
++            g_autoptr(GVariant) sample = g_variant_get_child_value (prints, i);
++            gsize sample_len = 0;
++            const guchar *sample_data;
++            SigfmImgInfo *info;
++
++            if (!g_variant_is_of_type (sample, G_VARIANT_TYPE ("ay")))
++              goto invalid_format;
++            sample_data = g_variant_get_fixed_array (sample, &sample_len, 1);
++            if (sample_data == NULL || sample_len == 0 ||
++                sample_len > SIGFM_MAX_SAMPLE_SIZE)
++              goto invalid_format;
++            info = sigfm_deserialize (sample_data, sample_len);
++            if (info == NULL)
++              goto invalid_format;
++            g_ptr_array_add (result->prints, info);
++          }
++      }
++      break;
++
+     case FPI_PRINT_RAW:
+       {
+         g_autoptr(GVariant) fp_data = g_variant_get_child_value (print_data, 0);
+diff --git i/libfprint/fpi-image-device.c w/libfprint/fpi-image-device.c
+index 87bdc60..f110168 100644
+--- i/libfprint/fpi-image-device.c
++++ w/libfprint/fpi-image-device.c
+@@ -22,6 +22,7 @@
+ 
+ #include "fp-image-device-private.h"
+ #include "fp-image-device.h"
++#include "fpi-image.h"
+ 
+ /**
+  * SECTION: fpi-image-device
+@@ -252,8 +253,12 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+   /* Note: We rely on the device to not disappear during an operation. */
+   priv = fp_image_device_get_instance_private (FP_IMAGE_DEVICE (device));
+   priv->minutiae_scan_active = FALSE;
++  action = fpi_device_get_current_action (device);
+ 
+-  if (!fp_image_detect_minutiae_finish (image, res, &error))
++  if (!((priv->algorithm == FPI_DEVICE_ALGO_SIGFM &&
++         action != FPI_DEVICE_ACTION_CAPTURE) ?
++        fpi_image_detect_sigfm_finish (image, res, &error) :
++        fp_image_detect_minutiae_finish (image, res, &error)))
+     {
+       /* Cancel operation . */
+       if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+@@ -270,8 +275,6 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+       error = fpi_device_retry_new_msg (FP_DEVICE_RETRY_GENERAL, "Minutiae detection failed, please retry");
+     }
+ 
+-  action = fpi_device_get_current_action (device);
+-
+   if (action == FPI_DEVICE_ACTION_CAPTURE)
+     {
+       priv->capture_image = g_steal_pointer (&image);
+@@ -282,7 +285,9 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+   if (!error)
+     {
+       print = fp_print_new (device);
+-      fpi_print_set_type (print, FPI_PRINT_NBIS);
++      fpi_print_set_type (print,
++                          priv->algorithm == FPI_DEVICE_ALGO_SIGFM ?
++                          FPI_PRINT_SIGFM : FPI_PRINT_NBIS);
+       if (!fpi_print_add_from_image (print, image, &error))
+         {
+           g_clear_object (&print);
+@@ -304,7 +309,14 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+ 
+       if (print)
+         {
+-          fpi_print_add_print (enroll_print, print);
++          if (!fpi_print_add_print (enroll_print, print, &error))
++            {
++              g_clear_object (&print);
++              fp_image_device_maybe_complete_action (self,
++                                                     g_steal_pointer (&error));
++              fpi_image_device_deactivate (self, TRUE);
++              return;
++            }
+           priv->enroll_stage += 1;
+         }
+ 
+@@ -333,7 +345,14 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+         {
+           FpPrint *template = g_ptr_array_index (templates, i);
+ 
+-          if (fpi_print_bz3_match (template, print, priv->bz3_threshold, &error) == FPI_MATCH_SUCCESS)
++          FpiMatchResult match = priv->algorithm == FPI_DEVICE_ALGO_SIGFM ?
++                                 fpi_print_sigfm_match (template, print,
++                                                        priv->sigfm_threshold,
++                                                        &error) :
++                                 fpi_print_bz3_match (template, print,
++                                                      priv->bz3_threshold,
++                                                      &error);
++          if (match == FPI_MATCH_SUCCESS)
+             {
+               result = template;
+               break;
+@@ -485,10 +504,17 @@ fpi_image_device_image_captured (FpImageDevice *self, FpImage *image)
+ 
+   /* XXX: We also detect minutiae in capture mode, we solely do this
+    *      to normalize the image which will happen as a by-product. */
+-  fp_image_detect_minutiae (image,
++  if (priv->algorithm == FPI_DEVICE_ALGO_SIGFM &&
++      action != FPI_DEVICE_ACTION_CAPTURE)
++    fpi_image_detect_sigfm (image,
+                             fpi_device_get_cancellable (FP_DEVICE (self)),
+                             fpi_image_device_minutiae_detected,
+                             self);
++  else
++    fp_image_detect_minutiae (image,
++                              fpi_device_get_cancellable (FP_DEVICE (self)),
++                              fpi_image_device_minutiae_detected,
++                              self);
+ 
+   /* XXX: This is wrong if we add support for raw capture mode. */
+   fp_image_device_change_state (self, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF);
+diff --git i/libfprint/fpi-image-device.h w/libfprint/fpi-image-device.h
+index 71472db..00e3280 100644
+--- i/libfprint/fpi-image-device.h
++++ w/libfprint/fpi-image-device.h
+@@ -70,6 +70,11 @@ typedef enum {
+   FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF,
+ } FpiImageDeviceState;
+ 
++typedef enum {
++  FPI_DEVICE_ALGO_NBIS = 0,
++  FPI_DEVICE_ALGO_SIGFM,
++} FpiImageDeviceAlgorithm;
++
+ /**
+  * FpImageDeviceClass:
+  * @bz3_threshold: Threshold to consider bozorth3 score a match, default: 40
+@@ -104,8 +109,10 @@ struct _FpImageDeviceClass
+ {
+   FpDeviceClass parent_class;
+ 
+-  gint          bz3_threshold;
+-  gint          img_width;
++  gint                    bz3_threshold;
++  gint                    sigfm_threshold;
++  FpiImageDeviceAlgorithm algorithm;
++  gint                    img_width;
+   gint          img_height;
+ 
+   void          (*img_open)     (FpImageDevice *dev);
+diff --git i/libfprint/fpi-image.c w/libfprint/fpi-image.c
+index 98f412a..e338b6a 100644
+--- i/libfprint/fpi-image.c
++++ w/libfprint/fpi-image.c
+@@ -22,6 +22,7 @@
+ 
+ #include "fpi-image.h"
+ #include "fpi-log.h"
++#include "sigfm/sigfm.hpp"
+ 
+ #include <nbis.h>
+ #include <config.h>
+@@ -152,3 +153,113 @@ fpi_image_resize (FpImage *orig_img,
+   return g_object_ref (orig_img);
+ #endif
+ }
++
++typedef struct
++{
++  gboolean owns_detection;
++} SigfmDetectionTaskData;
++
++static SigfmDetectionTaskData *
++sigfm_detection_task_data_new (void)
++{
++  return g_new0 (SigfmDetectionTaskData, 1);
++}
++
++static void
++sigfm_detection_task_release (FpImage *self, GTask *task)
++{
++  SigfmDetectionTaskData *data = g_task_get_task_data (task);
++  gboolean changed;
++
++  if (!data->owns_detection)
++    return;
++  changed = g_atomic_int_compare_and_exchange (&self->detection_in_progress,
++                                                TRUE, FALSE);
++  g_assert (changed);
++  data->owns_detection = FALSE;
++}
++
++static void
++fp_image_detect_sigfm_thread_func (GTask        *task,
++                                   gpointer      source_object,
++                                   gpointer      task_data,
++                                   GCancellable *cancellable)
++{
++  g_autoptr(GTask) thread_task = g_steal_pointer (&task);
++  FpImage *self = source_object;
++  SigfmImgInfo *info;
++
++  (void) task_data;
++  (void) cancellable;
++  if (g_task_return_error_if_cancelled (thread_task))
++    return;
++  info = sigfm_extract (self->data, self->width, self->height);
++  if (info == NULL || sigfm_keypoints_count (info) < 20)
++    {
++      g_clear_pointer (&info, sigfm_free_info);
++      g_task_return_new_error (thread_task, G_IO_ERROR, G_IO_ERROR_FAILED,
++                               "Insufficient SIGFM features");
++      return;
++    }
++  if (g_task_return_error_if_cancelled (thread_task))
++    {
++      sigfm_free_info (info);
++      return;
++    }
++  g_task_return_pointer (thread_task, info, (GDestroyNotify) sigfm_free_info);
++}
++
++void
++fpi_image_detect_sigfm (FpImage            *self,
++                        GCancellable       *cancellable,
++                        GAsyncReadyCallback callback,
++                        gpointer            user_data)
++{
++  g_autoptr(GTask) task = NULL;
++
++  g_return_if_fail (FP_IS_IMAGE (self));
++  g_return_if_fail (callback != NULL);
++  task = g_task_new (self, cancellable, callback, user_data);
++  g_task_set_source_tag (task, fpi_image_detect_sigfm);
++  g_task_set_check_cancellable (task, TRUE);
++  g_task_set_task_data (task, sigfm_detection_task_data_new (), g_free);
++  if (!g_atomic_int_compare_and_exchange (&self->detection_in_progress,
++                                          FALSE, TRUE))
++    {
++      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_ADDRESS_IN_USE,
++                               "Image feature detection is already in progress");
++      return;
++    }
++  ((SigfmDetectionTaskData *) g_task_get_task_data (task))->owns_detection = TRUE;
++  g_task_run_in_thread (g_steal_pointer (&task),
++                        fp_image_detect_sigfm_thread_func);
++}
++
++gboolean
++fpi_image_detect_sigfm_finish (FpImage      *self,
++                               GAsyncResult *result,
++                               GError      **error)
++{
++  GTask *task;
++  SigfmImgInfo *info;
++
++  g_return_val_if_fail (FP_IS_IMAGE (self), FALSE);
++  g_return_val_if_fail (g_task_is_valid (result, self), FALSE);
++  g_return_val_if_fail (g_task_get_source_tag (G_TASK (result)) ==
++                        fpi_image_detect_sigfm, FALSE);
++  task = G_TASK (result);
++  sigfm_detection_task_release (self, task);
++  info = g_task_propagate_pointer (task, error);
++  if (info == NULL)
++    return FALSE;
++  g_clear_pointer (&self->sigfm_info, sigfm_free_info);
++  self->sigfm_info = info;
++  return TRUE;
++}
++
++SigfmImgInfo *
++fpi_image_steal_sigfm_info (FpImage *self)
++{
++  g_return_val_if_fail (FP_IS_IMAGE (self), NULL);
++  return g_steal_pointer (&self->sigfm_info);
++}
+diff --git i/libfprint/fpi-image.h w/libfprint/fpi-image.h
+index fdc376c..4c3224e 100644
+--- i/libfprint/fpi-image.h
++++ w/libfprint/fpi-image.h
+@@ -22,6 +22,8 @@
+ 
+ #include "fp-image.h"
+ 
++typedef struct SigfmImgInfo SigfmImgInfo;
++
+ /**
+  * FpiImageFlags:
+  * @FPI_IMAGE_V_FLIPPED: the image is vertically flipped
+@@ -68,9 +70,10 @@ struct _FpImage
+   guint8    *data;
+   guint8    *binarized;
+ 
+-  GPtrArray *minutiae;
++  GPtrArray      *minutiae;
++  SigfmImgInfo   *sigfm_info;
+ 
+-  gboolean   detection_in_progress;
++  gboolean        detection_in_progress;
+ };
+ 
+ gint fpi_std_sq_dev (const guint8 *buf,
+@@ -82,3 +85,12 @@ gint fpi_mean_sq_diff_norm (const guint8 *buf1,
+ FpImage *fpi_image_resize (FpImage *orig,
+                            guint    w_factor,
+                            guint    h_factor);
++
++void fpi_image_detect_sigfm (FpImage            *self,
++                             GCancellable       *cancellable,
++                             GAsyncReadyCallback callback,
++                             gpointer            user_data);
++gboolean fpi_image_detect_sigfm_finish (FpImage      *self,
++                                        GAsyncResult *result,
++                                        GError      **error);
++SigfmImgInfo *fpi_image_steal_sigfm_info (FpImage *self);
+diff --git i/libfprint/fpi-print.c w/libfprint/fpi-print.c
+index 6c5e20d..ede97e8 100644
+--- i/libfprint/fpi-print.c
++++ w/libfprint/fpi-print.c
+@@ -24,6 +24,9 @@
+ #include "fp-print-private.h"
+ #include "fpi-device.h"
+ #include "fpi-compat.h"
++#include "sigfm/sigfm.hpp"
++
++#define SIGFM_ENROLL_SAMPLES 8
+ 
+ /**
+  * SECTION: fpi-print
+@@ -43,14 +46,45 @@
+  * prints in @print. Both print objects need to be of type #FPI_PRINT_NBIS
+  * for this to work.
+  */
+-void
+-fpi_print_add_print (FpPrint *print, FpPrint *add)
++gboolean
++fpi_print_add_print (FpPrint *print, FpPrint *add, GError **error)
+ {
+-  g_return_if_fail (print->type == FPI_PRINT_NBIS);
+-  g_return_if_fail (add->type == FPI_PRINT_NBIS);
++  SigfmImgInfo *copy;
+ 
+-  g_assert (add->prints->len == 1);
+-  g_ptr_array_add (print->prints, g_memdup2 (add->prints->pdata[0], sizeof (struct xyt_struct)));
++  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
++  if (print == NULL || add == NULL ||
++      (print->type != FPI_PRINT_NBIS && print->type != FPI_PRINT_SIGFM) ||
++      add->type != print->type || add->prints == NULL ||
++      add->prints->len != 1 || print->prints == NULL)
++    {
++      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
++                           "Invalid image print append");
++      return FALSE;
++    }
++  if (print->type == FPI_PRINT_SIGFM &&
++      print->prints->len >= SIGFM_ENROLL_SAMPLES)
++    {
++      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NO_SPACE,
++                           "SIGFM enrollment gallery is full");
++      return FALSE;
++    }
++
++  if (print->type == FPI_PRINT_NBIS)
++    g_ptr_array_add (print->prints,
++                     g_memdup2 (add->prints->pdata[0],
++                                sizeof (struct xyt_struct)));
++  else
++    {
++      copy = sigfm_copy_info (add->prints->pdata[0]);
++      if (copy == NULL)
++        {
++          g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                               "SIGFM print copy failed");
++          return FALSE;
++        }
++      g_ptr_array_add (print->prints, copy);
++    }
++  return TRUE;
+ }
+ 
+ /**
+@@ -71,10 +105,12 @@ fpi_print_set_type (FpPrint     *print,
+   g_return_if_fail (print->type == FPI_PRINT_UNDEFINED);
+ 
+   print->type = type;
+-  if (print->type == FPI_PRINT_NBIS)
++  if (print->type == FPI_PRINT_NBIS || print->type == FPI_PRINT_SIGFM)
+     {
+       g_assert_null (print->prints);
+-      print->prints = g_ptr_array_new_with_free_func (g_free);
++      print->prints = g_ptr_array_new_with_free_func (
++        print->type == FPI_PRINT_NBIS ? g_free :
++                                       (GDestroyNotify) sigfm_free_info);
+     }
+   g_object_notify (G_OBJECT (print), "fpi-type");
+ }
+@@ -176,7 +212,8 @@ fpi_print_add_from_image (FpPrint *print,
+   struct fp_minutiae _minutiae;
+   struct xyt_struct *xyt;
+ 
+-  if (print->type != FPI_PRINT_NBIS || !image)
++  if ((print->type != FPI_PRINT_NBIS && print->type != FPI_PRINT_SIGFM) ||
++      !image)
+     {
+       g_set_error (error,
+                    G_IO_ERROR,
+@@ -185,6 +222,22 @@ fpi_print_add_from_image (FpPrint *print,
+       return FALSE;
+     }
+ 
++  if (print->type == FPI_PRINT_SIGFM)
++    {
++      SigfmImgInfo *info = fpi_image_steal_sigfm_info (image);
++      if (info == NULL)
++        {
++          g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
++                       "No SIGFM features found in image");
++          return FALSE;
++        }
++      g_ptr_array_add (print->prints, info);
++      g_clear_object (&print->image);
++      print->image = g_object_ref (image);
++      g_object_notify (G_OBJECT (print), "image");
++      return TRUE;
++    }
++
+   minutiae = fp_image_get_minutiae (image);
+   if (!minutiae || minutiae->len == 0)
+     {
+@@ -268,6 +321,44 @@ fpi_print_bz3_match (FpPrint *print_template,
+   return FPI_MATCH_FAIL;
+ }
+ 
++FpiMatchResult
++fpi_print_sigfm_match (FpPrint *template,
++                       FpPrint *print,
++                       gint     threshold,
++                       GError **error)
++{
++  SigfmImgInfo *probe;
++
++  if (template == NULL || print == NULL || threshold <= 0 ||
++      template->type != FPI_PRINT_SIGFM || print->type != FPI_PRINT_SIGFM ||
++      template->prints == NULL || template->prints->len == 0 ||
++      template->prints->len != SIGFM_ENROLL_SAMPLES ||
++      print->prints == NULL || print->prints->len != 1)
++    {
++      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_DATA_INVALID,
++                           "Invalid SIGFM print data");
++      return FPI_MATCH_ERROR;
++    }
++
++  probe = g_ptr_array_index (print->prints, 0);
++  for (guint index = 0; index < template->prints->len; index++)
++    {
++      gint score = sigfm_match_score (probe,
++                                      g_ptr_array_index (template->prints,
++                                                         index));
++      if (score < 0)
++        {
++          g_set_error_literal (error, FP_DEVICE_ERROR,
++                               FP_DEVICE_ERROR_GENERAL,
++                               "SIGFM matching failed");
++          return FPI_MATCH_ERROR;
++        }
++      if (score >= threshold)
++        return FPI_MATCH_SUCCESS;
++    }
++  return FPI_MATCH_FAIL;
++}
++
+ /**
+  * fpi_print_generate_user_id:
+  * @print: #FpPrint to generate the ID for
+diff --git i/libfprint/fpi-print.h w/libfprint/fpi-print.h
+index 773407d..e2c4709 100644
+--- i/libfprint/fpi-print.h
++++ w/libfprint/fpi-print.h
+@@ -16,6 +16,7 @@ typedef enum {
+   FPI_PRINT_UNDEFINED = 0,
+   FPI_PRINT_RAW,
+   FPI_PRINT_NBIS,
++  FPI_PRINT_SIGFM,
+ } FpiPrintType;
+ 
+ /**
+@@ -30,8 +31,9 @@ typedef enum {
+   FPI_MATCH_SUCCESS,
+ } FpiMatchResult;
+ 
+-void     fpi_print_add_print (FpPrint *print,
+-                              FpPrint *add);
++gboolean fpi_print_add_print (FpPrint *print,
++                              FpPrint *add,
++                              GError **error);
+ 
+ void     fpi_print_set_type (FpPrint     *print,
+                              FpiPrintType type);
+@@ -49,6 +51,10 @@ FpiMatchResult fpi_print_bz3_match (FpPrint *print_template,
+                                     FpPrint *print,
+                                     gint     bz3_threshold,
+                                     GError **error);
++FpiMatchResult fpi_print_sigfm_match (FpPrint *temp,
++                                      FpPrint *print,
++                                      gint     threshold,
++                                      GError **error);
+ 
+ /* Helpers to encode metadata into user ID strings. */
+ gchar *  fpi_print_generate_user_id (FpPrint *print);
+diff --git i/libfprint/fpi-sensitive-data.c w/libfprint/fpi-sensitive-data.c
+new file mode 100644
+index 0000000..5b7c92a
+--- /dev/null
++++ w/libfprint/fpi-sensitive-data.c
+@@ -0,0 +1,16 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#include "fpi-sensitive-data.h"
++
++GVariant *
++fpi_sensitive_byte_array_new_take (guchar         *data,
++                                   gsize           length,
++                                   GDestroyNotify  destroy,
++                                   gpointer        owner)
++{
++  g_return_val_if_fail (data != NULL, NULL);
++  g_return_val_if_fail (length > 0, NULL);
++  g_return_val_if_fail (destroy != NULL, NULL);
++
++  return g_variant_new_from_data (G_VARIANT_TYPE ("ay"), data, length, TRUE,
++                                  destroy, owner);
++}
+diff --git i/libfprint/fpi-sensitive-data.h w/libfprint/fpi-sensitive-data.h
+new file mode 100644
+index 0000000..6f60088
+--- /dev/null
++++ w/libfprint/fpi-sensitive-data.h
+@@ -0,0 +1,13 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#include <glib.h>
++
++G_BEGIN_DECLS
++
++GVariant *fpi_sensitive_byte_array_new_take (guchar         *data,
++                                              gsize           length,
++                                              GDestroyNotify  destroy,
++                                              gpointer        owner);
++
++G_END_DECLS
+diff --git i/libfprint/fprint-list-udev-hwdb.c w/libfprint/fprint-list-udev-hwdb.c
+index 539f3e6..b0f034f 100644
+--- i/libfprint/fprint-list-udev-hwdb.c
++++ w/libfprint/fprint-list-udev-hwdb.c
+@@ -173,7 +173,6 @@ static const FpIdEntry allowlist_id_table[] = {
+   { .vid = 0x27c6, .pid = 0x538c },
+   { .vid = 0x27c6, .pid = 0x538d },
+   { .vid = 0x27c6, .pid = 0x5395 },
+-  { .vid = 0x27c6, .pid = 0x5503 },
+   { .vid = 0x27c6, .pid = 0x550a },
+   { .vid = 0x27c6, .pid = 0x550c },
+   { .vid = 0x27c6, .pid = 0x5584 },
+diff --git i/libfprint/meson.build w/libfprint/meson.build
+index f11533c..34fd266 100644
+--- i/libfprint/meson.build
++++ w/libfprint/meson.build
+@@ -12,6 +12,7 @@ libfprint_sources = [
+     'fp-image.c',
+     'fp-print.c',
+     'fp-image-device.c',
++    'fpi-sensitive-data.c',
+ ]
+ 
+ libfprint_private_sources = [
+@@ -208,6 +209,36 @@ drivers_sources += configure_file(input: 'empty_file',
+         '\n'.join(drivers_type_list + [] + drivers_type_func)
+     ])
+ 
++sigfm_deps = []
++sigfm_source = 'sigfm/sigfm-stub.c'
++if 'goodix5503' in supported_drivers
++    opencv_pkg = dependency('opencv5', required: false)
++    if not opencv_pkg.found()
++        opencv_pkg = dependency('opencv4', required: true)
++    endif
++    opencv_headers = declare_dependency(
++        compile_args: ['-I' + opencv_pkg.get_variable(pkgconfig: 'includedir')],
++    )
++    opencv_features_dep = cpp.find_library('opencv_features', required: false)
++    if not opencv_features_dep.found()
++        opencv_features_dep = cpp.find_library('opencv_features2d', required: true)
++    endif
++    sigfm_deps = [
++        opencv_headers,
++        cpp.find_library('opencv_core', required: true),
++        opencv_features_dep,
++        cpp.find_library('opencv_flann', required: true),
++        cpp.find_library('opencv_imgproc', required: true),
++    ]
++    sigfm_source = 'sigfm/sigfm.cpp'
++endif
++
++libsigfm = static_library('sigfm',
++    sigfm_source,
++    dependencies: sigfm_deps,
++    cpp_args: ['-std=c++17'],
++    install: false)
++
+ deps = [
+     enums_dep,
+     gio_dep,
+@@ -246,8 +277,8 @@ libfprint_private = static_library('fprint-private',
+         fpi_enums,
+         libfprint_private_sources,
+     ],
+-    dependencies: deps,
+-    link_with: libnbis,
++    dependencies: deps + sigfm_deps,
++    link_with: [libnbis, libsigfm],
+     install: false)
+ 
+ libfprint_drivers = static_library('fprint-drivers',
+@@ -274,8 +305,8 @@ libfprint = shared_library(versioned_libname.split('lib')[1],
+     version: libversion,
+     link_args : vflag,
+     link_depends : mapfile,
+-    link_with: [libfprint_drivers, libfprint_private],
+-    dependencies: deps,
++    link_with: [libfprint_drivers, libfprint_private, libsigfm],
++    dependencies: deps + sigfm_deps,
+     install: true)
+ 
+ libfprint_dep = declare_dependency(link_with: libfprint,
+diff --git i/tests/meson.build w/tests/meson.build
+index aad0675..45bba8f 100644
+--- i/tests/meson.build
++++ w/tests/meson.build
+@@ -300,6 +300,48 @@ else
+     endforeach
+ endif
+ 
++if 'goodix5503' in supported_drivers
++    sigfm_test_inc = include_directories('../libfprint')
++    sigfm_core_test = executable('test-goodix5503-sigfm-core',
++        sources: [
++            'test-goodix5503-sigfm-core.cpp',
++            '../libfprint/fpi-sensitive-data.c',
++        ],
++        include_directories: sigfm_test_inc,
++        dependencies: [libfprint_dep, glib_dep],
++        cpp_args: ['-std=c++17'],
++    )
++    test('goodix5503-sigfm-core', sigfm_core_test,
++        suite: ['unit-tests'], env: envs)
++
++    sigfm_gallery_test = executable('test-goodix5503-sigfm-gallery',
++        sources: [
++            'test-goodix5503-sigfm-gallery.cpp',
++            '../libfprint/fp-image.c',
++        ],
++        include_directories: sigfm_test_inc,
++        dependencies: [libfprint_private_dep] + sigfm_deps,
++        link_with: [libsigfm, libnbis],
++        cpp_args: ['-std=c++17'],
++    )
++    test('goodix5503-sigfm-gallery', sigfm_gallery_test,
++        suite: ['unit-tests'], env: envs)
++
++    sigfm_detection_test = executable('test-goodix5503-sigfm-detection',
++        sources: [
++            'test-goodix5503-sigfm-detection.c',
++            '../libfprint/fp-image.c',
++            '../libfprint/fpi-image.c',
++        ],
++        include_directories: sigfm_test_inc,
++        dependencies: deps + sigfm_deps + [mathlib_dep],
++        link_with: [libnbis, libsigfm],
++        c_args: common_cflags,
++    )
++    test('goodix5503-sigfm-detection', sigfm_detection_test,
++        suite: ['unit-tests'], env: envs)
++endif
++
+ test_utils = static_library('fprint-test-utils',
+     sources: [
+         'test-utils.c',

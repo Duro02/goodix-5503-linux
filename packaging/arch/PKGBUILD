@@ -1,0 +1,83 @@
+# Maintainer: local Goodix 5503 integration
+pkgname=libfprint-goodix5503
+pkgver=1.94.100
+pkgrel=1
+pkgdesc='libfprint with bounded Goodix 27c6:5503 SIGFM support'
+arch=(x86_64)
+url='https://fprint.freedesktop.org/'
+license=(LGPL-2.1-or-later)
+depends=(glib2 glibc libgcc libgudev libgusb openssl pixman opencv)
+makedepends=(git meson ninja gobject-introspection python cairo)
+provides=("libfprint=${pkgver}" 'libfprint-2.so=2-64')
+conflicts=(libfprint)
+options=(!debug)
+source=(
+  "libfprint::git+https://gitlab.freedesktop.org/libfprint/libfprint.git#commit=80a4b5ec612892c5c056c48dddaa561452cf37ec"
+  goodix5503-overlay.tar
+)
+sha256sums=('SKIP' 'OVERLAY_SHA256')
+
+prepare() {
+  cd "$srcdir/libfprint"
+  patch -p1 --forward --batch < "$srcdir/overlay/libfprint/patches/sigfm-core-v1.94.100.patch"
+  cp -a "$srcdir/overlay/libfprint/sigfm" libfprint/
+  cp "$srcdir"/overlay/libfprint/drivers/goodix5503* libfprint/drivers/
+  cp "$srcdir"/overlay/libfprint/tests/test-goodix5503-sigfm-{core.cpp,detection.c,gallery.cpp} tests/
+
+  python - <<'PY'
+from pathlib import Path
+
+top = Path('meson.build')
+text = top.read_text()
+old = "    'goodixmoc': {},\n"
+new = "    'goodix5503': { 'helper': ['openssl'] },\n" + old
+if text.count(old) != 1:
+    raise SystemExit('unexpected driver metadata map')
+top.write_text(text.replace(old, new))
+
+lib = Path('libfprint/meson.build')
+text = lib.read_text()
+old = "    'goodixmoc' : files(\n        'drivers/goodixmoc/goodix.c',\n        'drivers/goodixmoc/goodix_proto.c',\n    ),\n"
+new = "    'goodix5503' : files(\n        'drivers/goodix5503.c', 'drivers/goodix5503-proto.c',\n        'drivers/goodix5503-config.c', 'drivers/goodix5503-security.c',\n        'drivers/goodix5503-image.c', 'drivers/goodix5503-tls.c',\n    ),\n" + old
+if text.count(old) != 1:
+    raise SystemExit('unexpected driver source map')
+lib.write_text(text.replace(old, new))
+PY
+}
+
+build() {
+  local meson_options=(
+    -D b_lto=true
+    -D drivers=goodix5503
+    -D introspection=true
+    -D installed-tests=false
+    -D doc=false
+    -D udev_rules=enabled
+    -D udev_hwdb=enabled
+  )
+  arch-meson libfprint build "${meson_options[@]}"
+  meson compile -C build
+  meson compile -C build udev-hwdb
+  cp build/libfprint/autosuspend.hwdb libfprint/data/autosuspend.hwdb
+  python - <<'PY'
+from pathlib import Path
+
+text = Path('libfprint/data/autosuspend.hwdb').read_text()
+marker = '# Supported by libfprint driver goodix5503\n'
+entry = marker + 'usb:v27C6p5503*\n ID_AUTOSUSPEND=1\n ID_PERSIST=0\n'
+if text.count(marker) != 1 or text.count('usb:v27C6p5503*') != 1 or entry not in text:
+    raise SystemExit('generated hwdb does not classify 27c6:5503 as supported')
+unsupported = text.split('# Known unsupported devices', 1)
+if len(unsupported) == 2 and 'usb:v27C6p5503*' in unsupported[1]:
+    raise SystemExit('27c6:5503 remains in the unsupported hwdb section')
+PY
+}
+
+check() {
+  meson test -C build --print-errorlogs \
+    goodix5503-sigfm-core goodix5503-sigfm-detection goodix5503-sigfm-gallery
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+}
