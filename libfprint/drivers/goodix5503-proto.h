@@ -158,11 +158,11 @@ Goodix5503FdtStateAction goodix5503_fdt_state_action (
   Goodix5503FdtPhase phase,
   gboolean           await_finger_on);
 
-gboolean goodix5503_generate_fdt_up_base (
-  const guint8 manual_readings[GOODIX5503_FDT_BASE_SIZE],
-  const guint8 event_readings[GOODIX5503_FDT_BASE_SIZE],
+gboolean goodix5503_generate_fdt_up_base_from_retained (
+  const guint8 retained_transformed_base[GOODIX5503_FDT_BASE_SIZE],
+  const guint8 accepted_down_raw_base[GOODIX5503_FDT_BASE_SIZE],
   guint16      persistent_area_mask,
-  guint16      event_touch_flag,
+  guint16      accepted_down_touch_flag,
   guint16      delta,
   guint8       output[GOODIX5503_FDT_BASE_SIZE],
   GError     **error);

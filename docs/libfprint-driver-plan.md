@@ -27,11 +27,18 @@ Use separate bounded `FpiSsm` machines for activation, capture and cleanup:
    words and area mask, reports ON once and enters command-20 capture first.
    Only after the captured image is submitted upward and libfprint enters
    `AWAIT_FINGER_OFF` does the pinned DN2 path perform one bounded manual `0x36`
-   selector-`0x0d` read using the calibrated down base. The runtime takes the
-   unsigned wordwise minima, combines the persistent and event area masks,
-   generates and retains the exact six-word GF3258 up base with the configured
-   delta, then arms `0x34`. The pinned normal accepted-down call sends the exact
-   22-byte payload `0e 01 || DAC[8] || generated-up-base[12]`. The suffix is
+   selector-`0x0d` read using the calibrated down base. That response replaces
+   the persistent mask from body+2, but its raw and transformed numeric buffers
+   are only strictly parsed and wiped; neither enters up-base arithmetic. The
+   first numeric candidate is `T(retained_down_transformed)`, where retained
+   state is activation's accepted fresh transformed base or the prior accepted
+   up event transformed exactly once, and
+   `T(x) = ((x >> 1) << 8) | 0x80` with 16-bit truncation. The runtime takes the
+   unsigned wordwise minimum of that candidate and the accepted-down raw words,
+   combines the persistent and accepted-down area masks, and applies the
+   configured diff/core formula to generate and retain the exact six-word
+   GF3258 up base before arming `0x34`. The pinned normal accepted-down call
+   sends the exact 22-byte payload `0e 01 || DAC[8] || generated-up-base[12]`. The suffix is
    copied unchanged and is neither optional nor transformed a second time on
    this path. `McuParseFdt` treats body+0 as an MCU register address, performs a
    proprietary nested command-`0x82` read through the selected DN2 profile and
@@ -42,7 +49,8 @@ Use separate bounded `FpiSsm` machines for activation, capture and cleanup:
    WAIT_DOWN/WAIT_UP phase select an action. No raw body word or bit is used as
    a substitute predicate. An exact manual `0x36` response is the pure mask
    action and replaces the persistent 16-bit area mask from body+2 before
-   up-base generation. The three activation manual reads serve only bounded
+   up-base generation; its numeric buffers are not the first numeric candidate.
+   The three activation manual reads serve only bounded
    fresh calibration; runtime reset intentionally clears their mask state, and
    the per-stage manual read establishes the runtime mask at its official
    lifetime. Duplicate state notifications cannot repeat manual preparation or

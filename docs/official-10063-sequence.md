@@ -469,6 +469,18 @@ for later requests. The DLL retries inconsistent pairs without a numeric bound;
 the free implementation must instead use the existing operation deadline and a
 small explicit retry cap.
 
+The runtime `UpdateFdtUpBase @ 0x18008d210` does not use either numeric buffer
+from the fresh manual command-36 result. That result supplies only its touch
+mask. The first numeric candidate is produced by applying the same transform
+again to retained transformed state at context `+0xf0`; that retained state is
+activation's accepted fresh output2 or a prior accepted-up result transformed
+once. The function then takes an unsigned LE16 minimum against the current
+accepted-down raw output1, combines the persistent and accepted-down masks, and
+runs the configured diff/core up-base formula. The resulting six words are
+copied unchanged into the command-34 suffix; there is no post-generation
+transform. This withdraws the earlier incorrect interpretation that the fresh
+manual result's raw numeric array was the first minimum operand.
+
 The register-82 delta decode is unsigned high-byte extraction. The DLL executes
 `movzx eax,word` before `sar eax,8`, so raw `00 ff` produces threshold 255;
 base comparisons are `abs(u16_a-u16_b) <= zero_extended_delta`.

@@ -120,6 +120,7 @@ struct _FpiDeviceGoodix5503
   guint16 fdt_delta;
   guint8 fresh_raw[3][GOODIX5503_FDT_BASE_SIZE];
   guint8 fresh_transformed[3][GOODIX5503_FDT_BASE_SIZE];
+  /* Retained transformed state: accepted fresh base or T(accepted-up raw). */
   guint8 fdt_down_base[GOODIX5503_FDT_BASE_SIZE];
   /* Official DN2 generated base, sent as the selected 0x34 suffix. */
   guint8 fdt_up_base[GOODIX5503_FDT_BASE_SIZE];
@@ -1755,12 +1756,12 @@ goodix5503_fdt_up_base_ready (FpiDeviceGoodix5503 *self,
         &touch_flag, raw, transformed, &error))
     goto fail;
 
-  /* McuParseFdt makes an exact command-0x36 response a pure mask event.
-   * HandleFdt replaces the persistent mask from body+2 before DN2 combines
-   * it with the accepted-down event mask for up-base generation. */
+  /* An exact command-0x36 response is a pure mask event. Its numeric raw and
+   * transformed buffers are parsed strictly but do not enter DN2 arithmetic.
+   * The official first candidate is T(retained transformed down-base state). */
   self->fdt_area_mask = touch_flag;
-  if (!goodix5503_generate_fdt_up_base (
-        raw, self->fdt_pending_raw, self->fdt_area_mask,
+  if (!goodix5503_generate_fdt_up_base_from_retained (
+        self->fdt_down_base, self->fdt_pending_raw, self->fdt_area_mask,
         self->fdt_pending_touch_flag, self->fdt_delta, self->fdt_up_base,
         &error))
     goto fail;

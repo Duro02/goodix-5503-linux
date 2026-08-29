@@ -423,72 +423,151 @@ test_fdt_stage_separation (void)
 static void
 test_fdt_up_base_generation (void)
 {
-  const guint8 manual[GOODIX5503_FDT_BASE_SIZE] = {
-    40, 0, 70, 0, 80, 0, 110, 0, 120, 0, 150, 0,
+  const guint8 retained_transformed[GOODIX5503_FDT_BASE_SIZE] = {
+    0x80, 0x00, 0x80, 0x01, 0x80, 0x02,
+    0x80, 0x03, 0x80, 0x04, 0x80, 0x05,
   };
-  const guint8 event[GOODIX5503_FDT_BASE_SIZE] = {
-    50, 0, 60, 0, 90, 0, 100, 0, 130, 0, 140, 0,
+  const guint8 accepted_down_raw[GOODIX5503_FDT_BASE_SIZE] = {
+    0x00, 0x80, 0x00, 0x80, 0x00, 0x80,
+    0x00, 0x80, 0x00, 0x80, 0x00, 0x80,
   };
   const guint8 expected[GOODIX5503_FDT_BASE_SIZE] = {
-    0x80, 0x29, 0x80, 0x13, 0x80, 0x3d,
+    0x80, 0x55, 0x80, 0x13, 0x80, 0x55,
     0x80, 0x13, 0x80, 0x13, 0x80, 0x13,
   };
+  const guint8 dac[GOODIX5503_DAC_SIZE] = { 0 };
   guint8 output[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 request[GOODIX5503_FDT_REQUEST_SIZE] = { 0 };
   g_autoptr(GError) error = NULL;
 
-  g_assert_true (goodix5503_generate_fdt_up_base (
-    manual, event, 0x0001, 0x0004, 21, output, &error));
+  /* The first numeric operand is T(retained transformed state), not a fresh
+   * command-0x36 numeric buffer. Bits 0 and 2 are the only active areas. */
+  g_assert_true (goodix5503_generate_fdt_up_base_from_retained (
+    retained_transformed, accepted_down_raw, 0x0001, 0x0004, 21, output,
+    &error));
   g_assert_no_error (error);
   g_assert_cmpmem (output, sizeof output, expected, sizeof expected);
 
-  memset (output, 0, sizeof output);
-  g_assert_false (goodix5503_generate_fdt_up_base (
-    manual, event, 0, 1, 1, output, &error));
+  /* Generated words are copied to the 0x34 suffix unchanged. */
+  g_assert_true (goodix5503_build_fdt_up_request (
+    dac, output, request, &error));
+  g_assert_no_error (error);
+  g_assert_cmpmem (request + 2 + GOODIX5503_DAC_SIZE,
+                   GOODIX5503_FDT_BASE_SIZE, expected, sizeof expected);
+
+  g_assert_false (goodix5503_generate_fdt_up_base_from_retained (
+    NULL, accepted_down_raw, 0, 1, 21, output, &error));
   g_assert_error (error, GOODIX5503_PROTO_ERROR,
                   GOODIX5503_PROTO_ERROR_INVALID);
   g_clear_error (&error);
-  g_assert_false (goodix5503_generate_fdt_up_base (
-    manual, event, 0, 1, 0, output, &error));
+  g_assert_false (goodix5503_generate_fdt_up_base_from_retained (
+    retained_transformed, NULL, 0, 1, 21, output, &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_INVALID);
+  g_clear_error (&error);
+  g_assert_false (goodix5503_generate_fdt_up_base_from_retained (
+    retained_transformed, accepted_down_raw, 0, 1, 1, output, &error));
   g_assert_error (error, GOODIX5503_PROTO_ERROR,
                   GOODIX5503_PROTO_ERROR_INVALID);
 }
 
 static void
-test_fdt_manual_mask_generation (void)
+test_fdt_manual_numeric_ignored (void)
 {
-  const guint8 response[] = {
+  const guint8 response_a[] = {
     0x82, 0x01, 0x02, 0x00,
     40, 0, 70, 0, 80, 0, 110, 0, 120, 0, 150, 0,
   };
-  const guint8 event[GOODIX5503_FDT_BASE_SIZE] = {
-    50, 0, 60, 0, 90, 0, 100, 0, 130, 0, 140, 0,
+  const guint8 response_b[] = {
+    0x82, 0x01, 0x02, 0x00,
+    0xff, 0xff, 0, 0, 0x34, 0x12, 0xcd, 0xab, 1, 0, 0x00, 0x80,
+  };
+  const guint8 retained_transformed[GOODIX5503_FDT_BASE_SIZE] = {
+    0x80, 0x00, 0x80, 0x01, 0x80, 0x02,
+    0x80, 0x03, 0x80, 0x04, 0x80, 0x05,
+  };
+  const guint8 accepted_down_raw[GOODIX5503_FDT_BASE_SIZE] = {
+    0x00, 0x80, 0x00, 0x80, 0x00, 0x80,
+    0x00, 0x80, 0x00, 0x80, 0x00, 0x80,
   };
   const guint8 expected[GOODIX5503_FDT_BASE_SIZE] = {
-    0x80, 0x13, 0x80, 0x33, 0x80, 0x3d,
+    0x80, 0x13, 0x80, 0x15, 0x80, 0x55,
     0x80, 0x13, 0x80, 0x13, 0x80, 0x13,
   };
-  guint8 manual[GOODIX5503_FDT_BASE_SIZE] = { 0 };
-  guint8 transformed[GOODIX5503_FDT_BASE_SIZE] = { 0 };
-  guint8 output[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 manual_raw[2][GOODIX5503_FDT_BASE_SIZE] = { { 0 } };
+  guint8 manual_transformed[2][GOODIX5503_FDT_BASE_SIZE] = { { 0 } };
+  guint8 output[2][GOODIX5503_FDT_BASE_SIZE] = { { 0 } };
   guint16 interrupt = 0;
-  guint16 persistent_area_mask = 0x0001;
-  guint16 touch_flag = 0;
+  guint16 touch_flag[2] = { 0 };
   g_autoptr(GError) error = NULL;
 
   g_assert_true (goodix5503_parse_fdt_response (
-    response, sizeof response, &interrupt, &touch_flag, manual, transformed,
-    &error));
+    response_a, sizeof response_a, &interrupt, &touch_flag[0], manual_raw[0],
+    manual_transformed[0], &error));
   g_assert_no_error (error);
-  g_assert_cmphex (interrupt, ==, 0x0182);
-  g_assert_cmphex (touch_flag, ==, 0x0002);
+  g_assert_true (goodix5503_parse_fdt_response (
+    response_b, sizeof response_b, &interrupt, &touch_flag[1], manual_raw[1],
+    manual_transformed[1], &error));
+  g_assert_no_error (error);
+  g_assert_cmphex (touch_flag[0], ==, 0x0002);
+  g_assert_cmphex (touch_flag[1], ==, 0x0002);
+  g_assert_cmpmem (manual_raw[0], sizeof manual_raw[0], response_a + 4,
+                   GOODIX5503_FDT_BASE_SIZE);
+  g_assert_cmpmem (manual_raw[1], sizeof manual_raw[1], response_b + 4,
+                   GOODIX5503_FDT_BASE_SIZE);
+  g_assert_cmpint (memcmp (manual_raw[0], manual_raw[1],
+                           GOODIX5503_FDT_BASE_SIZE), !=, 0);
 
-  /* An exact command-0x36 response is McuParseFdt's pure mask action, so the
-   * old persistent value is replaced before combining it with event bit 2. */
-  persistent_area_mask = touch_flag;
-  g_assert_true (goodix5503_generate_fdt_up_base (
-    manual, event, persistent_area_mask, 0x0004, 21, output, &error));
+  /* Both numeric command-0x36 buffers are intentionally absent from the
+   * generator API. Only their equal touch masks replace persistent state. */
+  for (gsize index = 0; index < G_N_ELEMENTS (output); index++)
+    {
+      g_assert_true (goodix5503_generate_fdt_up_base_from_retained (
+        retained_transformed, accepted_down_raw, touch_flag[index], 0x0004,
+        21, output[index], &error));
+      g_assert_no_error (error);
+      g_assert_cmpmem (output[index], sizeof output[index], expected,
+                       sizeof expected);
+    }
+  g_assert_cmpmem (output[0], sizeof output[0], output[1], sizeof output[1]);
+}
+
+static void
+test_fdt_retained_state_affects_generation (void)
+{
+  const guint8 retained_a[GOODIX5503_FDT_BASE_SIZE] = {
+    0x80, 0x00, 0x80, 0x00, 0x80, 0x00,
+    0x80, 0x00, 0x80, 0x00, 0x80, 0x00,
+  };
+  const guint8 retained_b[GOODIX5503_FDT_BASE_SIZE] = {
+    0x80, 0x01, 0x80, 0x01, 0x80, 0x01,
+    0x80, 0x01, 0x80, 0x01, 0x80, 0x01,
+  };
+  const guint8 accepted_down_raw[GOODIX5503_FDT_BASE_SIZE] = {
+    0x00, 0x80, 0x00, 0x80, 0x00, 0x80,
+    0x00, 0x80, 0x00, 0x80, 0x00, 0x80,
+  };
+  const guint8 expected_a[GOODIX5503_FDT_BASE_SIZE] = {
+    0x80, 0x55, 0x80, 0x55, 0x80, 0x55,
+    0x80, 0x55, 0x80, 0x55, 0x80, 0x55,
+  };
+  const guint8 expected_b[GOODIX5503_FDT_BASE_SIZE] = {
+    0x80, 0x15, 0x80, 0x15, 0x80, 0x15,
+    0x80, 0x15, 0x80, 0x15, 0x80, 0x15,
+  };
+  guint8 output_a[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 output_b[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  g_autoptr(GError) error = NULL;
+
+  g_assert_true (goodix5503_generate_fdt_up_base_from_retained (
+    retained_a, accepted_down_raw, 0x003f, 0, 21, output_a, &error));
   g_assert_no_error (error);
-  g_assert_cmpmem (output, sizeof output, expected, sizeof expected);
+  g_assert_true (goodix5503_generate_fdt_up_base_from_retained (
+    retained_b, accepted_down_raw, 0x003f, 0, 21, output_b, &error));
+  g_assert_no_error (error);
+  g_assert_cmpmem (output_a, sizeof output_a, expected_a, sizeof expected_a);
+  g_assert_cmpmem (output_b, sizeof output_b, expected_b, sizeof expected_b);
+  g_assert_cmpint (memcmp (output_a, output_b, sizeof output_a), !=, 0);
 }
 
 static void
@@ -520,24 +599,44 @@ test_fdt_next_down_base (void)
 }
 
 static void
-test_fdt_up_base_truncation (void)
+test_fdt_up_base_truncation_and_diff (void)
 {
-  guint8 manual[GOODIX5503_FDT_BASE_SIZE] = { 0 };
-  guint8 event[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 retained[GOODIX5503_FDT_BASE_SIZE];
+  guint8 accepted_down[GOODIX5503_FDT_BASE_SIZE];
   guint8 output[GOODIX5503_FDT_BASE_SIZE] = { 0 };
   g_autoptr(GError) error = NULL;
 
-  manual[0] = event[0] = 0xff;
-  manual[1] = event[1] = 0xff;
-  g_assert_true (goodix5503_generate_fdt_up_base (
-    manual, event, 0, 1, 21, output, &error));
+  memset (retained, 0xff, sizeof retained);
+  memset (accepted_down, 0xff, sizeof accepted_down);
+  g_assert_true (goodix5503_generate_fdt_up_base_from_retained (
+    retained, accepted_down, 0, 1, 21, output, &error));
   g_assert_no_error (error);
   g_assert_cmphex (output[0], ==, 0x80);
-  g_assert_cmphex (output[1], ==, 0x14);
+  g_assert_cmphex (output[1], ==, 0xd5);
   for (gsize offset = 2; offset < sizeof output; offset += 2)
     {
       g_assert_cmphex (output[offset], ==, 0x80);
       g_assert_cmphex (output[offset + 1], ==, 0x13);
+    }
+
+  /* Diff two proves both the active formula and clear-area replacement at
+   * their smallest accepted scalar without unsigned underflow. */
+  for (gsize offset = 0; offset < sizeof retained; offset += 2)
+    {
+      retained[offset] = 0x80;
+      retained[offset + 1] = 0x00;
+      accepted_down[offset] = 0x00;
+      accepted_down[offset + 1] = 0x80;
+    }
+  g_assert_true (goodix5503_generate_fdt_up_base_from_retained (
+    retained, accepted_down, 0, 1, 2, output, &error));
+  g_assert_no_error (error);
+  g_assert_cmphex (output[0], ==, 0x80);
+  g_assert_cmphex (output[1], ==, 0x42);
+  for (gsize offset = 2; offset < sizeof output; offset += 2)
+    {
+      g_assert_cmphex (output[offset], ==, 0x80);
+      g_assert_cmphex (output[offset + 1], ==, 0x00);
     }
 }
 
@@ -629,10 +728,12 @@ main (int argc, char **argv)
                    test_fdt_stage_separation);
   g_test_add_func ("/goodix5503/fdt/up-base-generation",
                    test_fdt_up_base_generation);
-  g_test_add_func ("/goodix5503/fdt/manual-mask-generation",
-                   test_fdt_manual_mask_generation);
-  g_test_add_func ("/goodix5503/fdt/up-base-truncation",
-                   test_fdt_up_base_truncation);
+  g_test_add_func ("/goodix5503/fdt/manual-numeric-ignored",
+                   test_fdt_manual_numeric_ignored);
+  g_test_add_func ("/goodix5503/fdt/retained-state-generation",
+                   test_fdt_retained_state_affects_generation);
+  g_test_add_func ("/goodix5503/fdt/up-base-truncation-diff",
+                   test_fdt_up_base_truncation_and_diff);
   g_test_add_func ("/goodix5503/fdt/next-down-base",
                    test_fdt_next_down_base);
   g_test_add_func ("/goodix5503/image/decode", test_packed_decoder);

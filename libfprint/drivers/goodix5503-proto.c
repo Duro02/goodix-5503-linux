@@ -29,6 +29,12 @@ write_le16 (guint8 *data, guint16 value)
   data[1] = value >> 8;
 }
 
+static guint16
+fdt_down_transform_word (guint16 value)
+{
+  return (guint16) ((((guint32) value >> 1) << 8) | 0x0080);
+}
+
 static void
 append_le16 (GByteArray *array, guint16 value)
 {
@@ -521,7 +527,7 @@ goodix5503_parse_fdt_response (const guint8  *response,
       guint16 word = read_le16 (raw_base + offset);
 
       write_le16 (transformed_base + offset,
-                  ((((guint32) word >> 1) << 8) | 0x0080) & 0xffff);
+                  fdt_down_transform_word (word));
     }
   return TRUE;
 }
@@ -636,11 +642,11 @@ goodix5503_fdt_state_action (Goodix5503FdtPhase phase,
 }
 
 gboolean
-goodix5503_generate_fdt_up_base (
-  const guint8 manual_readings[GOODIX5503_FDT_BASE_SIZE],
-  const guint8 event_readings[GOODIX5503_FDT_BASE_SIZE],
+goodix5503_generate_fdt_up_base_from_retained (
+  const guint8 retained_transformed_base[GOODIX5503_FDT_BASE_SIZE],
+  const guint8 accepted_down_raw_base[GOODIX5503_FDT_BASE_SIZE],
   guint16      persistent_area_mask,
-  guint16      event_touch_flag,
+  guint16      accepted_down_touch_flag,
   guint16      delta,
   guint8       output[GOODIX5503_FDT_BASE_SIZE],
   GError     **error)
@@ -648,8 +654,8 @@ goodix5503_generate_fdt_up_base (
   guint16 area_mask;
 
   g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
-  if (manual_readings == NULL || event_readings == NULL || output == NULL ||
-      delta < 2)
+  if (retained_transformed_base == NULL ||
+      accepted_down_raw_base == NULL || output == NULL || delta < 2)
     {
       g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
                            GOODIX5503_PROTO_ERROR_INVALID,
@@ -657,12 +663,13 @@ goodix5503_generate_fdt_up_base (
       return FALSE;
     }
 
-  area_mask = persistent_area_mask | event_touch_flag;
+  area_mask = persistent_area_mask | accepted_down_touch_flag;
   for (gsize area = 0; area < GOODIX5503_FDT_BASE_SIZE / 2; area++)
     {
-      guint16 manual = read_le16 (manual_readings + area * 2);
-      guint16 event = read_le16 (event_readings + area * 2);
-      guint16 source = MIN (manual, event);
+      guint16 retained = read_le16 (retained_transformed_base + area * 2);
+      guint16 retained_candidate = fdt_down_transform_word (retained);
+      guint16 accepted_down = read_le16 (accepted_down_raw_base + area * 2);
+      guint16 source = MIN (retained_candidate, accepted_down);
       guint32 value = (((guint32) (source >> 1) + delta) << 8) | 0x0080;
 
       if ((area_mask & (1u << area)) == 0)
@@ -683,8 +690,7 @@ goodix5503_fdt_next_down_base (
     {
       guint16 raw = read_le16 (accepted_up_readings + offset);
 
-      write_le16 (output + offset,
-                  ((((guint32) raw >> 1) << 8) | 0x0080) & 0xffff);
+      write_le16 (output + offset, fdt_down_transform_word (raw));
     }
 }
 
