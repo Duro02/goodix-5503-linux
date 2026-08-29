@@ -257,6 +257,12 @@ test_fdt_response_and_request (void)
                    sizeof expected_request);
 
   g_assert_false (goodix5503_build_fdt_request (
+    0x0e, dac, zero_base, request, &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_INVALID);
+  g_clear_error (&error);
+
+  g_assert_false (goodix5503_build_fdt_request (
     0x8d, dac, zero_base, request, &error));
   g_assert_error (error, GOODIX5503_PROTO_ERROR,
                   GOODIX5503_PROTO_ERROR_INVALID);
@@ -267,6 +273,44 @@ test_fdt_response_and_request (void)
     &error));
   g_assert_error (error, GOODIX5503_PROTO_ERROR,
                   GOODIX5503_PROTO_ERROR_LENGTH);
+}
+
+static void
+test_fdt_up_request (void)
+{
+  const guint8 dac[GOODIX5503_DAC_SIZE] =
+    { 0x8b, 0x00, 0x83, 0x00, 0x8c, 0x00, 0x87, 0x00 };
+  const guint8 expected_request[GOODIX5503_FDT_UP_REQUEST_SIZE] = {
+    0x0e, 0x00, 0x8b, 0x00, 0x83, 0x00, 0x8c, 0x00, 0x87, 0x00,
+  };
+  const guint8 expected_frame[] = {
+    0xa0, 0x0e, 0x00, 0xae, 0x34, 0x0b, 0x00, 0x0e, 0x00,
+    0x8b, 0x00, 0x83, 0x00, 0x8c, 0x00, 0x87, 0x00, 0x3c,
+  };
+  guint8 request[GOODIX5503_FDT_UP_REQUEST_SIZE] = { 0 };
+  g_autoptr(GByteArray) frame = NULL;
+  g_autoptr(GError) error = NULL;
+
+  g_assert_true (goodix5503_build_fdt_up_request (dac, request, &error));
+  g_assert_no_error (error);
+  g_assert_cmpmem (request, sizeof request, expected_request,
+                   sizeof expected_request);
+
+  frame = goodix5503_packet_encode (0x34, request, sizeof request, TRUE,
+                                    &error);
+  g_assert_no_error (error);
+  g_assert_nonnull (frame);
+  g_assert_cmpuint (frame->len, ==, sizeof expected_frame);
+  g_assert_cmpmem (frame->data, frame->len, expected_frame,
+                   sizeof expected_frame);
+
+  g_assert_false (goodix5503_build_fdt_up_request (NULL, request, &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_INVALID);
+  g_clear_error (&error);
+  g_assert_false (goodix5503_build_fdt_up_request (dac, NULL, &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_INVALID);
 }
 
 static void
@@ -496,6 +540,7 @@ main (int argc, char **argv)
                    test_command_router_ordering);
   g_test_add_func ("/goodix5503/fdt/response-request",
                    test_fdt_response_and_request);
+  g_test_add_func ("/goodix5503/fdt/up-request", test_fdt_up_request);
   g_test_add_func ("/goodix5503/fdt/stage-separation",
                    test_fdt_stage_separation);
   g_test_add_func ("/goodix5503/fdt/up-base-generation",

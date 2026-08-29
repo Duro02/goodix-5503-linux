@@ -29,9 +29,14 @@ Use separate bounded `FpiSsm` machines for activation, capture and cleanup:
    `AWAIT_FINGER_OFF` does the pinned DN2 path perform one bounded manual `0x36`
    selector-`0x0d` read using the calibrated down base. The runtime takes the
    unsigned wordwise minima, combines the persistent and event area masks,
-   generates the exact six-word GF3258 up base with the configured delta, then
-   arms `0x34`. A bit-5 event flag replaces the persistent 16-bit area mask; it
-   is not a finger-state predicate. Duplicate state notifications cannot repeat
+   generates and retains the exact six-word GF3258 up base with the configured
+   delta, then arms `0x34`. The pinned selected up call sends exactly the
+   10-byte payload `0e 00 || DAC[8]`; unlike down/manual, it has no optional
+   12-byte base suffix. The earlier `0e 01 || DAC || generated-up-base` wire
+   assumption was incorrect. The generated base remains bounded host state for
+   official-flow conformance and is wiped normally, but is never appended to
+   the up request. A bit-5 event flag replaces the persistent 16-bit area mask;
+   it is not a finger-state predicate. Duplicate state notifications cannot repeat
    manual preparation or arming. Only an exact `0x34` event in the matching
    WAIT_UP generation reports OFF, and its transformed raw words become the
    dedicated next down base. The failed TX-off/delta qualification experiment

@@ -534,8 +534,8 @@ goodix5503_build_fdt_request (guint8         selector,
                                GError       **error)
 {
   g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
-  if ((selector != 0x0c && selector != 0x0d && selector != 0x0e) ||
-      dac == NULL || base == NULL || request == NULL)
+  if ((selector != 0x0c && selector != 0x0d) || dac == NULL ||
+      base == NULL || request == NULL)
     {
       g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
                            GOODIX5503_PROTO_ERROR_INVALID,
@@ -549,6 +549,27 @@ goodix5503_build_fdt_request (guint8         selector,
   for (gsize offset = 0; offset < GOODIX5503_FDT_BASE_SIZE; offset += 2)
     write_le16 (request + 2 + GOODIX5503_DAC_SIZE + offset,
                 (read_le16 (base + offset) & 0xff00) | 0x0080);
+  return TRUE;
+}
+
+gboolean
+goodix5503_build_fdt_up_request (
+  const guint8 dac[GOODIX5503_DAC_SIZE],
+  guint8       request[GOODIX5503_FDT_UP_REQUEST_SIZE],
+  GError     **error)
+{
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+  if (dac == NULL || request == NULL)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_INVALID,
+                           "invalid Goodix FDT-up request");
+      return FALSE;
+    }
+
+  request[0] = 0x0e;
+  request[1] = 0;
+  memcpy (request + 2, dac, GOODIX5503_DAC_SIZE);
   return TRUE;
 }
 

@@ -121,6 +121,7 @@ struct _FpiDeviceGoodix5503
   guint8 fresh_raw[3][GOODIX5503_FDT_BASE_SIZE];
   guint8 fresh_transformed[3][GOODIX5503_FDT_BASE_SIZE];
   guint8 fdt_down_base[GOODIX5503_FDT_BASE_SIZE];
+  /* Official DN2 host state; the selected 0x34 wire call has no base suffix. */
   guint8 fdt_up_base[GOODIX5503_FDT_BASE_SIZE];
   guint8 background[GOODIX5503_PACKED_IMAGE_SIZE];
   guint8 finger[GOODIX5503_PACKED_IMAGE_SIZE];
@@ -1905,8 +1906,8 @@ goodix5503_fdt_watch_start (FpiDeviceGoodix5503 *self, gboolean finger_on)
   guint8 request[GOODIX5503_FDT_REQUEST_SIZE];
   g_autoptr(GError) error = NULL;
   guint8 command = finger_on ? 0x32 : 0x34;
-  guint8 selector = finger_on ? 0x0c : 0x0e;
-  const guint8 *base = finger_on ? self->fdt_down_base : self->fdt_up_base;
+  gsize request_len = finger_on ? GOODIX5503_FDT_REQUEST_SIZE :
+                                  GOODIX5503_FDT_UP_REQUEST_SIZE;
   Goodix5503FdtPhase required = finger_on ? GOODIX5503_FDT_PHASE_IDLE :
                                                   GOODIX5503_FDT_PHASE_CAPTURE;
 
@@ -1917,8 +1918,10 @@ goodix5503_fdt_watch_start (FpiDeviceGoodix5503 *self, gboolean finger_on)
       goodix5503_runtime_error (self, goodix5503_fdt_phase_error ());
       return;
     }
-  if (!goodix5503_build_fdt_request (selector, self->dac, base,
-                                     request, &error))
+  if (finger_on ?
+        !goodix5503_build_fdt_request (0x0c, self->dac, self->fdt_down_base,
+                                       request, &error) :
+        !goodix5503_build_fdt_up_request (self->dac, request, &error))
     {
       goodix5503_runtime_error (self, g_steal_pointer (&error));
       return;
@@ -1930,7 +1933,7 @@ goodix5503_fdt_watch_start (FpiDeviceGoodix5503 *self, gboolean finger_on)
   self->fdt_event_command = command;
   self->fdt_phase = finger_on ? GOODIX5503_FDT_PHASE_ARM_DOWN :
                                 GOODIX5503_FDT_PHASE_ARM_UP;
-  goodix5503_command_start (self, command, request, sizeof request,
+  goodix5503_command_start (self, command, request, request_len,
                             FALSE, TRUE, goodix5503_fdt_arm_done);
   OPENSSL_cleanse (request, sizeof request);
 }
