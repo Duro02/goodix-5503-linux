@@ -256,12 +256,11 @@ test_fdt_response_and_request (void)
   g_assert_cmpmem (request, sizeof request, expected_request,
                    sizeof expected_request);
 
-  g_assert_true (goodix5503_build_fdt_request (
+  g_assert_false (goodix5503_build_fdt_request (
     0x8d, dac, zero_base, request, &error));
-  g_assert_no_error (error);
-  g_assert_cmphex (request[0], ==, 0x8d);
-  g_assert_cmpmem (request + 1, sizeof request - 1,
-                   expected_request + 1, sizeof expected_request - 1);
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_INVALID);
+  g_clear_error (&error);
 
   g_assert_false (goodix5503_parse_fdt_response (
     response, sizeof response - 1, &interrupt, &touch_flag, raw, transformed,
@@ -273,37 +272,23 @@ test_fdt_response_and_request (void)
 static void
 test_fdt_stage_separation (void)
 {
-  const guint8 baseline[GOODIX5503_FDT_BASE_SIZE] = {
-    0x00, 0x01, 0x10, 0x01, 0x20, 0x01,
-    0x30, 0x01, 0x40, 0x01, 0x50, 0x01,
-  };
-  guint8 stale[GOODIX5503_FDT_BASE_SIZE];
-  guint8 touched[GOODIX5503_FDT_BASE_SIZE];
   const guint generation = 7;
-
-  memcpy (stale, baseline, sizeof stale);
-  memcpy (touched, baseline, sizeof touched);
-  touched[0] = 0x40;
 
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
                      generation, 0x32), ==,
-                   GOODIX5503_FDT_EVENT_CONFIRM_DOWN);
-  g_assert_cmpint (goodix5503_fdt_down_action (baseline, stale, 21), ==,
-                   GOODIX5503_FDT_DOWN_REARM);
-  g_assert_cmpint (goodix5503_fdt_down_action (baseline, touched, 21), ==,
-                   GOODIX5503_FDT_DOWN_CAPTURE);
+                   GOODIX5503_FDT_EVENT_PREPARE_UP_BASE);
   /* A read timeout does not mutate the armed generation; the same wait may
    * remain cancellable and accept a later exact event. */
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
                      generation, 0x32), ==,
-                   GOODIX5503_FDT_EVENT_CONFIRM_DOWN);
+                   GOODIX5503_FDT_EVENT_PREPARE_UP_BASE);
 
-  /* A down candidate never reports up or permits a second capture while it is
-   * being confirmed, and stale generations are rejected after cancellation. */
+  /* No event is accepted while the manual read prepares the dedicated up base
+   * or while a capture is in progress. */
   g_assert_cmpint (goodix5503_fdt_event_action (
-                     GOODIX5503_FDT_PHASE_CONFIRM_DOWN, 0x32, generation,
+                     GOODIX5503_FDT_PHASE_PREPARE_UP_BASE, 0x32, generation,
                      generation, 0x32), ==, GOODIX5503_FDT_EVENT_REJECT);
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_CAPTURE, 0x32, generation,
@@ -326,6 +311,85 @@ test_fdt_stage_separation (void)
                      GOODIX5503_FDT_PHASE_WAIT_UP, 0x34, generation,
                      generation, 0x34), ==,
                    GOODIX5503_FDT_EVENT_REPORT_UP);
+}
+
+static void
+test_fdt_up_base_generation (void)
+{
+  const guint8 manual[GOODIX5503_FDT_BASE_SIZE] = {
+    40, 0, 70, 0, 80, 0, 110, 0, 120, 0, 150, 0,
+  };
+  const guint8 event[GOODIX5503_FDT_BASE_SIZE] = {
+    50, 0, 60, 0, 90, 0, 100, 0, 130, 0, 140, 0,
+  };
+  const guint8 expected[GOODIX5503_FDT_BASE_SIZE] = {
+    0x80, 0x29, 0x80, 0x13, 0x80, 0x3d,
+    0x80, 0x13, 0x80, 0x13, 0x80, 0x13,
+  };
+  guint8 output[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  g_autoptr(GError) error = NULL;
+
+  g_assert_true (goodix5503_generate_fdt_up_base (
+    manual, event, 0x0001, 0x0004, 21, output, &error));
+  g_assert_no_error (error);
+  g_assert_cmpmem (output, sizeof output, expected, sizeof expected);
+
+  g_assert_cmphex (goodix5503_fdt_update_area_mask (0x0033, 0, 0x0004),
+                   ==, 0x0033);
+  g_assert_cmphex (goodix5503_fdt_update_area_mask (0x0033, 1u << 5, 0),
+                   ==, 0);
+  g_assert_cmphex (goodix5503_fdt_update_area_mask (0, 1u << 5, 0x003f),
+                   ==, 0x003f);
+
+  memset (output, 0, sizeof output);
+  g_assert_false (goodix5503_generate_fdt_up_base (
+    manual, event, 0, 1, 1, output, &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_INVALID);
+  g_clear_error (&error);
+  g_assert_false (goodix5503_generate_fdt_up_base (
+    manual, event, 0, 1, 0, output, &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_INVALID);
+}
+
+static void
+test_fdt_next_down_base (void)
+{
+  const guint8 accepted_up[GOODIX5503_FDT_BASE_SIZE] = {
+    0x34, 0x12, 0xcd, 0xab, 0x01, 0x00,
+    0xfe, 0xff, 0x80, 0x80, 0x00, 0x7f,
+  };
+  const guint8 expected[GOODIX5503_FDT_BASE_SIZE] = {
+    0x80, 0x12, 0x80, 0xab, 0x80, 0x00,
+    0x80, 0xff, 0x80, 0x80, 0x80, 0x7f,
+  };
+  guint8 output[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+
+  goodix5503_fdt_next_down_base (accepted_up, output);
+  g_assert_cmpmem (output, sizeof output, expected, sizeof expected);
+}
+
+static void
+test_fdt_up_base_truncation (void)
+{
+  guint8 manual[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 event[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 output[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  g_autoptr(GError) error = NULL;
+
+  manual[0] = event[0] = 0xff;
+  manual[1] = event[1] = 0xff;
+  g_assert_true (goodix5503_generate_fdt_up_base (
+    manual, event, 0, 1, 21, output, &error));
+  g_assert_no_error (error);
+  g_assert_cmphex (output[0], ==, 0x80);
+  g_assert_cmphex (output[1], ==, 0x14);
+  for (gsize offset = 2; offset < sizeof output; offset += 2)
+    {
+      g_assert_cmphex (output[offset], ==, 0x80);
+      g_assert_cmphex (output[offset + 1], ==, 0x13);
+    }
 }
 
 static void
@@ -413,6 +477,12 @@ main (int argc, char **argv)
                    test_fdt_response_and_request);
   g_test_add_func ("/goodix5503/fdt/stage-separation",
                    test_fdt_stage_separation);
+  g_test_add_func ("/goodix5503/fdt/up-base-generation",
+                   test_fdt_up_base_generation);
+  g_test_add_func ("/goodix5503/fdt/up-base-truncation",
+                   test_fdt_up_base_truncation);
+  g_test_add_func ("/goodix5503/fdt/next-down-base",
+                   test_fdt_next_down_base);
   g_test_add_func ("/goodix5503/image/decode", test_packed_decoder);
   g_test_add_func ("/goodix5503/image/difference", test_difference_image);
   return g_test_run ();

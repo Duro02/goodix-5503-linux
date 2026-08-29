@@ -37,7 +37,7 @@ typedef enum
   GOODIX5503_FDT_PHASE_IDLE,
   GOODIX5503_FDT_PHASE_ARM_DOWN,
   GOODIX5503_FDT_PHASE_WAIT_DOWN,
-  GOODIX5503_FDT_PHASE_CONFIRM_DOWN,
+  GOODIX5503_FDT_PHASE_PREPARE_UP_BASE,
   GOODIX5503_FDT_PHASE_CAPTURE,
   GOODIX5503_FDT_PHASE_ARM_UP,
   GOODIX5503_FDT_PHASE_WAIT_UP,
@@ -46,15 +46,9 @@ typedef enum
 typedef enum
 {
   GOODIX5503_FDT_EVENT_REJECT,
-  GOODIX5503_FDT_EVENT_CONFIRM_DOWN,
+  GOODIX5503_FDT_EVENT_PREPARE_UP_BASE,
   GOODIX5503_FDT_EVENT_REPORT_UP,
 } Goodix5503FdtEventAction;
-
-typedef enum
-{
-  GOODIX5503_FDT_DOWN_REARM,
-  GOODIX5503_FDT_DOWN_CAPTURE,
-} Goodix5503FdtDownAction;
 
 typedef enum
 {
@@ -146,10 +140,22 @@ Goodix5503FdtEventAction goodix5503_fdt_event_action (
   guint              event_generation,
   guint8             received_command);
 
-Goodix5503FdtDownAction goodix5503_fdt_down_action (
-  const guint8 event_readings[GOODIX5503_FDT_BASE_SIZE],
+guint16 goodix5503_fdt_update_area_mask (guint16 current_mask,
+                                          guint16 event_flags,
+                                          guint16 event_touch_flag);
+
+gboolean goodix5503_generate_fdt_up_base (
   const guint8 manual_readings[GOODIX5503_FDT_BASE_SIZE],
-  guint16      delta);
+  const guint8 event_readings[GOODIX5503_FDT_BASE_SIZE],
+  guint16      persistent_area_mask,
+  guint16      event_touch_flag,
+  guint16      delta,
+  guint8       output[GOODIX5503_FDT_BASE_SIZE],
+  GError     **error);
+
+void goodix5503_fdt_next_down_base (
+  const guint8 accepted_up_readings[GOODIX5503_FDT_BASE_SIZE],
+  guint8       output[GOODIX5503_FDT_BASE_SIZE]);
 
 gboolean goodix5503_decode_packed_image (const guint8  *packed,
                                           gsize          packed_len,

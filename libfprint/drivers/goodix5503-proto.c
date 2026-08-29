@@ -534,7 +534,7 @@ goodix5503_build_fdt_request (guint8         selector,
                                GError       **error)
 {
   g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
-  if ((selector & 0x0f) < 0x0c || (selector & 0x0f) > 0x0e ||
+  if ((selector != 0x0c && selector != 0x0d && selector != 0x0e) ||
       dac == NULL || base == NULL || request == NULL)
     {
       g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
@@ -577,21 +577,70 @@ goodix5503_fdt_event_action (Goodix5503FdtPhase phase,
       armed_command != received_command)
     return GOODIX5503_FDT_EVENT_REJECT;
   if (phase == GOODIX5503_FDT_PHASE_WAIT_DOWN && received_command == 0x32)
-    return GOODIX5503_FDT_EVENT_CONFIRM_DOWN;
+    return GOODIX5503_FDT_EVENT_PREPARE_UP_BASE;
   if (phase == GOODIX5503_FDT_PHASE_WAIT_UP && received_command == 0x34)
     return GOODIX5503_FDT_EVENT_REPORT_UP;
   return GOODIX5503_FDT_EVENT_REJECT;
 }
 
-Goodix5503FdtDownAction
-goodix5503_fdt_down_action (
-  const guint8 event_readings[GOODIX5503_FDT_BASE_SIZE],
-  const guint8 manual_readings[GOODIX5503_FDT_BASE_SIZE],
-  guint16      delta)
+guint16
+goodix5503_fdt_update_area_mask (guint16 current_mask,
+                                  guint16 event_flags,
+                                  guint16 event_touch_flag)
 {
-  return goodix5503_fdt_bases_within_delta (event_readings, manual_readings,
-                                             delta) ?
-           GOODIX5503_FDT_DOWN_REARM : GOODIX5503_FDT_DOWN_CAPTURE;
+  /* The pinned event structure's flags field is the first LE16 response word.
+   * Bit 5 replaces, rather than accumulates, the persistent area mask. */
+  return (event_flags & (1u << 5)) != 0 ? event_touch_flag : current_mask;
+}
+
+gboolean
+goodix5503_generate_fdt_up_base (
+  const guint8 manual_readings[GOODIX5503_FDT_BASE_SIZE],
+  const guint8 event_readings[GOODIX5503_FDT_BASE_SIZE],
+  guint16      persistent_area_mask,
+  guint16      event_touch_flag,
+  guint16      delta,
+  guint8       output[GOODIX5503_FDT_BASE_SIZE],
+  GError     **error)
+{
+  guint16 area_mask;
+
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+  if (manual_readings == NULL || event_readings == NULL || output == NULL ||
+      delta < 2)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_INVALID,
+                           "invalid Goodix DN2 FDT-up inputs");
+      return FALSE;
+    }
+
+  area_mask = persistent_area_mask | event_touch_flag;
+  for (gsize area = 0; area < GOODIX5503_FDT_BASE_SIZE / 2; area++)
+    {
+      guint16 manual = read_le16 (manual_readings + area * 2);
+      guint16 event = read_le16 (event_readings + area * 2);
+      guint16 source = MIN (manual, event);
+      guint32 value = (((guint32) (source >> 1) + delta) << 8) | 0x0080;
+
+      if ((area_mask & (1u << area)) == 0)
+        value = (((guint32) delta - 2u) << 8) | 0x0080;
+      write_le16 (output + area * 2, (guint16) value);
+    }
+  return TRUE;
+}
+
+void
+goodix5503_fdt_next_down_base (
+  const guint8 accepted_up_readings[GOODIX5503_FDT_BASE_SIZE],
+  guint8       output[GOODIX5503_FDT_BASE_SIZE])
+{
+  g_return_if_fail (accepted_up_readings != NULL && output != NULL);
+
+  for (gsize offset = 0; offset < GOODIX5503_FDT_BASE_SIZE; offset += 2)
+    write_le16 (output + offset,
+                (read_le16 (accepted_up_readings + offset) & 0xff00) |
+                0x0080);
 }
 
 gboolean
