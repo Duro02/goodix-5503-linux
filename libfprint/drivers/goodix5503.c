@@ -1798,9 +1798,13 @@ fpi_device_goodix5503_class_init (FpiDeviceGoodix5503Class *klass)
   device_class->type = FP_DEVICE_TYPE_USB;
   device_class->id_table = goodix5503_id_table;
   device_class->scan_type = FP_SCAN_TYPE_PRESS;
+  device_class->nr_enroll_stages = 8;
+  device_class->features &= ~FP_DEVICE_FEATURE_UPDATE_PRINT;
 
-  image_class->img_width = GOODIX5503_IMAGE_WIDTH;
-  image_class->img_height = GOODIX5503_IMAGE_HEIGHT;
+  image_class->algorithm = FPI_DEVICE_ALGO_SIGFM;
+  image_class->sigfm_threshold = 150;
+  image_class->img_width = GOODIX5503_SIGFM_IMAGE_WIDTH;
+  image_class->img_height = GOODIX5503_SIGFM_IMAGE_HEIGHT;
   image_class->img_open = goodix5503_open;
   image_class->img_close = goodix5503_close;
   image_class->activate = goodix5503_activate;

@@ -59,16 +59,30 @@ normalization. Those failed threshold/orientation experiments were removed.
 The replacement uses the maintained Goodix SIGFM implementation:
 directional TX-off subtraction, interior 3%..97% normalization, saturated-area
 whitening, CLAHE, SIFT features, mutual nearest-neighbor filtering and pairwise
-geometric verification. One memory-only run accepted eight enrollment samples,
-matched the enrolled finger, and rejected a different finger. It evaluated both
-plausible linear frame interpretations in memory because the profile describes
-80x64 while the exact 5503 PGM reference writes the stream as 64x80. A final run
-after adding the 256-feature and 32-correspondence computational caps again
-matched the enrolled finger and rejected a different finger. This is a
-functional result, not a statistical FAR/FRR claim. The helper reports only
-categorical results, disables core dumps, never serializes a template, and
-wipes controllable image and feature buffers. No raw image, image hash, opaque
-metadata, match score or derived biometric statistic is logged.
+geometric verification. The initial bounded memory-only helper evaluated both
+plausible linear interpretations because the protocol profile is 80x64 while
+the exact 5503 PGM reference writes the stream as 64x80; it accepted eight
+enrollment samples, matched the enrolled finger and rejected a different
+finger.
+
+The standard libfprint core strategy was then tested one orientation at a time.
+With the protocol's 80x64 interpretation, eight-stage enrollment completed but
+all three same-finger verification attempts failed. With the 64x80 linear
+interpretation, standard eight-stage memory-only enrollment completed, the same
+finger matched and a different finger was rejected. Results were categorical;
+no template was serialized or persisted. This is a functional result, not a
+statistical FAR/FRR claim.
+
+SIGFM persistent format v1 is therefore bound to the 64x80 interpretation and
+the current preprocessing, SIFT, 256-feature/32-correspondence limits,
+mutual/geometric matcher and threshold 150. Any orientation, preprocessing,
+descriptor, matcher or threshold change that alters feature/match semantics
+requires a format-version bump. Persistence is implemented and malformed-input
+tested but remains unauthorized and uninstalled. Standard image, NBIS minutiae,
+SIGFM feature and variant scratch copies are securely cleared. No raw image,
+image hash, opaque metadata, match score or derived biometric statistic is
+logged. The superseded dual-pipeline hardware helper was removed after the
+standard 64x80 path succeeded; focused non-biometric algorithm tests remain.
 
 ## Pairing and configuration deployment
 

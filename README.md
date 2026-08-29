@@ -1,6 +1,6 @@
 # goodix-5503-linux
 
-面向 Goodix `27c6:5503` 指纹传感器的实验性 Linux 驱动研究项目。仓库包含只读探测、已验证的配对/TLS与配置派生代码，以及已完成单次同指接受/异指拒绝验证的 memory-only SIGFM 路径；持久模板格式、`fprintd` 与 PAM 集成仍未完成。
+面向 Goodix `27c6:5503` 指纹传感器的实验性 Linux 驱动研究项目。仓库包含只读探测、已验证的配对/TLS与配置派生代码、标准 libfprint SIGFM enrollment/matching 路径，以及已实现但尚未授权安装或写入的持久模板格式。`fprintd`、PAM 和桌面集成仍未完成。
 
 工程范围与避免过度设计的规则见 [`docs/engineering-scope.md`](docs/engineering-scope.md)。
 
@@ -25,8 +25,17 @@ python -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-开发版 memory-only SIGFM helper 还需要 Arch 的 `opencv` 包；构建时只链接
-`core`、`features`、`flann` 和 `imgproc` 四个必要模块。
+启用 Goodix SIGFM 的开发版构建需要 Arch 的 `opencv` 包；构建时只链接
+`core`、`features`、`flann` 和 `imgproc` 四个必要模块。未启用 `goodix5503`
+时使用无 OpenCV 依赖的 C stub。构建脚本仅接受干净的 libfprint v1.94.10
+提交 `0c97a47d8ef405cd577b87058c1e89cae9d242e7`。
+
+SIGFM 持久格式 v1 固定对应本设备字节流的 `64×80` 线性解释，以及当前的
+方向 TX-off subtraction、3%–97% normalization、饱和区稳定化、CLAHE、
+SIFT 参数、mutual/geometric matcher 和阈值 150。任何会改变 feature 或匹配
+语义的方向、预处理、descriptor、matcher 或阈值变化都必须提升格式版本。
+该格式仅完成离线实现与畸形输入测试；尚未授权写入任何用户模板，也未安装到
+系统 libfprint/fprintd。
 
 ## 测试（不会访问硬件）
 
@@ -56,7 +65,7 @@ sudo .venv/bin/goodix-5503-probe --backup-rollback-set
 - 参考提交：`cc43bb3b3154a0bccc0412ae024013c7e1923139`
 - `5503` 初始实现提交：`718ee3c1c06fe88e93ab7694d299cb5ad9d185c4`
 - [goodix-fp-linux-dev/libfprint SIGFM branch](https://github.com/goodix-fp-linux-dev/libfprint/tree/0x00002a/libfprint-sigfm)，参考提交 `7ebe0c809b4d1df3400e84299a4ec4acdea84590`
-- [AndyHazz/goodix53x5-libfprint](https://github.com/AndyHazz/goodix53x5-libfprint)，采用其加固后的 SIGFM/CLAHE 和 mutual/geometric matching；当前 memory-only 子集删除了全部序列化 API，参考提交 `309d4c6999a1cdce172c1ca1ee81387b5078d38f`
+- [AndyHazz/goodix53x5-libfprint](https://github.com/AndyHazz/goodix53x5-libfprint)，采用其 SIGFM/CLAHE 和 mutual/geometric matching，并在本项目中加入有版本、严格有界且清零临时副本的 libfprint 私有持久格式；参考提交 `309d4c6999a1cdce172c1ca1ee81387b5078d38f`
 
 本项目采用 `LGPL-2.1-or-later`。在能够无刷写地稳定采集图像以前，不会接入 `fprintd/PAM`。
 

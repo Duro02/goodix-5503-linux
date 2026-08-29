@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -67,6 +69,17 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled);
  */
 
 int sigfm_keypoints_count(SigfmImgInfo* info);
+
+/** Deep-copy feature ownership. */
+SigfmImgInfo* sigfm_copy_info(const SigfmImgInfo* info);
+
+/** Canonical, versioned, fixed-endian feature persistence. */
+unsigned char* sigfm_serialize(const SigfmImgInfo* info, size_t* length);
+SigfmImgInfo* sigfm_deserialize(const unsigned char* data, size_t length);
+void sigfm_free_serialized(unsigned char* data, size_t length);
+
+/** Compare canonical feature contents. */
+int sigfm_equal(const SigfmImgInfo* left, const SigfmImgInfo* right);
 
 #ifdef __cplusplus
 }

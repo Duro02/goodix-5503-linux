@@ -4,26 +4,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 
 #include <fprint.h>
 #include "fpi-image-device.h"
 
-static void
-wipe_buffer (void *buffer, size_t length)
-{
-  volatile unsigned char *cursor = buffer;
-
-  while (length-- > 0)
-    *cursor++ = 0;
-}
+static gboolean expect_different_finger;
 
 static void
 disable_core_dumps (void)
 {
   const struct rlimit limit = { 0, 0 };
 
-  if (setrlimit (RLIMIT_CORE, &limit) != 0)
+  if (setrlimit (RLIMIT_CORE, &limit) != 0 ||
+      prctl (PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 ||
+      prctl (PR_GET_DUMPABLE, 0, 0, 0, 0) != 0)
     _Exit (2);
 }
 
@@ -37,7 +33,9 @@ state_changed (GObject *object, GParamSpec *spec, gpointer user_data)
   g_object_get (object, "fpi-image-device-state", &state, NULL);
   if (state == FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON)
     {
-      puts ("PLACE FINGER ON SENSOR NOW");
+      puts (expect_different_finger
+              ? "PLACE A DIFFERENT FINGER ON SENSOR NOW"
+              : "PLACE FINGER ON SENSOR NOW");
       fflush (stdout);
     }
   else if (state == FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF)
@@ -71,10 +69,6 @@ main (int argc, char **argv)
   g_autoptr(FpPrint) verify_print = NULL;
   g_autoptr(GError) error = NULL;
   GPtrArray *devices;
-  const guchar *data;
-  const guchar *binarized;
-  gsize data_len = 0;
-  gsize binarized_len = 0;
   gboolean enroll_verify = FALSE;
   gboolean match = FALSE;
   int status = 1;
@@ -159,6 +153,26 @@ main (int argc, char **argv)
           goto close;
         }
       puts ("LIBFPRINT MEMORY-ONLY VERIFY MATCHED");
+      puts ("NEXT VERIFY MUST USE A DIFFERENT FINGER");
+      fflush (stdout);
+      expect_different_finger = TRUE;
+      match = FALSE;
+      g_clear_object (&verify_print);
+      g_clear_error (&error);
+      if (!fp_device_verify_sync (device, enrolled_print, NULL, NULL, NULL,
+                                  &match, &verify_print, &error))
+        {
+          fprintf (stderr,
+                   "Goodix 5503 different-finger verification failed\n");
+          goto close;
+        }
+      if (match)
+        {
+          fprintf (stderr,
+                   "Goodix 5503 different finger unexpectedly matched\n");
+          goto close;
+        }
+      puts ("LIBFPRINT MEMORY-ONLY DIFFERENT FINGER REJECTED");
       fflush (stdout);
       status = 0;
     }
@@ -177,12 +191,6 @@ main (int argc, char **argv)
     }
 
 close:
-  data = image ? fp_image_get_data (image, &data_len) : NULL;
-  if (data)
-    wipe_buffer ((gpointer) data, data_len);
-  binarized = image ? fp_image_get_binarized (image, &binarized_len) : NULL;
-  if (binarized)
-    wipe_buffer ((gpointer) binarized, binarized_len);
   g_clear_object (&image);
   g_clear_object (&verify_print);
   g_clear_object (&enrolled_print);

@@ -173,13 +173,16 @@ TLS request's completion before starting config/image work, while preserving the
 25 ms queued-IN barrier used by the proven Python transport.
 
 A later memory-only matcher validation used the maintained Goodix SIGFM
-pipeline with eight in-memory enrollment samples. It categorically matched the
-enrolled finger and rejected a different finger. The process disabled core
-dumps, did not serialize a print, logged no score or biometric statistic, and
-wiped controllable image, descriptor, keypoint, and NBIS-minutia buffers before
-exit. A final run after adding the 256-feature and 32-correspondence caps again
-matched the enrolled finger and rejected a different finger. These functional
-runs do not establish a statistical false-accept or false-reject rate.
+pipeline with eight in-memory enrollment samples. The bounded dual-interpretation
+prototype categorically matched the enrolled finger and rejected a different
+finger. The standard libfprint core path then isolated orientation: 80x64
+completed enrollment but failed all three same-finger verifies, while 64x80
+completed eight-stage enrollment, matched the enrolled finger and rejected a
+different finger. These processes disabled core dumps, did not serialize or
+persist a print, logged no score or biometric statistic, and wiped controllable
+image, descriptor, keypoint, GVariant scratch and NBIS-minutia buffers before
+exit. These functional runs do not establish a statistical false-accept or
+false-reject rate.
 
 ## Interpretation
 

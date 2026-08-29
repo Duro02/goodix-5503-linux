@@ -32,7 +32,8 @@ goodix5503_image_new_from_frames (
         GOODIX5503_PIXEL_COUNT, error))
     goto out;
 
-  image = fp_image_new (GOODIX5503_IMAGE_WIDTH, GOODIX5503_IMAGE_HEIGHT);
+  image = fp_image_new (GOODIX5503_SIGFM_IMAGE_WIDTH,
+                        GOODIX5503_SIGFM_IMAGE_HEIGHT);
   image->ppmm = 500.0 / 25.4;
   if (!goodix5503_build_difference_image (
         background_pixels, finger_pixels, GOODIX5503_PIXEL_COUNT,
