@@ -1,6 +1,6 @@
 # goodix-5503-linux
 
-面向 Goodix `27c6:5503` 指纹传感器的实验性 Linux 驱动研究项目。仓库包含只读探测、已验证的配对/TLS与配置派生代码，以及仍在调试的内存图像采集路径；目前还不是可供 `fprintd` 或 PAM 使用的驱动。
+面向 Goodix `27c6:5503` 指纹传感器的实验性 Linux 驱动研究项目。仓库包含只读探测、已验证的配对/TLS与配置派生代码，以及已完成单次同指接受/异指拒绝验证的 memory-only SIGFM 路径；持久模板格式、`fprintd` 与 PAM 集成仍未完成。
 
 工程范围与避免过度设计的规则见 [`docs/engineering-scope.md`](docs/engineering-scope.md)。
 
@@ -24,6 +24,9 @@ cd ~/Projects/goodix-5503-linux
 python -m venv .venv
 .venv/bin/pip install -e .
 ```
+
+开发版 memory-only SIGFM helper 还需要 Arch 的 `opencv` 包；构建时只链接
+`core`、`features`、`flann` 和 `imgproc` 四个必要模块。
 
 ## 测试（不会访问硬件）
 
@@ -52,6 +55,8 @@ sudo .venv/bin/goodix-5503-probe --backup-rollback-set
 - [goodix-fp-linux-dev/goodix-fp-dump](https://github.com/goodix-fp-linux-dev/goodix-fp-dump)
 - 参考提交：`cc43bb3b3154a0bccc0412ae024013c7e1923139`
 - `5503` 初始实现提交：`718ee3c1c06fe88e93ab7694d299cb5ad9d185c4`
+- [goodix-fp-linux-dev/libfprint SIGFM branch](https://github.com/goodix-fp-linux-dev/libfprint/tree/0x00002a/libfprint-sigfm)，参考提交 `7ebe0c809b4d1df3400e84299a4ec4acdea84590`
+- [AndyHazz/goodix53x5-libfprint](https://github.com/AndyHazz/goodix53x5-libfprint)，采用其加固后的 SIGFM/CLAHE 和 mutual/geometric matching；当前 memory-only 子集删除了全部序列化 API，参考提交 `309d4c6999a1cdce172c1ca1ee81387b5078d38f`
 
 本项目采用 `LGPL-2.1-or-later`。在能够无刷写地稳定采集图像以前，不会接入 `fprintd/PAM`。
 

@@ -172,6 +172,15 @@ critical ordering fix was to consume the optional post-final-flight A0/D0 as the
 TLS request's completion before starting config/image work, while preserving the
 25 ms queued-IN barrier used by the proven Python transport.
 
+A later memory-only matcher validation used the maintained Goodix SIGFM
+pipeline with eight in-memory enrollment samples. It categorically matched the
+enrolled finger and rejected a different finger. The process disabled core
+dumps, did not serialize a print, logged no score or biometric statistic, and
+wiped controllable image, descriptor, keypoint, and NBIS-minutia buffers before
+exit. A final run after adding the 256-feature and 32-correspondence caps again
+matched the enrolled finger and rejected a different finger. These functional
+runs do not establish a statistical false-accept or false-reject rate.
+
 ## Interpretation
 
 The firmware and IAP versions match the newer firmware family embedded in the

@@ -79,4 +79,48 @@ cc -std=c11 -Wall -Wextra -Werror -O2 \
   -Wl,-rpath,"$work_dir/build/libfprint" \
   -o "$repo_dir/.tools/goodix5503-libfprint-smoke" \
   $(pkg-config --libs libfprint-2)
+
+sigfm_object="$repo_dir/.tools/.goodix5503-sigfm.o"
+sigfm_smoke_object="$repo_dir/.tools/.goodix5503-sigfm-smoke.o"
+sensitive_object="$repo_dir/.tools/.goodix5503-sensitive.o"
+sigfm_test="$repo_dir/.tools/.goodix5503-sigfm-test"
+sensitive_test="$repo_dir/.tools/.goodix5503-sensitive-test"
+c++ -std=c++17 -Wall -Wextra -Werror -O2 \
+  -I"$repo_dir/libfprint/sigfm" \
+  $(pkg-config --cflags opencv5) \
+  -c "$repo_dir/libfprint/sigfm/sigfm.cpp" -o "$sigfm_object"
+c++ -std=c++17 -Wall -Wextra -Werror -O2 \
+  -I"$repo_dir/libfprint/sigfm" \
+  $(pkg-config --cflags opencv5) \
+  "$repo_dir/libfprint/tests/test-goodix5503-sigfm.cpp" "$sigfm_object" \
+  -o "$sigfm_test" \
+  -lopencv_core -lopencv_features -lopencv_flann -lopencv_imgproc
+"$sigfm_test"
+cc -std=c11 -Wall -Wextra -Werror -O2 \
+  -I"$work_dir/source/libfprint" \
+  $(pkg-config --cflags glib-2.0) \
+  -c "$repo_dir/tools/goodix5503_sensitive.c" -o "$sensitive_object"
+cc -std=c11 -Wall -Wextra -Werror -fsanitize=address -O1 \
+  -I"$work_dir/source/libfprint" \
+  -I"$repo_dir/tools" \
+  $(pkg-config --cflags glib-2.0) \
+  "$repo_dir/tools/goodix5503_sensitive.c" \
+  "$repo_dir/libfprint/tests/test-goodix5503-sensitive.c" \
+  -o "$sensitive_test" $(pkg-config --libs glib-2.0)
+ASAN_OPTIONS=detect_leaks=1 "$sensitive_test"
+cc -std=c11 -Wall -Wextra -Werror -O2 \
+  -I"$work_dir/build/libfprint" \
+  -I"$work_dir/source/libfprint" \
+  -I"$repo_dir/libfprint/sigfm" \
+  -I"$repo_dir/tools" \
+  $(pkg-config --cflags libfprint-2 gusb) \
+  -c "$repo_dir/tools/goodix5503_sigfm_smoke.c" -o "$sigfm_smoke_object"
+c++ "$sigfm_smoke_object" "$sigfm_object" "$sensitive_object" \
+  -L"$work_dir/build/libfprint" \
+  -Wl,-rpath,"$work_dir/build/libfprint" \
+  -o "$repo_dir/.tools/goodix5503-sigfm-smoke" \
+  $(pkg-config --libs libfprint-2) \
+  -lopencv_core -lopencv_features -lopencv_flann -lopencv_imgproc
+rm -f "$sigfm_object" "$sigfm_smoke_object" "$sensitive_object" \
+  "$sigfm_test" "$sensitive_test"
 printf 'Built development driver in %s\n' "$work_dir/build"

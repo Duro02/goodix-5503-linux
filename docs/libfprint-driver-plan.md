@@ -50,17 +50,25 @@ rotation, inversion and whether 12-bit values should be linearly reduced to
 
 The 5,120-pixel area is small. Quality must be measured with libfprint's image
 pipeline before assuming NBIS can enroll reliably. The prototype quality gate
-uses the real asynchronous NBIS path, an explicit provisional 500-dpi ppmm
-value, absolute clear-frame subtraction and linear 8-bit normalization. It
-passes the processed frame through a pipe, reports only `usable`/`unusable`,
-and wipes controllable image buffers; it does not create a biometric fixture.
-One initial run was invalid because the operator had held a finger on the
-sensor during clear-frame calibration. A corrected run kept the sensor clear
-through calibration, touched only after the explicit prompt, and returned
-`usable` through real libfprint/NBIS at 80x64 with the provisional 500-dpi
-value. This is one quality result, not yet enrollment reliability evidence;
-final orientation and repeated capture/enroll/verify validation remain. No raw
-image, image hash, opaque metadata or pixel dump should be logged by default.
+initially used the real asynchronous NBIS path and returned categorical
+`usable`, but repeated memory-only enrollment never produced a same-finger
+match at the default threshold, at established small-sensor thresholds, after
+the reference partial-image orientation, or after reference percentile
+normalization. Those failed threshold/orientation experiments were removed.
+
+The replacement uses the maintained Goodix SIGFM implementation:
+directional TX-off subtraction, interior 3%..97% normalization, saturated-area
+whitening, CLAHE, SIFT features, mutual nearest-neighbor filtering and pairwise
+geometric verification. One memory-only run accepted eight enrollment samples,
+matched the enrolled finger, and rejected a different finger. It evaluated both
+plausible linear frame interpretations in memory because the profile describes
+80x64 while the exact 5503 PGM reference writes the stream as 64x80. A final run
+after adding the 256-feature and 32-correspondence computational caps again
+matched the enrolled finger and rejected a different finger. This is a
+functional result, not a statistical FAR/FRR claim. The helper reports only
+categorical results, disables core dumps, never serializes a template, and
+wipes controllable image and feature buffers. No raw image, image hash, opaque
+metadata, match score or derived biometric statistic is logged.
 
 ## Pairing and configuration deployment
 

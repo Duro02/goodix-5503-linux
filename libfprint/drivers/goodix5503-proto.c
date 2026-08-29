@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "goodix5503-proto.h"
 
+#include <stdlib.h>
+
 #define GOODIX_MESSAGE_FLAGS 0xa0
 #define GOODIX_CHECKSUM_TARGET 0xaa
 #define GOODIX_NO_CHECKSUM_TRAILER 0x88
@@ -596,6 +598,24 @@ goodix5503_decode_packed_image (const guint8  *packed,
   return TRUE;
 }
 
+static int
+compare_signed_pixel (const void *left, const void *right)
+{
+  gint a = *(const gint *) left;
+  gint b = *(const gint *) right;
+
+  return (a > b) - (a < b);
+}
+
+static void
+wipe_pixels (gpointer buffer, gsize length)
+{
+  volatile guint8 *cursor = buffer;
+
+  while (length-- > 0)
+    *cursor++ = 0;
+}
+
 gboolean
 goodix5503_build_difference_image (const guint16  *background,
                                     const guint16  *finger,
@@ -603,8 +623,15 @@ goodix5503_build_difference_image (const guint16  *background,
                                     guint8          *output,
                                     GError        **error)
 {
-  guint16 minimum = G_MAXUINT16;
-  guint16 maximum = 0;
+  const gsize sample_capacity =
+    (GOODIX5503_IMAGE_WIDTH - 2) * (GOODIX5503_IMAGE_HEIGHT - 2);
+  gint *corrected = NULL;
+  gint *sample = NULL;
+  gsize sample_count = 0;
+  gint black;
+  gint white;
+  gint clipped_white;
+  gboolean success = FALSE;
 
   g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
   if (background == NULL || finger == NULL || output == NULL ||
@@ -616,29 +643,47 @@ goodix5503_build_difference_image (const guint16  *background,
       return FALSE;
     }
 
+  corrected = g_new (gint, pixel_count);
+  sample = g_new (gint, sample_capacity);
+  for (gsize index = 0; index < pixel_count; index++)
+    corrected[index] = (gint) finger[index] - (gint) background[index];
+  for (gsize row = 1; row + 1 < GOODIX5503_IMAGE_HEIGHT; row++)
+    for (gsize column = 1; column + 1 < GOODIX5503_IMAGE_WIDTH; column++)
+      {
+        gsize index = row * GOODIX5503_IMAGE_WIDTH + column;
+
+        if (finger[index] < 4095)
+          sample[sample_count++] = corrected[index];
+      }
+  if (sample_count == 0)
+    goto no_contrast;
+
+  qsort (sample, sample_count, sizeof *sample, compare_signed_pixel);
+  black = sample[(3 * (sample_count - 1)) / 100];
+  white = sample[(97 * (sample_count - 1)) / 100];
+  clipped_white = sample[(99 * (sample_count - 1)) / 100];
+  if (black == white)
+    goto no_contrast;
+
   for (gsize index = 0; index < pixel_count; index++)
     {
-      guint16 difference = ABS ((gint) background[index] -
-                                (gint) finger[index]);
+      gint value = finger[index] >= 4095 ? clipped_white : corrected[index];
+      gint64 scaled = ((gint64) value - black) * 255 / (white - black);
 
-      minimum = MIN (minimum, difference);
-      maximum = MAX (maximum, difference);
+      output[index] = CLAMP (scaled, 0, 255);
     }
-  if (minimum == maximum)
-    {
-      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
-                           GOODIX5503_PROTO_ERROR_NO_CONTRAST,
-                           "Goodix finger frame has no relative contrast");
-      return FALSE;
-    }
+  success = TRUE;
+  goto out;
 
-  for (gsize index = 0; index < pixel_count; index++)
-    {
-      guint16 difference = ABS ((gint) background[index] -
-                                (gint) finger[index]);
-
-      output[index] = ((guint32) difference - minimum) * 255 /
-                      (maximum - minimum);
-    }
-  return TRUE;
+no_contrast:
+  memset (output, 0, pixel_count);
+  g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                       GOODIX5503_PROTO_ERROR_NO_CONTRAST,
+                       "Goodix finger frame has no relative contrast");
+out:
+  wipe_pixels (corrected, pixel_count * sizeof *corrected);
+  wipe_pixels (sample, sample_capacity * sizeof *sample);
+  g_free (corrected);
+  g_free (sample);
+  return success;
 }

@@ -307,6 +307,20 @@ test_difference_image (void)
   g_assert_cmpuint (output[0], ==, 0);
   g_assert_cmpuint (output[4095], ==, 255);
 
+  for (gsize index = 0; index < GOODIX5503_PIXEL_COUNT; index++)
+    {
+      background[index] = 1000;
+      finger[index] = 1000 + index % 100;
+    }
+  finger[0] = 4095;
+  g_assert_true (goodix5503_build_difference_image (
+    background, finger, GOODIX5503_PIXEL_COUNT, output, &error));
+  g_assert_no_error (error);
+  g_assert_cmpuint (output[0], ==, 255);
+  g_assert_cmpuint (output[GOODIX5503_IMAGE_WIDTH + 1], <,
+                    output[GOODIX5503_IMAGE_WIDTH + 10]);
+
+  memset (background, 0, GOODIX5503_PIXEL_COUNT * sizeof *background);
   memset (finger, 0, GOODIX5503_PIXEL_COUNT * sizeof *finger);
   g_assert_false (goodix5503_build_difference_image (
     background, finger, GOODIX5503_PIXEL_COUNT, output, &error));
