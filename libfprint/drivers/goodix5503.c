@@ -1615,15 +1615,18 @@ goodix5503_deactivate (FpImageDevice *device)
   FpiDeviceGoodix5503 *self = FPI_DEVICE_GOODIX5503 (device);
 
   self->deactivating = TRUE;
+  if (self->transaction_cancel)
+    {
+      /* A queued OUT may still be behind its 25 ms IN-first barrier. Let the
+       * source submit against the cancelled cancellable so both callbacks
+       * retire and the transaction can complete. */
+      g_cancellable_cancel (self->transaction_cancel);
+      return;
+    }
   if (self->delay_source)
     {
       g_source_destroy (self->delay_source);
       self->delay_source = NULL;
-    }
-  if (self->transaction_cancel)
-    {
-      g_cancellable_cancel (self->transaction_cancel);
-      return;
     }
   if (self->reset_attempted)
     {
