@@ -577,10 +577,34 @@ goodix5503_fdt_event_action (Goodix5503FdtPhase phase,
       armed_command != received_command)
     return GOODIX5503_FDT_EVENT_REJECT;
   if (phase == GOODIX5503_FDT_PHASE_WAIT_DOWN && received_command == 0x32)
-    return GOODIX5503_FDT_EVENT_PREPARE_UP_BASE;
+    return GOODIX5503_FDT_EVENT_CAPTURE_DOWN;
   if (phase == GOODIX5503_FDT_PHASE_WAIT_UP && received_command == 0x34)
     return GOODIX5503_FDT_EVENT_REPORT_UP;
   return GOODIX5503_FDT_EVENT_REJECT;
+}
+
+Goodix5503FdtStateAction
+goodix5503_fdt_state_action (Goodix5503FdtPhase phase,
+                              gboolean           await_finger_on)
+{
+  if (await_finger_on)
+    {
+      if (phase == GOODIX5503_FDT_PHASE_IDLE)
+        return GOODIX5503_FDT_STATE_ARM_DOWN;
+      if (phase == GOODIX5503_FDT_PHASE_ARM_DOWN ||
+          phase == GOODIX5503_FDT_PHASE_WAIT_DOWN)
+        return GOODIX5503_FDT_STATE_NOOP;
+      return GOODIX5503_FDT_STATE_REJECT;
+    }
+
+  if (phase == GOODIX5503_FDT_PHASE_CAPTURE)
+    return GOODIX5503_FDT_STATE_PREPARE_UP_BASE;
+  if (phase == GOODIX5503_FDT_PHASE_PREPARE_UP_BASE ||
+      phase == GOODIX5503_FDT_PHASE_ARM_UP ||
+      phase == GOODIX5503_FDT_PHASE_WAIT_UP ||
+      phase == GOODIX5503_FDT_PHASE_IDLE)
+    return GOODIX5503_FDT_STATE_NOOP;
+  return GOODIX5503_FDT_STATE_REJECT;
 }
 
 guint16

@@ -277,16 +277,37 @@ test_fdt_stage_separation (void)
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
                      generation, 0x32), ==,
-                   GOODIX5503_FDT_EVENT_PREPARE_UP_BASE);
+                   GOODIX5503_FDT_EVENT_CAPTURE_DOWN);
   /* A read timeout does not mutate the armed generation; the same wait may
    * remain cancellable and accept a later exact event. */
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
                      generation, 0x32), ==,
-                   GOODIX5503_FDT_EVENT_PREPARE_UP_BASE);
+                   GOODIX5503_FDT_EVENT_CAPTURE_DOWN);
 
-  /* No event is accepted while the manual read prepares the dedicated up base
-   * or while a capture is in progress. */
+  /* The accepted down event must enter command-20 capture.  Only the generic
+   * AWAIT_FINGER_OFF transition after image submission may start manual 0x36. */
+  g_assert_cmpint (goodix5503_fdt_state_action (
+                     GOODIX5503_FDT_PHASE_IDLE, TRUE), ==,
+                   GOODIX5503_FDT_STATE_ARM_DOWN);
+  g_assert_cmpint (goodix5503_fdt_state_action (
+                     GOODIX5503_FDT_PHASE_CAPTURE, FALSE), ==,
+                   GOODIX5503_FDT_STATE_PREPARE_UP_BASE);
+  g_assert_cmpint (goodix5503_fdt_state_action (
+                     GOODIX5503_FDT_PHASE_PREPARE_UP_BASE, FALSE), ==,
+                   GOODIX5503_FDT_STATE_NOOP);
+  g_assert_cmpint (goodix5503_fdt_state_action (
+                     GOODIX5503_FDT_PHASE_ARM_UP, FALSE), ==,
+                   GOODIX5503_FDT_STATE_NOOP);
+  g_assert_cmpint (goodix5503_fdt_state_action (
+                     GOODIX5503_FDT_PHASE_WAIT_UP, FALSE), ==,
+                   GOODIX5503_FDT_STATE_NOOP);
+  g_assert_cmpint (goodix5503_fdt_state_action (
+                     GOODIX5503_FDT_PHASE_WAIT_DOWN, FALSE), ==,
+                   GOODIX5503_FDT_STATE_REJECT);
+
+  /* No event is accepted while command-20 capture or later manual/up-base
+   * preparation is in progress. */
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_PREPARE_UP_BASE, 0x32, generation,
                      generation, 0x32), ==, GOODIX5503_FDT_EVENT_REJECT);

@@ -24,15 +24,18 @@ Use separate bounded `FpiSsm` machines for activation, capture and cleanup:
    the bounded fresh-base path.
 2. **Finger detection:** fixed FDT down/up commands with cancellable bounded
    waits and explicit arm generations. An exact `0x32` event stores its six raw
-   words and area mask, then the pinned DN2 path performs one bounded manual
-   `0x36` selector-`0x0d` read using the calibrated down base. The runtime takes
-   the unsigned wordwise minima, combines the persistent and event area masks,
-   and generates the exact six-word GF3258 up base with the configured delta
-   before reporting ON once. A bit-5 event flag replaces the persistent 16-bit
-   area mask; it is not a finger-state predicate. Only an exact `0x34` event in
-   the matching WAIT_UP generation reports OFF, and its transformed raw words
-   become the dedicated next down base. The failed TX-off/delta qualification
-   experiment is not retained, and no 12-area community arithmetic is used.
+   words and area mask, reports ON once and enters command-20 capture first.
+   Only after the captured image is submitted upward and libfprint enters
+   `AWAIT_FINGER_OFF` does the pinned DN2 path perform one bounded manual `0x36`
+   selector-`0x0d` read using the calibrated down base. The runtime takes the
+   unsigned wordwise minima, combines the persistent and event area masks,
+   generates the exact six-word GF3258 up base with the configured delta, then
+   arms `0x34`. A bit-5 event flag replaces the persistent 16-bit area mask; it
+   is not a finger-state predicate. Duplicate state notifications cannot repeat
+   manual preparation or arming. Only an exact `0x34` event in the matching
+   WAIT_UP generation reports OFF, and its transformed raw words become the
+   dedicated next down base. The failed TX-off/delta qualification experiment
+   is not retained, and no 12-area community arithmetic is used.
 3. **Capture:** parse command-36 data through its dedicated FDT policy (two
    LE16 header fields followed by the exact profile-sized base), then send fixed
    `0x20`; route ACK/A0 command completions separately from B2 encrypted data;

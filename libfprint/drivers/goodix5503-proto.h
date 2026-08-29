@@ -46,9 +46,17 @@ typedef enum
 typedef enum
 {
   GOODIX5503_FDT_EVENT_REJECT,
-  GOODIX5503_FDT_EVENT_PREPARE_UP_BASE,
+  GOODIX5503_FDT_EVENT_CAPTURE_DOWN,
   GOODIX5503_FDT_EVENT_REPORT_UP,
 } Goodix5503FdtEventAction;
+
+typedef enum
+{
+  GOODIX5503_FDT_STATE_REJECT,
+  GOODIX5503_FDT_STATE_NOOP,
+  GOODIX5503_FDT_STATE_ARM_DOWN,
+  GOODIX5503_FDT_STATE_PREPARE_UP_BASE,
+} Goodix5503FdtStateAction;
 
 typedef enum
 {
@@ -139,6 +147,10 @@ Goodix5503FdtEventAction goodix5503_fdt_event_action (
   guint              arm_generation,
   guint              event_generation,
   guint8             received_command);
+
+Goodix5503FdtStateAction goodix5503_fdt_state_action (
+  Goodix5503FdtPhase phase,
+  gboolean           await_finger_on);
 
 guint16 goodix5503_fdt_update_area_mask (guint16 current_mask,
                                           guint16 event_flags,
