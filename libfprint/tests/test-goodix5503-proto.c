@@ -194,27 +194,27 @@ test_command_router_ordering (void)
   ack = goodix5503_packet_encode (0xb0, ack_payload, sizeof ack_payload,
                                   TRUE, &error);
   data = goodix5503_packet_encode (0x36, response, sizeof response,
-                                   FALSE, &error);
+                                   TRUE, &error);
   g_assert_no_error (error);
   g_assert_true (goodix5503_command_consume_frame (
-    0x36, TRUE, FALSE, &state, ack->data, ack->len, &body, &error));
+    0x36, TRUE, TRUE, &state, ack->data, ack->len, &body, &error));
   g_assert_cmpint (state, ==, GOODIX5503_COMMAND_WAIT_DATA);
   g_assert_null (body);
   g_assert_true (goodix5503_command_consume_frame (
-    0x36, TRUE, FALSE, &state, data->data, data->len, &body, &error));
+    0x36, TRUE, TRUE, &state, data->data, data->len, &body, &error));
   g_assert_cmpint (state, ==, GOODIX5503_COMMAND_DONE);
   g_assert_cmpmem (body->data, body->len, response, sizeof response);
   g_clear_pointer (&body, g_byte_array_unref);
 
   g_assert_false (goodix5503_command_consume_frame (
-    0x36, TRUE, FALSE, &state, data->data, data->len, &body, &error));
+    0x36, TRUE, TRUE, &state, data->data, data->len, &body, &error));
   g_assert_error (error, GOODIX5503_PROTO_ERROR,
                   GOODIX5503_PROTO_ERROR_INVALID);
   g_clear_error (&error);
 
   state = GOODIX5503_COMMAND_WAIT_ACK;
   g_assert_false (goodix5503_command_consume_frame (
-    0x36, TRUE, FALSE, &state, data->data, data->len, &body, &error));
+    0x36, TRUE, TRUE, &state, data->data, data->len, &body, &error));
   g_assert_error (error, GOODIX5503_PROTO_ERROR,
                   GOODIX5503_PROTO_ERROR_INVALID);
 }

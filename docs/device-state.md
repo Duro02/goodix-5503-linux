@@ -36,7 +36,8 @@ Read-only OTP/config derivation:
 Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   attempted cleanup reset. Early runs resolved delayed D0 completion and the
   ten-byte HU image request. Later pinned-parser/cold-state runs reached the
-  first command 36 and consistently received a checksum-free 16-byte payload,
+  first command 36 and consistently received a 16-byte body after protocol
+  checksum validation and stripping,
   which exceeds the official DN2 12-byte output capacity and remains fatal.
   A raw usbmon capture at commit `d6d7a4f` closed the transport question. Its
   22-byte OUT body was exactly `0d01 || live DAC_LE16[4] || (8000)*6`; the

@@ -444,7 +444,8 @@ layout for HU: it reads the interrupt word, derives the touch flag from bytes
 selects the manual-base branch before that copy. The observed body therefore
 parses losslessly as header `82 01 3f 00` followed by the six raw LE16 base
 words; this is official field removal, not truncation or guessed normalization.
-Bodies other than exactly 16 checksum-free bytes remain fatal in the free path.
+After validating and stripping the protocol checksum trailer, bodies other than
+exactly 16 bytes remain fatal in the free path.
 The corrected parser was exercised on the real 10063 unit: all three bounded
 fresh-base acquisitions completed, command 20 returned B2/TLS image data, TLS
 decrypted to exactly 7,684 bytes, and the structural result was an 80x64 frame

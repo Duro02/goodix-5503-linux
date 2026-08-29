@@ -2,7 +2,13 @@
 set -euo pipefail
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-source_dir=${LIBFPRINT_SOURCE:-/tmp/libfprint-v1.94.10}
+if [[ -n ${LIBFPRINT_SOURCE:-} ]]; then
+  source_dir=$LIBFPRINT_SOURCE
+elif [[ -f "$repo_dir/.tools/libfprint-v1.94.10-source/libfprint/meson.build" ]]; then
+  source_dir="$repo_dir/.tools/libfprint-v1.94.10-source"
+else
+  source_dir=/tmp/libfprint-v1.94.10
+fi
 work_dir="$repo_dir/.tools/libfprint-goodix5503"
 
 if [[ ! -f "$source_dir/libfprint/meson.build" ]]; then

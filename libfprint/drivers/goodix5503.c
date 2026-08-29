@@ -860,7 +860,7 @@ goodix5503_candidate_done (FpiDeviceGoodix5503 *self, GError *error)
     }
   self->stage = "fresh-base FDT 3";
   goodix5503_command_start (self, GOODIX5503_COMMAND_FDT_MANUAL,
-                            request, sizeof request, TRUE, FALSE,
+                            request, sizeof request, TRUE, TRUE,
                             goodix5503_fdt2_done);
   OPENSSL_cleanse (request, sizeof request);
 }
@@ -948,7 +948,7 @@ goodix5503_nav_done (FpiDeviceGoodix5503 *self, GError *error)
     }
   self->stage = "fresh-base FDT 2";
   goodix5503_command_start (self, GOODIX5503_COMMAND_FDT_MANUAL,
-                            request, sizeof request, TRUE, FALSE,
+                            request, sizeof request, TRUE, TRUE,
                             goodix5503_fdt1_done);
   OPENSSL_cleanse (request, sizeof request);
 }
@@ -985,7 +985,7 @@ goodix5503_fresh_attempt_start (FpiDeviceGoodix5503 *self)
     }
   self->stage = "fresh-base FDT 1";
   goodix5503_command_start (self, GOODIX5503_COMMAND_FDT_MANUAL,
-                            request, sizeof request, TRUE, FALSE,
+                            request, sizeof request, TRUE, TRUE,
                             goodix5503_fdt0_done);
   OPENSSL_cleanse (request, sizeof request);
 }
