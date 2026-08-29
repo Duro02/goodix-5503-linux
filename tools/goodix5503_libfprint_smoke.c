@@ -120,7 +120,8 @@ main (int argc, char **argv)
       template_print = fp_print_new (device);
       fp_print_set_finger (template_print, FP_FINGER_LEFT_INDEX);
       enrolled_print = fp_device_enroll_sync (
-        device, template_print, NULL, enroll_progress, NULL, &error);
+        device, g_steal_pointer (&template_print), NULL,
+        enroll_progress, NULL, &error);
       if (enrolled_print == NULL)
         {
           fprintf (stderr, "Goodix 5503 memory-only enrollment failed\n");
