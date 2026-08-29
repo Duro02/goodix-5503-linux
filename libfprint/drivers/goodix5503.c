@@ -43,6 +43,7 @@
 #define GOODIX5503_EXPECTED_CHIP_ID 0x220f
 
 static const char expected_firmware[] = "GF3258_RTSEC_APP_10063";
+static const char expected_post_reset_firmware[] = "GF3208_RTSEC_APP_10063";
 
 static gboolean
 goodix5503_firmware_identity_matches (GByteArray *body, const gchar *expected)
@@ -1405,7 +1406,9 @@ goodix5503_firmware_done (FpiDeviceGoodix5503 *self,
       goodix5503_pre_reset_fail (self, error);
       return;
     }
-  if (!goodix5503_firmware_identity_matches (body, expected_firmware))
+  if (!goodix5503_firmware_identity_matches (body, expected_firmware) &&
+      !goodix5503_firmware_identity_matches (body,
+                                              expected_post_reset_firmware))
     {
       g_autofree gchar *identity = NULL;
       gsize text_len = 0;

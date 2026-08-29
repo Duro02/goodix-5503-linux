@@ -156,12 +156,13 @@ Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   next response read immediately after each completion.
 ```
 
-After a bounded C-runtime A2 cleanup, A8 reported the official embedded base
-marker `GF3208_RTSEC_APP_10063`; host-side USB deauthorize/reauthorize did not
-restore the attested GF3258 identity. A guarded trial reached fresh-base command
-36 but returned incompatible trailer semantics, so GF3208 was removed from the
-runtime allowlist rather than treated as an alias. No firmware write occurred;
-a full hardware power cycle is required before further capture validation.
+After a bounded C-runtime A2 cleanup, A8 reports the official embedded base
+marker `GF3208_RTSEC_APP_10063`; a full power cycle restores the attested
+`GF3258_RTSEC_APP_10063` identity. The initially observed command-36 failure was
+later traced to the C decoder incorrectly selecting the no-checksum trailer mode,
+not to incompatible base firmware. Runtime therefore accepts only these two
+exact official 10063 identities and still requires fixed PSK, chip-ID and OTP
+profile checks. No firmware write occurred.
 
 ## Interpretation
 
