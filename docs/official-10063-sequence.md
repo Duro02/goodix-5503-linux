@@ -439,11 +439,15 @@ Public vendor logs from `tlambertz/goodix-fingerprint-reversing` independently
 show the same parser contract on an older Milan profile: a successful raw body
 starts with two LE16 fields, `McuParseFdt` logs the second as `fdt touch flag`,
 and copies the remaining profile-sized base. The pinned parser proves the same
-layout for HU: it reads the interrupt word, derives the touch flag from bytes
-2..3, and copies 12 bytes starting at offset four. For manual operation it
-selects the manual-base branch before that copy. The observed body therefore
-parses losslessly as header `82 01 3f 00` followed by the six raw LE16 base
-words; this is official field removal, not truncation or guessed normalization.
+layout for HU: body+0 is an LE16 MCU register address, body+2 is the touch
+flag, and 12 base bytes start at offset four. The selected GF3258 DN2 profile
+callback performs a nested command-`0x82` read at that address; only the returned
+register value participates in the proprietary dispatcher gate. For manual
+operation `McuParseFdt` selects the manual-base branch before the copy. The
+observed body therefore parses losslessly as register address `0x0182`, touch
+mask `0x003f`, and six raw LE16 base words; this is official field removal, not
+truncation or guessed normalization. The fixed free host does not add the nested
+register transaction or substitute a predicate over the raw address.
 After validating and stripping the protocol checksum trailer, bodies other than
 exactly 16 bytes remain fatal in the free path.
 The corrected parser was exercised on the real 10063 unit: all three bounded

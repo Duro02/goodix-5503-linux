@@ -871,12 +871,16 @@ goodix5503_parse_fdt_slot (FpiDeviceGoodix5503 *self,
                             GByteArray           *body,
                             GError              **error)
 {
-  guint16 interrupt;
-  guint16 touch_flag;
+  guint16 interrupt = 0;
+  guint16 touch_flag = 0;
+  gboolean parsed;
 
-  return goodix5503_parse_fdt_response (
+  parsed = goodix5503_parse_fdt_response (
     body->data, body->len, &interrupt, &touch_flag,
     self->fresh_raw[slot], self->fresh_transformed[slot], error);
+  OPENSSL_cleanse (&interrupt, sizeof interrupt);
+  OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
+  return parsed;
 }
 
 static void
@@ -1761,10 +1765,11 @@ goodix5503_fdt_up_base_ready (FpiDeviceGoodix5503 *self,
         &error))
     goto fail;
 
-  (void) interrupt;
   OPENSSL_cleanse (body->data, body->len);
   OPENSSL_cleanse (raw, sizeof raw);
   OPENSSL_cleanse (transformed, sizeof transformed);
+  OPENSSL_cleanse (&interrupt, sizeof interrupt);
+  OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
   OPENSSL_cleanse (self->fdt_pending_raw, sizeof self->fdt_pending_raw);
   self->fdt_pending_touch_flag = 0;
   self->fdt_pending_valid = FALSE;
@@ -1778,6 +1783,8 @@ fail:
     OPENSSL_cleanse (body->data, body->len);
   OPENSSL_cleanse (raw, sizeof raw);
   OPENSSL_cleanse (transformed, sizeof transformed);
+  OPENSSL_cleanse (&interrupt, sizeof interrupt);
+  OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
   goodix5503_fdt_pending_clear (self);
   goodix5503_runtime_error (
     self, error ? error : goodix5503_fdt_phase_error ());
@@ -1831,6 +1838,8 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
         OPENSSL_cleanse (body->data, body->len);
       OPENSSL_cleanse (raw, sizeof raw);
       OPENSSL_cleanse (transformed, sizeof transformed);
+      OPENSSL_cleanse (&interrupt, sizeof interrupt);
+      OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
       goodix5503_runtime_error (
         self, error ? error : goodix5503_fdt_phase_error ());
       return;
@@ -1838,13 +1847,15 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
 
   action = goodix5503_fdt_event_action (
     self->fdt_phase, self->fdt_event_command, self->fdt_arm_generation,
-    self->fdt_event_generation, self->fdt_event_command, interrupt);
+    self->fdt_event_generation, self->fdt_event_command);
   OPENSSL_cleanse (frame->data, frame->len);
   OPENSSL_cleanse (body->data, body->len);
+  OPENSSL_cleanse (&interrupt, sizeof interrupt);
   if (action == GOODIX5503_FDT_EVENT_REJECT)
     {
       OPENSSL_cleanse (raw, sizeof raw);
       OPENSSL_cleanse (transformed, sizeof transformed);
+      OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
       goodix5503_runtime_error (self, goodix5503_fdt_phase_error ());
       return;
     }
@@ -1869,6 +1880,7 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
     }
   OPENSSL_cleanse (raw, sizeof raw);
   OPENSSL_cleanse (transformed, sizeof transformed);
+  OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
 }
 
 static void

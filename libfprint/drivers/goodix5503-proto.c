@@ -595,17 +595,15 @@ goodix5503_fdt_event_action (Goodix5503FdtPhase phase,
                               guint8             armed_command,
                               guint              arm_generation,
                               guint              event_generation,
-                              guint8             received_command,
-                              guint16            interrupt)
+                              guint8             received_command)
 {
   if (arm_generation == 0 || arm_generation != event_generation ||
-      armed_command != received_command || (interrupt & 0x0080) == 0)
+      armed_command != received_command)
     return GOODIX5503_FDT_EVENT_REJECT;
 
-  /* McuParseFdt synthesizes dispatcher down/up bits from the data command
-   * after the profile interrupt parser's bit-7 gate.  The body LE16 is not
-   * itself the dispatcher DWORD, so its raw bits 3, 4 and 5 have no phase
-   * meaning here. */
+  /* The response's first LE16 is a register address, not dispatcher flags.
+   * The fixed host binds an event to its one exact outstanding command,
+   * generation and phase after strict packet/body validation. */
   if (phase == GOODIX5503_FDT_PHASE_WAIT_DOWN && received_command == 0x32)
     return GOODIX5503_FDT_EVENT_CAPTURE_DOWN;
   if (phase == GOODIX5503_FDT_PHASE_WAIT_UP && received_command == 0x34)

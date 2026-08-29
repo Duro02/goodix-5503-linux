@@ -33,17 +33,22 @@ Use separate bounded `FpiSsm` machines for activation, capture and cleanup:
    delta, then arms `0x34`. The pinned normal accepted-down call sends the exact
    22-byte payload `0e 01 || DAC[8] || generated-up-base[12]`. The suffix is
    copied unchanged and is neither optional nor transformed a second time on
-   this path. `McuParseFdt` does not expose body+0 directly as dispatcher flags:
-   it requires raw interrupt bit 7 (`0x0080`), then synthesizes DOWN from the
-   exact `0x32` data command or UP from exact `0x34`. Raw interrupt bits 3, 4
-   and 5 never select host actions. An exact manual `0x36` response is the pure
-   mask action and replaces the persistent 16-bit area mask from body+2 before
+   this path. `McuParseFdt` treats body+0 as an MCU register address, performs a
+   proprietary nested command-`0x82` read through the selected DN2 profile and
+   only then synthesizes DOWN or UP from parsed flags and the data command. The
+   fixed free host deliberately omits that extra asynchronous read: after strict
+   frame, checksum and exact-body validation, only the exact outstanding
+   command (`0x32`/`0x34`), nonzero matching arm generation and matching
+   WAIT_DOWN/WAIT_UP phase select an action. No raw body word or bit is used as
+   a substitute predicate. An exact manual `0x36` response is the pure mask
+   action and replaces the persistent 16-bit area mask from body+2 before
    up-base generation. The three activation manual reads serve only bounded
    fresh calibration; runtime reset intentionally clears their mask state, and
    the per-stage manual read establishes the runtime mask at its official
    lifetime. Duplicate state notifications cannot repeat manual preparation or
-   arming. Only an exact bit-7-gated `0x34` event in the matching WAIT_UP
-   generation reports OFF. Its raw body words are transformed once with
+   arming. Only an exact `0x34` event in the matching WAIT_UP generation reports
+   OFF after strict packet/body validation. Its raw body words are transformed
+   once with
    `((x >> 1) << 8) | 0x80` into the dedicated next down base. During
    enrollment, that accepted up immediately arms the next `0x32` before OFF is
    reported and before matcher completion; non-enrollment keeps libfprint's

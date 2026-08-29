@@ -152,8 +152,7 @@ Goodix5503FdtEventAction goodix5503_fdt_event_action (
   guint8             armed_command,
   guint              arm_generation,
   guint              event_generation,
-  guint8             received_command,
-  guint16            interrupt);
+  guint8             received_command);
 
 Goodix5503FdtStateAction goodix5503_fdt_state_action (
   Goodix5503FdtPhase phase,
