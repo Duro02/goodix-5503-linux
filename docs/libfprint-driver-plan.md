@@ -22,8 +22,16 @@ Use separate bounded `FpiSsm` machines for activation, capture and cleanup:
    prepared config and PSK; runtime reset; TLS 1.2 PSK handshake; upload the
    exact config; apply the single pinned-default driver-state hook; initialize
    the bounded fresh-base path.
-2. **Finger detection:** fixed FDT mode/down commands with cancellable bounded
-   waits. Report finger status through `fpi_image_device_report_finger_status()`.
+2. **Finger detection:** fixed FDT down/up commands with cancellable bounded
+   waits and explicit arm generations. A `0x32` event is only a candidate: one
+   bounded manual TX-off `0x36` read must differ from its six event readings by
+   more than the configured FDT delta before reporting ON. A matching reading
+   is drift/stale noise and rearms down without capture. Only an exact `0x34`
+   event in the matching WAIT_UP generation reports OFF and updates the next
+   down base from its established transformed readings. `touch_flag` is an area
+   mask, never a zero/nonzero finger-state predicate. The exact GF3258 generated
+   up-base arithmetic remains unresolved, so the already working bounded base
+   behavior is retained rather than copying a 12-area community formula.
 3. **Capture:** parse command-36 data through its dedicated FDT policy (two
    LE16 header fields followed by the exact profile-sized base), then send fixed
    `0x20`; route ACK/A0 command completions separately from B2 encrypted data;
@@ -78,7 +86,8 @@ the current preprocessing, SIFT, 256-feature/32-correspondence limits,
 mutual/geometric matcher and threshold 150. Any orientation, preprocessing,
 descriptor, matcher or threshold change that alters feature/match semantics
 requires a format-version bump. Persistence is implemented and malformed-input
-tested but remains unauthorized and uninstalled. Standard image, NBIS minutiae,
+tested; the first system enrollment exposed and then removed a template made
+from repeated stages before physical release. Standard image, NBIS minutiae,
 SIGFM feature and variant scratch copies are securely cleared. No raw image,
 image hash, opaque metadata, match score or derived biometric statistic is
 logged. The superseded dual-pipeline hardware helper was removed after the

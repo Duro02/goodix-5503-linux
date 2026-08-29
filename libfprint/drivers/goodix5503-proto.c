@@ -566,6 +566,34 @@ goodix5503_fdt_bases_within_delta (const guint8 first[GOODIX5503_FDT_BASE_SIZE],
   return TRUE;
 }
 
+Goodix5503FdtEventAction
+goodix5503_fdt_event_action (Goodix5503FdtPhase phase,
+                              guint8             armed_command,
+                              guint              arm_generation,
+                              guint              event_generation,
+                              guint8             received_command)
+{
+  if (arm_generation == 0 || arm_generation != event_generation ||
+      armed_command != received_command)
+    return GOODIX5503_FDT_EVENT_REJECT;
+  if (phase == GOODIX5503_FDT_PHASE_WAIT_DOWN && received_command == 0x32)
+    return GOODIX5503_FDT_EVENT_CONFIRM_DOWN;
+  if (phase == GOODIX5503_FDT_PHASE_WAIT_UP && received_command == 0x34)
+    return GOODIX5503_FDT_EVENT_REPORT_UP;
+  return GOODIX5503_FDT_EVENT_REJECT;
+}
+
+Goodix5503FdtDownAction
+goodix5503_fdt_down_action (
+  const guint8 event_readings[GOODIX5503_FDT_BASE_SIZE],
+  const guint8 manual_readings[GOODIX5503_FDT_BASE_SIZE],
+  guint16      delta)
+{
+  return goodix5503_fdt_bases_within_delta (event_readings, manual_readings,
+                                             delta) ?
+           GOODIX5503_FDT_DOWN_REARM : GOODIX5503_FDT_DOWN_CAPTURE;
+}
+
 gboolean
 goodix5503_decode_packed_image (const guint8  *packed,
                                  gsize          packed_len,

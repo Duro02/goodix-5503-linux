@@ -264,6 +264,64 @@ test_fdt_response_and_request (void)
 }
 
 static void
+test_fdt_stage_separation (void)
+{
+  const guint8 baseline[GOODIX5503_FDT_BASE_SIZE] = {
+    0x00, 0x01, 0x10, 0x01, 0x20, 0x01,
+    0x30, 0x01, 0x40, 0x01, 0x50, 0x01,
+  };
+  guint8 stale[GOODIX5503_FDT_BASE_SIZE];
+  guint8 touched[GOODIX5503_FDT_BASE_SIZE];
+  const guint generation = 7;
+
+  memcpy (stale, baseline, sizeof stale);
+  memcpy (touched, baseline, sizeof touched);
+  touched[0] = 0x40;
+
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
+                     generation, 0x32), ==,
+                   GOODIX5503_FDT_EVENT_CONFIRM_DOWN);
+  g_assert_cmpint (goodix5503_fdt_down_action (baseline, stale, 21), ==,
+                   GOODIX5503_FDT_DOWN_REARM);
+  g_assert_cmpint (goodix5503_fdt_down_action (baseline, touched, 21), ==,
+                   GOODIX5503_FDT_DOWN_CAPTURE);
+  /* A read timeout does not mutate the armed generation; the same wait may
+   * remain cancellable and accept a later exact event. */
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
+                     generation, 0x32), ==,
+                   GOODIX5503_FDT_EVENT_CONFIRM_DOWN);
+
+  /* A down candidate never reports up or permits a second capture while it is
+   * being confirmed, and stale generations are rejected after cancellation. */
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_CONFIRM_DOWN, 0x32, generation,
+                     generation, 0x32), ==, GOODIX5503_FDT_EVENT_REJECT);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_CAPTURE, 0x32, generation,
+                     generation, 0x32), ==, GOODIX5503_FDT_EVENT_REJECT);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_CAPTURE, 0x34, generation,
+                     generation, 0x34), ==, GOODIX5503_FDT_EVENT_REJECT);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation + 1,
+                     generation, 0x32), ==, GOODIX5503_FDT_EVENT_REJECT);
+
+  /* Only the exact up command in the armed WAIT_UP generation may report OFF. */
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_UP, 0x34, generation,
+                     generation, 0x32), ==, GOODIX5503_FDT_EVENT_REJECT);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_UP, 0x32, generation,
+                     generation, 0x34), ==, GOODIX5503_FDT_EVENT_REJECT);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_UP, 0x34, generation,
+                     generation, 0x34), ==,
+                   GOODIX5503_FDT_EVENT_REPORT_UP);
+}
+
+static void
 test_packed_decoder (void)
 {
   const guint8 group[] = { 0xa5, 0x34, 0x67, 0x89, 0xbc, 0xd2 };
@@ -346,6 +404,8 @@ main (int argc, char **argv)
                    test_command_router_ordering);
   g_test_add_func ("/goodix5503/fdt/response-request",
                    test_fdt_response_and_request);
+  g_test_add_func ("/goodix5503/fdt/stage-separation",
+                   test_fdt_stage_separation);
   g_test_add_func ("/goodix5503/image/decode", test_packed_decoder);
   g_test_add_func ("/goodix5503/image/difference", test_difference_image);
   return g_test_run ();
