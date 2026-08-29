@@ -48,7 +48,6 @@ typedef enum
   GOODIX5503_FDT_EVENT_REJECT,
   GOODIX5503_FDT_EVENT_CAPTURE_DOWN,
   GOODIX5503_FDT_EVENT_REPORT_UP,
-  GOODIX5503_FDT_EVENT_UPDATE_MASK,
 } Goodix5503FdtEventAction;
 
 typedef enum
@@ -154,15 +153,11 @@ Goodix5503FdtEventAction goodix5503_fdt_event_action (
   guint              arm_generation,
   guint              event_generation,
   guint8             received_command,
-  guint16            event_flags);
+  guint16            interrupt);
 
 Goodix5503FdtStateAction goodix5503_fdt_state_action (
   Goodix5503FdtPhase phase,
   gboolean           await_finger_on);
-
-guint16 goodix5503_fdt_update_area_mask (guint16 current_mask,
-                                          guint16 event_flags,
-                                          guint16 event_touch_flag);
 
 gboolean goodix5503_generate_fdt_up_base (
   const guint8 manual_readings[GOODIX5503_FDT_BASE_SIZE],

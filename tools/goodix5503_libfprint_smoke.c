@@ -171,7 +171,8 @@ main (int argc, char **argv)
         enroll_progress, NULL, &error);
       if (enrolled_print == NULL)
         {
-          fprintf (stderr, "Goodix 5503 memory-only enrollment failed\n");
+          fprintf (stderr, "Goodix 5503 memory-only enrollment failed: %s\n",
+                   error ? error->message : "unknown error");
           goto close;
         }
       puts ("LIBFPRINT MEMORY-ONLY ENROLLMENT SUCCEEDED");

@@ -33,12 +33,18 @@ Use separate bounded `FpiSsm` machines for activation, capture and cleanup:
    delta, then arms `0x34`. The pinned normal accepted-down call sends the exact
    22-byte payload `0e 01 || DAC[8] || generated-up-base[12]`. The suffix is
    copied unchanged and is neither optional nor transformed a second time on
-   this path. Dispatcher bit-3 down and bit-4 up actions have priority over bit
-   5; only a pure bit-5 event replaces the persistent 16-bit area mask. A bit-5
-   flag is not a finger-state predicate. Duplicate state notifications cannot
-   repeat manual preparation or arming. Only an exact bit-4 `0x34` event in the
-   matching WAIT_UP generation reports OFF. Its raw body words are transformed
-   once with `((x >> 1) << 8) | 0x80` into the dedicated next down base. During
+   this path. `McuParseFdt` does not expose body+0 directly as dispatcher flags:
+   it requires raw interrupt bit 7 (`0x0080`), then synthesizes DOWN from the
+   exact `0x32` data command or UP from exact `0x34`. Raw interrupt bits 3, 4
+   and 5 never select host actions. An exact manual `0x36` response is the pure
+   mask action and replaces the persistent 16-bit area mask from body+2 before
+   up-base generation. The three activation manual reads serve only bounded
+   fresh calibration; runtime reset intentionally clears their mask state, and
+   the per-stage manual read establishes the runtime mask at its official
+   lifetime. Duplicate state notifications cannot repeat manual preparation or
+   arming. Only an exact bit-7-gated `0x34` event in the matching WAIT_UP
+   generation reports OFF. Its raw body words are transformed once with
+   `((x >> 1) << 8) | 0x80` into the dedicated next down base. During
    enrollment, that accepted up immediately arms the next `0x32` before OFF is
    reported and before matcher completion; non-enrollment keeps libfprint's
    deactivation-safe deferred behavior. The generated up base remains until it

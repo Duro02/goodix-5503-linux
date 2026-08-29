@@ -1748,24 +1748,20 @@ goodix5503_fdt_up_base_ready (FpiDeviceGoodix5503 *self,
       !self->fdt_pending_valid ||
       !goodix5503_parse_fdt_response (
         body ? body->data : NULL, body ? body->len : 0, &interrupt,
-        &touch_flag, raw, transformed, &error) ||
-      !goodix5503_generate_fdt_up_base (
+        &touch_flag, raw, transformed, &error))
+    goto fail;
+
+  /* McuParseFdt makes an exact command-0x36 response a pure mask event.
+   * HandleFdt replaces the persistent mask from body+2 before DN2 combines
+   * it with the accepted-down event mask for up-base generation. */
+  self->fdt_area_mask = touch_flag;
+  if (!goodix5503_generate_fdt_up_base (
         raw, self->fdt_pending_raw, self->fdt_area_mask,
         self->fdt_pending_touch_flag, self->fdt_delta, self->fdt_up_base,
         &error))
-    {
-      if (body)
-        OPENSSL_cleanse (body->data, body->len);
-      OPENSSL_cleanse (raw, sizeof raw);
-      OPENSSL_cleanse (transformed, sizeof transformed);
-      goodix5503_fdt_pending_clear (self);
-      goodix5503_runtime_error (
-        self, error ? error : goodix5503_fdt_phase_error ());
-      return;
-    }
+    goto fail;
 
   (void) interrupt;
-  (void) touch_flag;
   OPENSSL_cleanse (body->data, body->len);
   OPENSSL_cleanse (raw, sizeof raw);
   OPENSSL_cleanse (transformed, sizeof transformed);
@@ -1775,6 +1771,16 @@ goodix5503_fdt_up_base_ready (FpiDeviceGoodix5503 *self,
 
   self->fdt_phase = GOODIX5503_FDT_PHASE_CAPTURE;
   goodix5503_fdt_watch_start (self, FALSE);
+  return;
+
+fail:
+  if (body)
+    OPENSSL_cleanse (body->data, body->len);
+  OPENSSL_cleanse (raw, sizeof raw);
+  OPENSSL_cleanse (transformed, sizeof transformed);
+  goodix5503_fdt_pending_clear (self);
+  goodix5503_runtime_error (
+    self, error ? error : goodix5503_fdt_phase_error ());
 }
 
 static gboolean
@@ -1842,17 +1848,6 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
       goodix5503_runtime_error (self, goodix5503_fdt_phase_error ());
       return;
     }
-  if (action == GOODIX5503_FDT_EVENT_UPDATE_MASK)
-    {
-      self->fdt_area_mask = goodix5503_fdt_update_area_mask (
-        self->fdt_area_mask, interrupt, touch_flag);
-      OPENSSL_cleanse (raw, sizeof raw);
-      OPENSSL_cleanse (transformed, sizeof transformed);
-      goodix5503_outer_start (self, NULL, TRUE,
-                              goodix5503_fdt_event_received);
-      return;
-    }
-
   if (action == GOODIX5503_FDT_EVENT_CAPTURE_DOWN)
     {
       memcpy (self->fdt_pending_raw, raw, sizeof self->fdt_pending_raw);

@@ -596,30 +596,20 @@ goodix5503_fdt_event_action (Goodix5503FdtPhase phase,
                               guint              arm_generation,
                               guint              event_generation,
                               guint8             received_command,
-                              guint16            event_flags)
+                              guint16            interrupt)
 {
   if (arm_generation == 0 || arm_generation != event_generation ||
-      armed_command != received_command)
+      armed_command != received_command || (interrupt & 0x0080) == 0)
     return GOODIX5503_FDT_EVENT_REJECT;
 
-  /* The pinned dispatcher gives accepted down/up bits priority over bit 5.
-   * Only a pure mask event reaches the persistent-mask replacement branch. */
-  if ((event_flags & (1u << 3)) != 0)
-    return phase == GOODIX5503_FDT_PHASE_WAIT_DOWN &&
-           received_command == 0x32 ?
-             GOODIX5503_FDT_EVENT_CAPTURE_DOWN :
-             GOODIX5503_FDT_EVENT_REJECT;
-  if ((event_flags & (1u << 4)) != 0)
-    return phase == GOODIX5503_FDT_PHASE_WAIT_UP &&
-           received_command == 0x34 ?
-             GOODIX5503_FDT_EVENT_REPORT_UP :
-             GOODIX5503_FDT_EVENT_REJECT;
-  if ((event_flags & (1u << 5)) != 0 &&
-      ((phase == GOODIX5503_FDT_PHASE_WAIT_DOWN &&
-        received_command == 0x32) ||
-       (phase == GOODIX5503_FDT_PHASE_WAIT_UP &&
-        received_command == 0x34)))
-    return GOODIX5503_FDT_EVENT_UPDATE_MASK;
+  /* McuParseFdt synthesizes dispatcher down/up bits from the data command
+   * after the profile interrupt parser's bit-7 gate.  The body LE16 is not
+   * itself the dispatcher DWORD, so its raw bits 3, 4 and 5 have no phase
+   * meaning here. */
+  if (phase == GOODIX5503_FDT_PHASE_WAIT_DOWN && received_command == 0x32)
+    return GOODIX5503_FDT_EVENT_CAPTURE_DOWN;
+  if (phase == GOODIX5503_FDT_PHASE_WAIT_UP && received_command == 0x34)
+    return GOODIX5503_FDT_EVENT_REPORT_UP;
   return GOODIX5503_FDT_EVENT_REJECT;
 }
 
@@ -645,17 +635,6 @@ goodix5503_fdt_state_action (Goodix5503FdtPhase phase,
       phase == GOODIX5503_FDT_PHASE_IDLE)
     return GOODIX5503_FDT_STATE_NOOP;
   return GOODIX5503_FDT_STATE_REJECT;
-}
-
-guint16
-goodix5503_fdt_update_area_mask (guint16 current_mask,
-                                  guint16 event_flags,
-                                  guint16 event_touch_flag)
-{
-  /* Accepted down/up bits return from the pinned dispatcher before bit 5.
-   * Only a pure bit-5 event replaces the persistent area mask. */
-  return (event_flags & ((1u << 3) | (1u << 4))) == 0 &&
-         (event_flags & (1u << 5)) != 0 ? event_touch_flag : current_mask;
 }
 
 gboolean

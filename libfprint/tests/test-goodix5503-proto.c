@@ -333,19 +333,69 @@ test_fdt_stage_separation (void)
 {
   const guint generation = 7;
 
+  /* McuParseFdt gates on raw interrupt bit 7, then synthesizes the down/up
+   * dispatcher action from the exact data command.  Observed 0x0182 is valid
+   * for either fixed command in its matching armed phase. */
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
-                     generation, 0x32, 1u << 3), ==,
+                     generation, 0x32, 0x0182), ==,
                    GOODIX5503_FDT_EVENT_CAPTURE_DOWN);
-  /* A read timeout does not mutate the armed generation; the same wait may
-   * remain cancellable and accept a later exact event. */
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_UP, 0x34, generation,
+                     generation, 0x34, 0x0182), ==,
+                   GOODIX5503_FDT_EVENT_REPORT_UP);
+
+  /* Raw interrupt bits 3, 4 and 5 are not dispatcher actions.  They neither
+   * override command identity nor pass the required bit-7 gate. */
   g_assert_cmpint (goodix5503_fdt_event_action (
                      GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
-                     generation, 0x32, 1u << 3), ==,
+                     generation, 0x32, 0x0038), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
+                     generation, 0x32, 0x0090), ==,
+                   GOODIX5503_FDT_EVENT_CAPTURE_DOWN);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_UP, 0x34, generation,
+                     generation, 0x34, 0x0088), ==,
+                   GOODIX5503_FDT_EVENT_REPORT_UP);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
+                     generation, 0x32, 0x00a0), ==,
                    GOODIX5503_FDT_EVENT_CAPTURE_DOWN);
 
-  /* The accepted down event must enter command-20 capture.  Only the generic
-   * AWAIT_FINGER_OFF transition after image submission may start manual 0x36. */
+  /* Command, generation, and phase remain exact gates. */
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_UP, 0x34, generation,
+                     generation, 0x32, 0x0182), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_UP, 0x32, generation,
+                     generation, 0x34, 0x0182), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation + 1,
+                     generation, 0x32, 0x0182), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, 0,
+                     0, 0x32, 0x0182), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_PREPARE_UP_BASE, 0x32, generation,
+                     generation, 0x32, 0x0182), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_CAPTURE, 0x34, generation,
+                     generation, 0x34, 0x0182), ==,
+                   GOODIX5503_FDT_EVENT_REJECT);
+
+  /* A read timeout leaves the generation intact, while duplicate generic
+   * state notifications cannot repeat a manual preparation or arm. */
+  g_assert_cmpint (goodix5503_fdt_event_action (
+                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
+                     generation, 0x32, 0x0182), ==,
+                   GOODIX5503_FDT_EVENT_CAPTURE_DOWN);
   g_assert_cmpint (goodix5503_fdt_state_action (
                      GOODIX5503_FDT_PHASE_IDLE, TRUE), ==,
                    GOODIX5503_FDT_STATE_ARM_DOWN);
@@ -364,62 +414,12 @@ test_fdt_stage_separation (void)
   g_assert_cmpint (goodix5503_fdt_state_action (
                      GOODIX5503_FDT_PHASE_WAIT_DOWN, FALSE), ==,
                    GOODIX5503_FDT_STATE_REJECT);
-
-  /* The pinned accepted-up path arms the next enrollment down watch before
-   * reporting OFF.  A later AWAIT_ON notification must not arm it twice. */
   g_assert_cmpint (goodix5503_fdt_state_action (
                      GOODIX5503_FDT_PHASE_ARM_DOWN, TRUE), ==,
                    GOODIX5503_FDT_STATE_NOOP);
   g_assert_cmpint (goodix5503_fdt_state_action (
                      GOODIX5503_FDT_PHASE_WAIT_DOWN, TRUE), ==,
                    GOODIX5503_FDT_STATE_NOOP);
-
-  /* No event is accepted while command-20 capture or later manual/up-base
-   * preparation is in progress. */
-  g_assert_cmpint (goodix5503_fdt_event_action (
-                     GOODIX5503_FDT_PHASE_PREPARE_UP_BASE, 0x32, generation,
-                     generation, 0x32, 1u << 3), ==,
-                   GOODIX5503_FDT_EVENT_REJECT);
-  g_assert_cmpint (goodix5503_fdt_event_action (
-                     GOODIX5503_FDT_PHASE_CAPTURE, 0x32, generation,
-                     generation, 0x32, 1u << 3), ==,
-                   GOODIX5503_FDT_EVENT_REJECT);
-  g_assert_cmpint (goodix5503_fdt_event_action (
-                     GOODIX5503_FDT_PHASE_CAPTURE, 0x34, generation,
-                     generation, 0x34, 1u << 4), ==,
-                   GOODIX5503_FDT_EVENT_REJECT);
-  g_assert_cmpint (goodix5503_fdt_event_action (
-                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation + 1,
-                     generation, 0x32, 1u << 3), ==,
-                   GOODIX5503_FDT_EVENT_REJECT);
-
-  /* Accepted down/up bits have priority over bit 5. */
-  g_assert_cmpint (goodix5503_fdt_event_action (
-                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
-                     generation, 0x32, (1u << 3) | (1u << 5)), ==,
-                   GOODIX5503_FDT_EVENT_CAPTURE_DOWN);
-  g_assert_cmpint (goodix5503_fdt_event_action (
-                     GOODIX5503_FDT_PHASE_WAIT_UP, 0x34, generation,
-                     generation, 0x34, (1u << 4) | (1u << 5)), ==,
-                   GOODIX5503_FDT_EVENT_REPORT_UP);
-  g_assert_cmpint (goodix5503_fdt_event_action (
-                     GOODIX5503_FDT_PHASE_WAIT_DOWN, 0x32, generation,
-                     generation, 0x32, 1u << 5), ==,
-                   GOODIX5503_FDT_EVENT_UPDATE_MASK);
-
-  /* Only the exact up command in the armed WAIT_UP generation may report OFF. */
-  g_assert_cmpint (goodix5503_fdt_event_action (
-                     GOODIX5503_FDT_PHASE_WAIT_UP, 0x34, generation,
-                     generation, 0x32, 1u << 4), ==,
-                   GOODIX5503_FDT_EVENT_REJECT);
-  g_assert_cmpint (goodix5503_fdt_event_action (
-                     GOODIX5503_FDT_PHASE_WAIT_UP, 0x32, generation,
-                     generation, 0x34, 1u << 4), ==,
-                   GOODIX5503_FDT_EVENT_REJECT);
-  g_assert_cmpint (goodix5503_fdt_event_action (
-                     GOODIX5503_FDT_PHASE_WAIT_UP, 0x34, generation,
-                     generation, 0x34, 1u << 4), ==,
-                   GOODIX5503_FDT_EVENT_REPORT_UP);
 }
 
 static void
@@ -443,17 +443,6 @@ test_fdt_up_base_generation (void)
   g_assert_no_error (error);
   g_assert_cmpmem (output, sizeof output, expected, sizeof expected);
 
-  g_assert_cmphex (goodix5503_fdt_update_area_mask (0x0033, 0, 0x0004),
-                   ==, 0x0033);
-  g_assert_cmphex (goodix5503_fdt_update_area_mask (0x0033, 1u << 5, 0),
-                   ==, 0);
-  g_assert_cmphex (goodix5503_fdt_update_area_mask (0, 1u << 5, 0x003f),
-                   ==, 0x003f);
-  g_assert_cmphex (goodix5503_fdt_update_area_mask (
-                     0x0033, (1u << 3) | (1u << 5), 0x0004), ==, 0x0033);
-  g_assert_cmphex (goodix5503_fdt_update_area_mask (
-                     0x0033, (1u << 4) | (1u << 5), 0x0004), ==, 0x0033);
-
   memset (output, 0, sizeof output);
   g_assert_false (goodix5503_generate_fdt_up_base (
     manual, event, 0, 1, 1, output, &error));
@@ -464,6 +453,44 @@ test_fdt_up_base_generation (void)
     manual, event, 0, 1, 0, output, &error));
   g_assert_error (error, GOODIX5503_PROTO_ERROR,
                   GOODIX5503_PROTO_ERROR_INVALID);
+}
+
+static void
+test_fdt_manual_mask_generation (void)
+{
+  const guint8 response[] = {
+    0x82, 0x01, 0x02, 0x00,
+    40, 0, 70, 0, 80, 0, 110, 0, 120, 0, 150, 0,
+  };
+  const guint8 event[GOODIX5503_FDT_BASE_SIZE] = {
+    50, 0, 60, 0, 90, 0, 100, 0, 130, 0, 140, 0,
+  };
+  const guint8 expected[GOODIX5503_FDT_BASE_SIZE] = {
+    0x80, 0x13, 0x80, 0x33, 0x80, 0x3d,
+    0x80, 0x13, 0x80, 0x13, 0x80, 0x13,
+  };
+  guint8 manual[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 transformed[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 output[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint16 interrupt = 0;
+  guint16 persistent_area_mask = 0x0001;
+  guint16 touch_flag = 0;
+  g_autoptr(GError) error = NULL;
+
+  g_assert_true (goodix5503_parse_fdt_response (
+    response, sizeof response, &interrupt, &touch_flag, manual, transformed,
+    &error));
+  g_assert_no_error (error);
+  g_assert_cmphex (interrupt, ==, 0x0182);
+  g_assert_cmphex (touch_flag, ==, 0x0002);
+
+  /* An exact command-0x36 response is McuParseFdt's pure mask action, so the
+   * old persistent value is replaced before combining it with event bit 2. */
+  persistent_area_mask = touch_flag;
+  g_assert_true (goodix5503_generate_fdt_up_base (
+    manual, event, persistent_area_mask, 0x0004, 21, output, &error));
+  g_assert_no_error (error);
+  g_assert_cmpmem (output, sizeof output, expected, sizeof expected);
 }
 
 static void
@@ -604,6 +631,8 @@ main (int argc, char **argv)
                    test_fdt_stage_separation);
   g_test_add_func ("/goodix5503/fdt/up-base-generation",
                    test_fdt_up_base_generation);
+  g_test_add_func ("/goodix5503/fdt/manual-mask-generation",
+                   test_fdt_manual_mask_generation);
   g_test_add_func ("/goodix5503/fdt/up-base-truncation",
                    test_fdt_up_base_truncation);
   g_test_add_func ("/goodix5503/fdt/next-down-base",
