@@ -129,10 +129,33 @@ main (int argc, char **argv)
         }
       puts ("LIBFPRINT MEMORY-ONLY ENROLLMENT SUCCEEDED");
       fflush (stdout);
-      if (!fp_device_verify_sync (device, enrolled_print, NULL, NULL, NULL,
-                                  &match, &verify_print, &error) || !match)
+      for (guint attempt = 0; attempt < 3 && !match; attempt++)
         {
-          fprintf (stderr, "Goodix 5503 memory-only verification failed\n");
+          g_clear_object (&verify_print);
+          g_clear_error (&error);
+          if (!fp_device_verify_sync (device, enrolled_print, NULL, NULL, NULL,
+                                      &match, &verify_print, &error))
+            {
+              if (error && error->domain == FP_DEVICE_RETRY)
+                {
+                  puts ("VERIFY SAMPLE RETRY REQUIRED");
+                  fflush (stdout);
+                  continue;
+                }
+              fprintf (stderr,
+                       "Goodix 5503 memory-only verification operation failed\n");
+              goto close;
+            }
+          if (!match)
+            {
+              puts ("VERIFY DID NOT MATCH");
+              fflush (stdout);
+            }
+        }
+      if (!match)
+        {
+          fprintf (stderr,
+                   "Goodix 5503 memory-only verification did not match\n");
           goto close;
         }
       puts ("LIBFPRINT MEMORY-ONLY VERIFY MATCHED");
