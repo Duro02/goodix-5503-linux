@@ -1,7 +1,7 @@
 # Maintainer: local Goodix 5503 integration
 pkgname=libfprint-goodix5503
 pkgver=1.94.100
-pkgrel=25
+pkgrel=26
 pkgdesc='libfprint with bounded Goodix 27c6:5503 SIGFM support'
 arch=(x86_64)
 url='https://fprint.freedesktop.org/'
