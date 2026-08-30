@@ -108,6 +108,8 @@ struct _FpiDeviceGoodix5503
   gboolean reset_attempted;
   gboolean cleanup_active;
   guint capture_destination;
+  gboolean warm_available;
+  guint8 warm_idle_raw[GOODIX5503_FDT_BASE_SIZE];
   Goodix5503FdtRuntime fdt_runtime;
   gboolean activated;
   guint fresh_attempt;
@@ -193,6 +195,9 @@ goodix5503_fdt_pending_clear (FpiDeviceGoodix5503 *self)
 static void
 goodix5503_fdt_session_reset (FpiDeviceGoodix5503 *self)
 {
+  /* Any path that wipes the runtime FDT state also invalidates the
+   * warm re-activation shortcut. */
+  self->warm_available = FALSE;
   goodix5503_fdt_runtime_reset (&self->fdt_runtime);
 }
 
@@ -919,6 +924,9 @@ goodix5503_fdt2_done (FpiDeviceGoodix5503 *self,
   goodix5503_fdt_session_reset (self);
   memcpy (self->fdt_runtime.down_base, self->fresh_transformed[2],
           sizeof self->fdt_runtime.down_base);
+  self->warm_available = TRUE;
+  memcpy (self->warm_idle_raw, self->fresh_raw[2],
+          sizeof self->warm_idle_raw);
   OPENSSL_cleanse (self->fresh_raw, sizeof self->fresh_raw);
   OPENSSL_cleanse (self->fresh_transformed, sizeof self->fresh_transformed);
   OPENSSL_cleanse (self->psk, sizeof self->psk);
@@ -1628,16 +1636,114 @@ goodix5503_close (FpImageDevice *device)
   goodix5503_close_finish (self);
 }
 
+static void goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
+                                        GByteArray          *body,
+                                        GError              *error);
+
 static void
 goodix5503_activate (FpImageDevice *device)
 {
+  FpiDeviceGoodix5503 *self = FPI_DEVICE_GOODIX5503 (device);
   static const guint8 payload[] = { 0x00, 0x00, 0x00, 0x00 };
 
-  FPI_DEVICE_GOODIX5503 (device)->stage = "preflight NOP";
+  if (self->warm_available)
+    {
+      /* Warm re-activation: the sensor kept power across the host-side
+       * release, so the TLS session, runtime configuration and the idle
+       * reference survive indefinitely. Hardware-verified (2026-08-30):
+       * after a release the manual probe answers in ~45 ms, and captures
+       * decrypt without a new handshake even after a 60 s idle. The probe
+       * doubles as the freshness check: the current idle reading must
+       * still agree with the retained reference (the same delta the MCU
+       * itself uses); the down-detection base is then rebuilt from the
+       * current idle so nothing depends on how long ago calibration ran. */
+      guint8 request[GOODIX5503_FDT_REQUEST_SIZE];
+      g_autoptr(GError) error = NULL;
+
+      self->stage = "warm probe";
+      if (goodix5503_build_fdt_request (0x0d, self->dac,
+                                        self->fdt_runtime.down_base, request,
+                                        &error))
+        {
+          goodix5503_command_start (self, GOODIX5503_COMMAND_FDT_MANUAL,
+                                    request, sizeof request, TRUE, TRUE,
+                                    goodix5503_warm_probe_done);
+          OPENSSL_cleanse (request, sizeof request);
+          return;
+        }
+      self->warm_available = FALSE;
+      goodix5503_activation_fail (self, g_steal_pointer (&error));
+      return;
+    }
+
+  self->warm_available = FALSE;
+  self->stage = "preflight NOP";
   goodix5503_command_start (FPI_DEVICE_GOODIX5503 (device),
                             GOODIX5503_COMMAND_NOP,
                             payload, sizeof payload, FALSE, TRUE,
                             goodix5503_nop_done);
+}
+
+static void
+goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
+                            GByteArray          *body,
+                            GError              *error)
+{
+  g_autoptr(GByteArray) owned_body = body;
+  guint16 interrupt = 0;
+  guint16 touch_flag = 0;
+  guint8 raw[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 transformed[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+
+  if (error ||
+      !goodix5503_parse_fdt_response (body ? body->data : NULL,
+                                      body ? body->len : 0, &interrupt,
+                                      &touch_flag, raw, transformed, &error))
+    {
+      /* The device lost its warm state (suspend, re-enumeration, power
+       * loss). Retry once with the full cold sequence within the same
+       * activation instead of failing the user's auth attempt. */
+      self->warm_available = FALSE;
+      if (!self->deactivating && !self->closing)
+        {
+          g_debug ("Goodix warm activation failed, falling back to cold path");
+          goodix5503_activate (FP_IMAGE_DEVICE (self));
+          return;
+        }
+      goodix5503_activation_fail (self, error);
+      return;
+    }
+
+  if (!goodix5503_fdt_bases_within_delta (raw, self->warm_idle_raw,
+                                          self->fdt_delta))
+    {
+      /* The idle level moved (finger resting on the sensor, strong drift
+       * or confused device state). The cold path owns finger handling and
+       * recalibration; rebuild the session there. */
+      self->warm_available = FALSE;
+      if (!self->deactivating && !self->closing)
+        {
+          g_debug ("Goodix warm probe disagrees with the idle reference, "
+                   "falling back to cold path");
+          goodix5503_activate (FP_IMAGE_DEVICE (self));
+          return;
+        }
+      goodix5503_activation_fail (
+        self, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                        "Goodix warm probe left the idle envelope"));
+      return;
+    }
+
+  /* Idle confirmed: rebuild the down-detection base from the current
+   * reading so the armed thresholds never depend on calibration age. */
+  memcpy (self->warm_idle_raw, raw, sizeof self->warm_idle_raw);
+  goodix5503_fdt_next_down_base (raw, self->fdt_runtime.down_base);
+  OPENSSL_cleanse (raw, sizeof raw);
+  OPENSSL_cleanse (transformed, sizeof transformed);
+  OPENSSL_cleanse (&interrupt, sizeof interrupt);
+  OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
+  self->activated = TRUE;
+  fpi_image_device_activate_complete (FP_IMAGE_DEVICE (self), NULL);
 }
 
 static void
@@ -1646,7 +1752,17 @@ goodix5503_deactivate (FpImageDevice *device)
   FpiDeviceGoodix5503 *self = FPI_DEVICE_GOODIX5503 (device);
 
   self->deactivating = TRUE;
-  goodix5503_fdt_session_reset (self);
+  if (self->warm_available)
+    {
+      /* Keep the calibrated base, delta and TLS state for the warm
+       * re-activation path; only clear the per-operation FDT session. */
+      goodix5503_fdt_runtime_pending_clear (&self->fdt_runtime);
+      goodix5503_fdt_coordinator_reset (&self->fdt_runtime.coordinator);
+    }
+  else
+    {
+      goodix5503_fdt_session_reset (self);
+    }
   if (self->transaction_cancel)
     {
       /* A queued OUT may still be behind its 25 ms IN-first barrier. Let the
