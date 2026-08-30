@@ -1782,13 +1782,28 @@ goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
       return;
     }
 
-  /* Idle confirmed: rebuild the down-detection base from the current
-   * reading so the armed thresholds never depend on calibration age,
-   * then re-arm the warm state for the next close/claim cycle. */
-  memcpy (self->warm.idle_raw, raw, sizeof self->warm.idle_raw);
-  goodix5503_fdt_next_down_base (raw, self->fdt_runtime.down_base);
+  gboolean idle_confirmed = goodix5503_fdt_bases_within_delta (
+    raw, self->warm.idle_raw, self->fdt_delta);
+
+  if (idle_confirmed)
+    {
+      /* Idle confirmed: refresh the retained reference and rebuild the
+       * down-detection base from the current reading. */
+      memcpy (self->warm.idle_raw, raw, sizeof self->warm.idle_raw);
+      goodix5503_fdt_next_down_base (raw, self->fdt_runtime.down_base);
+    }
+  /* else: the reading left the idle envelope. Right after a prompt this
+   * almost always means the finger is already resting on the sensor, and
+   * the experimentally validated behavior is that arming with the
+   * retained idle-calibrated base then fires the 0x32 event immediately.
+   * Keep that base untouched so the touch is detected at once; if it was
+   * genuine drift instead, the capture contrast check recovers via the
+   * normal retry path. */
   self->warm.valid = TRUE;
   OPENSSL_cleanse (raw, sizeof raw);
+  OPENSSL_cleanse (transformed, sizeof transformed);
+  OPENSSL_cleanse (&interrupt, sizeof interrupt);
+  OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
   OPENSSL_cleanse (transformed, sizeof transformed);
   OPENSSL_cleanse (&interrupt, sizeof interrupt);
   OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
