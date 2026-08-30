@@ -108,6 +108,7 @@ struct _FpiDeviceGoodix5503
   gboolean reset_attempted;
   gboolean cleanup_active;
   guint capture_destination;
+  gboolean session_clean;
   struct
   {
     /* Survives fp_device close: the powered sensor retains its TLS session,
@@ -746,6 +747,7 @@ goodix5503_activation_fail (FpiDeviceGoodix5503 *self, GError *error)
 
   if (error && self->primary_error == NULL && self->stage)
     g_prefix_error (&error, "%s: ", self->stage);
+  self->session_clean = FALSE;
   if (self->primary_error == NULL)
     self->primary_error = error;
   else
@@ -947,6 +949,7 @@ goodix5503_fdt2_done (FpiDeviceGoodix5503 *self,
    * releases, so the next activation can skip the cold sequence. */
   self->warm.valid = TRUE;
   self->warm.probe_retries = 0;
+  self->session_clean = TRUE;
   memcpy (self->warm.dac, self->dac, sizeof self->warm.dac);
   self->warm.delta = self->fdt_delta;
   memcpy (self->warm.idle_raw, self->fresh_raw[2],
@@ -1803,6 +1806,7 @@ goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
        * state still recovers through the capture contrast retry. */
       fp_dbg ("warm probe idle mismatch - finger assumed present, arming retained base");
       self->warm.valid = TRUE;
+      self->session_clean = TRUE;
       OPENSSL_cleanse (raw, sizeof raw);
       OPENSSL_cleanse (transformed, sizeof transformed);
       OPENSSL_cleanse (&interrupt, sizeof interrupt);
@@ -1830,10 +1834,8 @@ goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
    * genuine drift instead, the capture contrast check recovers via the
    * normal retry path. */
   self->warm.valid = TRUE;
+  self->session_clean = TRUE;
   OPENSSL_cleanse (raw, sizeof raw);
-  OPENSSL_cleanse (transformed, sizeof transformed);
-  OPENSSL_cleanse (&interrupt, sizeof interrupt);
-  OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
   OPENSSL_cleanse (transformed, sizeof transformed);
   OPENSSL_cleanse (&interrupt, sizeof interrupt);
   OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
@@ -1872,13 +1874,17 @@ goodix5503_deactivate (FpImageDevice *device)
       g_source_destroy (self->delay_source);
       self->delay_source = NULL;
     }
-  if (self->reset_attempted)
+  if (self->reset_attempted && !self->session_clean)
     {
+      /* Failed or cancelled session: run the fixed cleanup so the device
+       * is recovered before it is released. */
       goodix5503_activation_fail (
         self, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
                                    "Goodix activation cancelled"));
       return;
     }
+  self->reset_attempted = FALSE;
+  self->session_clean = FALSE;
   self->deactivating = FALSE;
   fpi_image_device_deactivate_complete (device, NULL);
 }
@@ -1890,6 +1896,7 @@ goodix5503_runtime_error (FpiDeviceGoodix5503 *self, GError *error)
    * failure is terminal for the active session, so invalidate the generation
    * and wipe every FDT base/pending field before libfprint can re-enter us. */
   self->warm.valid = FALSE;
+  self->session_clean = FALSE;
   goodix5503_fdt_session_reset (self);
   if (self->deactivating)
     goodix5503_activation_fail (self, error);
