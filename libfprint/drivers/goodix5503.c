@@ -844,9 +844,13 @@ fail:
     OPENSSL_cleanse (envelope->data, envelope->len);
   if (plaintext)
     OPENSSL_cleanse (plaintext->data, plaintext->len);
-  if (self->deactivating && error)
+  if (error && (self->deactivating || self->closing ||
+                g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
+                g_error_matches (error, G_USB_DEVICE_ERROR,
+                                 G_USB_DEVICE_ERROR_CANCELLED)))
     {
-      /* Cancellation as part of release: the warm state survives. */
+      /* Externally initiated cancellation: never a device fault, so the
+       * warm state survives. */
       self->image_callback = NULL;
       return;
     }
@@ -1952,10 +1956,15 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
                               goodix5503_fdt_event_received);
       return;
     }
-  if (error && (self->deactivating || self->closing))
+  if (error && (self->deactivating || self->closing ||
+                g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
+                g_error_matches (error, G_USB_DEVICE_ERROR,
+                                 G_USB_DEVICE_ERROR_CANCELLED)))
     {
-      /* Cancellation as part of release: the warm state survives for the
-       * next activation; outer_maybe_complete drives the deactivation. */
+      /* Externally initiated cancellation (release path or the fprintd
+       * idle watchdog): never a device fault, so the warm state survives
+       * for the next activation; outer_maybe_complete drives the
+       * deactivation when one is in progress. */
       return;
     }
   if (error || !goodix5503_fdt_event_wait_active (self) ||
