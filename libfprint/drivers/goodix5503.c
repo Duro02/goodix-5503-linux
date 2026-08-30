@@ -1619,6 +1619,7 @@ goodix5503_close_finish (FpiDeviceGoodix5503 *self)
   g_autoptr(GError) error = NULL;
 
   g_assert (self->command_callback == NULL && self->outer_callback == NULL);
+  fp_dbg ("close_finish entry: warm=%d", self->warm.valid);
   self->closing = FALSE;
   if (self->delay_source)
     {
@@ -1695,6 +1696,7 @@ goodix5503_activate (FpImageDevice *device)
   FpiDeviceGoodix5503 *self = FPI_DEVICE_GOODIX5503 (device);
   static const guint8 payload[] = { 0x00, 0x00, 0x00, 0x00 };
 
+  fp_dbg ("activate entry: warm=%d", self->warm.valid);
   if (self->warm.valid)
     {
       /* Warm re-activation: the sensor kept power across the host-side
@@ -1722,6 +1724,7 @@ goodix5503_activate (FpImageDevice *device)
 
       self->stage = "warm probe";
       fp_dbg ("warm activation: probing with retained state");
+      fp_dbg ("warm probe result will decide idle/mismatch");
       if (goodix5503_build_fdt_request (0x0d, self->dac,
                                         self->fdt_runtime.down_base, request,
                                         &error))
@@ -1848,6 +1851,9 @@ goodix5503_deactivate (FpImageDevice *device)
 {
   FpiDeviceGoodix5503 *self = FPI_DEVICE_GOODIX5503 (device);
 
+  fp_dbg ("deactivate entry: warm=%d clean=%d reset_attempted=%d deactivating=%d",
+          self->warm.valid, self->session_clean, self->reset_attempted,
+          self->deactivating);
   self->deactivating = TRUE;
   if (self->warm.valid)
     {

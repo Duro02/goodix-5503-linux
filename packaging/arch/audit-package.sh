@@ -77,7 +77,7 @@ buildinfo=$tmp/.BUILDINFO
 hwdb=$tmp/usr/lib/udev/hwdb.d/60-autosuspend-libfprint-2.hwdb
 library=$tmp/usr/lib/libfprint-2.so.2.0.0
 grep -qx 'pkgname = libfprint-goodix5503' "$pkginfo"
-grep -qx 'pkgver = 1.94.100-22' "$pkginfo"
+grep -qx 'pkgver = 1.94.100-23' "$pkginfo"
 grep -qx 'provides = libfprint=1.94.100' "$pkginfo"
 grep -qx 'provides = libfprint-2.so=2-64' "$pkginfo"
 grep -qx "builddate = $epoch" "$pkginfo"
