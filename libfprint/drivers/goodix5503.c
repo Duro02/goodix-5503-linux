@@ -823,6 +823,12 @@ fail:
     OPENSSL_cleanse (envelope->data, envelope->len);
   if (plaintext)
     OPENSSL_cleanse (plaintext->data, plaintext->len);
+  if (self->deactivating && error)
+    {
+      /* Cancellation as part of release: the warm state survives. */
+      self->image_callback = NULL;
+      return;
+    }
   callback = self->image_callback;
   self->image_callback = NULL;
   callback (self, error);
@@ -1756,6 +1762,11 @@ goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
        * activation instead of failing the user's auth attempt. */
       self->warm.valid = FALSE;
       fp_dbg ("warm probe failed: %s", error ? error->message : "unknown");
+      if (self->deactivating || self->closing)
+        {
+          /* Cancellation as part of release: the warm state survives. */
+          return;
+        }
       if (!self->deactivating && !self->closing)
         {
           g_debug ("Goodix warm activation failed, falling back to cold path");
@@ -2001,6 +2012,12 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
       g_clear_error (&error);
       goodix5503_outer_start (self, NULL, TRUE,
                               goodix5503_fdt_event_received);
+      return;
+    }
+  if (error && (self->deactivating || self->closing))
+    {
+      /* Cancellation as part of release: the warm state survives for the
+       * next activation; outer_maybe_complete drives the deactivation. */
       return;
     }
   if (error || !goodix5503_fdt_event_wait_active (self) ||
