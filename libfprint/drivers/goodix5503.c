@@ -34,7 +34,8 @@
 #define GOODIX5503_COMMAND_FDT_MANUAL 0x36
 #define GOODIX5503_COMMAND_IDLE 0x70
 #define GOODIX5503_TLS_FLAGS 0xb0
-#define GOODIX5503_MAX_FRESH_ATTEMPTS 3
+#define GOODIX5503_MAX_FRESH_ATTEMPTS 10
+#define GOODIX5503_FRESH_RETRY_MS 500
 #define GOODIX5503_MAX_TLS_CLIENT_FRAMES 3
 #define GOODIX5503_CAPTURE_DISCARD 0
 #define GOODIX5503_CAPTURE_BACKGROUND 1
@@ -863,6 +864,16 @@ goodix5503_parse_fdt_slot (FpiDeviceGoodix5503 *self,
 }
 
 static void
+goodix5503_fresh_retry_delay (FpDevice *device, gpointer user_data)
+{
+  FpiDeviceGoodix5503 *self = FPI_DEVICE_GOODIX5503 (device);
+
+  (void) user_data;
+  self->delay_source = NULL;
+  goodix5503_fresh_attempt_start (self);
+}
+
+static void
 goodix5503_fresh_retry (FpiDeviceGoodix5503 *self)
 {
   OPENSSL_cleanse (self->fresh_raw, sizeof self->fresh_raw);
@@ -876,7 +887,13 @@ goodix5503_fresh_retry (FpiDeviceGoodix5503 *self)
                                         "Goodix fresh FDT base did not stabilize"));
       return;
     }
-  goodix5503_fresh_attempt_start (self);
+  /* On-demand activation races the user's finger: the fingerprint prompt
+   * appears while the fresh-base sequence is still running, and read pairs
+   * taken under a changing touch never stabilize. Space the attempts out so
+   * a held finger can be lifted without exhausting the budget. */
+  self->delay_source = fpi_device_add_timeout (
+    FP_DEVICE (self), GOODIX5503_FRESH_RETRY_MS,
+    goodix5503_fresh_retry_delay, NULL, NULL);
 }
 
 static void
