@@ -120,6 +120,7 @@ struct _FpiDeviceGoodix5503
     guint8 down_base[GOODIX5503_FDT_BASE_SIZE];
     guint8 background[GOODIX5503_PACKED_IMAGE_SIZE];
     Goodix5503Tls *tls;
+    guint probe_retries;
   } warm;
   Goodix5503FdtRuntime fdt_runtime;
   gboolean activated;
@@ -945,6 +946,7 @@ goodix5503_fdt2_done (FpiDeviceGoodix5503 *self,
    * session, runtime configuration and this idle reference across host
    * releases, so the next activation can skip the cold sequence. */
   self->warm.valid = TRUE;
+  self->warm.probe_retries = 0;
   memcpy (self->warm.dac, self->dac, sizeof self->warm.dac);
   self->warm.delta = self->fdt_delta;
   memcpy (self->warm.idle_raw, self->fresh_raw[2],
@@ -1765,6 +1767,19 @@ goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
       if (self->deactivating || self->closing)
         {
           /* Cancellation as part of release: the warm state survives. */
+          return;
+        }
+      if (!g_error_matches (error, G_USB_DEVICE_ERROR,
+                            G_USB_DEVICE_ERROR_TIMED_OUT) &&
+          self->warm.probe_retries < 2)
+        {
+          /* A release cancellation can leave a stale frame queued in the
+           * endpoint; the failed probe read consumed it, so retry the
+           * probe before giving up on the warm session. */
+          self->warm.probe_retries++;
+          self->warm.valid = TRUE;
+          fp_dbg ("warm probe retry after stray data");
+          goodix5503_activate (FP_IMAGE_DEVICE (self));
           return;
         }
       if (!self->deactivating && !self->closing)
