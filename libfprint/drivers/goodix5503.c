@@ -1624,6 +1624,7 @@ goodix5503_close_finish (FpiDeviceGoodix5503 *self)
        * open restores it together with the retained calibration. */
       g_assert (self->warm.tls == NULL);
       self->warm.tls = g_steal_pointer (&self->tls);
+      fp_dbg ("warm state stashed across close");
       memcpy (self->warm.dac, self->dac, sizeof self->warm.dac);
       self->warm.delta = self->fdt_delta;
       memcpy (self->warm.down_base, self->fdt_runtime.down_base,
@@ -1709,6 +1710,7 @@ goodix5503_activate (FpImageDevice *device)
       self->warm.valid = FALSE;
 
       self->stage = "warm probe";
+      fp_dbg ("warm activation: probing with retained state");
       if (goodix5503_build_fdt_request (0x0d, self->dac,
                                         self->fdt_runtime.down_base, request,
                                         &error))
@@ -1726,6 +1728,7 @@ goodix5503_activate (FpImageDevice *device)
 
   self->warm.valid = FALSE;
   self->stage = "preflight NOP";
+  fp_dbg ("cold activation sequence start");
   goodix5503_command_start (FPI_DEVICE_GOODIX5503 (device),
                             GOODIX5503_COMMAND_NOP,
                             payload, sizeof payload, FALSE, TRUE,
@@ -1752,6 +1755,7 @@ goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
        * loss). Retry once with the full cold sequence within the same
        * activation instead of failing the user's auth attempt. */
       self->warm.valid = FALSE;
+      fp_dbg ("warm probe failed: %s", error ? error->message : "unknown");
       if (!self->deactivating && !self->closing)
         {
           g_debug ("Goodix warm activation failed, falling back to cold path");
@@ -1765,20 +1769,20 @@ goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
   if (!goodix5503_fdt_bases_within_delta (raw, self->warm.idle_raw,
                                           self->fdt_delta))
     {
-      /* The idle level moved (finger resting on the sensor, strong drift
-       * or confused device state). The cold path owns finger handling and
-       * recalibration; rebuild the session there. */
-      self->warm.valid = FALSE;
-      if (!self->deactivating && !self->closing)
-        {
-          g_debug ("Goodix warm probe disagrees with the idle reference, "
-                   "falling back to cold path");
-          goodix5503_activate (FP_IMAGE_DEVICE (self));
-          return;
-        }
-      goodix5503_activation_fail (
-        self, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                        "Goodix warm probe left the idle envelope"));
+      /* The reading left the idle envelope. Right after a prompt this
+       * means the finger is already resting on the sensor; keep the
+       * retained idle-calibrated base untouched — arming with it fires
+       * the 0x32 event immediately for that touch (verified in the W-0s
+       * warm experiment). Genuine drift stays negligible, and a confused
+       * state still recovers through the capture contrast retry. */
+      fp_dbg ("warm probe idle mismatch - finger assumed present, arming retained base");
+      self->warm.valid = TRUE;
+      OPENSSL_cleanse (raw, sizeof raw);
+      OPENSSL_cleanse (transformed, sizeof transformed);
+      OPENSSL_cleanse (&interrupt, sizeof interrupt);
+      OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
+      self->activated = TRUE;
+      fpi_image_device_activate_complete (FP_IMAGE_DEVICE (self), NULL);
       return;
     }
 
@@ -1823,6 +1827,7 @@ goodix5503_deactivate (FpImageDevice *device)
        * re-activation path; only clear the per-operation FDT session. */
       goodix5503_fdt_runtime_pending_clear (&self->fdt_runtime);
       goodix5503_fdt_coordinator_reset (&self->fdt_runtime.coordinator);
+      fp_dbg ("deactivate: keeping warm state for next activation");
     }
   else
     {
