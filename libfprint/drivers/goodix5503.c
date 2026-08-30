@@ -765,6 +765,9 @@ goodix5503_activation_fail (FpiDeviceGoodix5503 *self, GError *error)
 
   if (error && self->primary_error == NULL && self->stage)
     g_prefix_error (&error, "%s: ", self->stage);
+  fp_dbg ("ACTIVATION_FAIL: stage=%s reset_attempted=%d deactivating=%d",
+          self->stage ? self->stage : "?", self->reset_attempted,
+          self->deactivating);
   self->session_clean = FALSE;
   if (self->primary_error == NULL)
     self->primary_error = error;
