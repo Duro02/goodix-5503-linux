@@ -107,23 +107,12 @@ struct _FpiDeviceGoodix5503
   gboolean reset_attempted;
   gboolean cleanup_active;
   guint capture_destination;
-  Goodix5503FdtPhase fdt_phase;
-  guint8 fdt_event_command;
-  guint fdt_arm_generation;
-  guint fdt_event_generation;
-  guint8 fdt_pending_raw[GOODIX5503_FDT_BASE_SIZE];
-  guint16 fdt_pending_touch_flag;
-  gboolean fdt_pending_valid;
-  guint16 fdt_area_mask;
+  Goodix5503FdtRuntime fdt_runtime;
   gboolean activated;
   guint fresh_attempt;
   guint16 fdt_delta;
   guint8 fresh_raw[3][GOODIX5503_FDT_BASE_SIZE];
   guint8 fresh_transformed[3][GOODIX5503_FDT_BASE_SIZE];
-  /* Retained transformed state: accepted fresh base or T(accepted-up raw). */
-  guint8 fdt_down_base[GOODIX5503_FDT_BASE_SIZE];
-  /* Official DN2 generated base, sent as the selected 0x34 suffix. */
-  guint8 fdt_up_base[GOODIX5503_FDT_BASE_SIZE];
   guint8 background[GOODIX5503_PACKED_IMAGE_SIZE];
   guint8 finger[GOODIX5503_PACKED_IMAGE_SIZE];
 };
@@ -197,24 +186,13 @@ static void goodix5503_close_finish (FpiDeviceGoodix5503 *self);
 static void
 goodix5503_fdt_pending_clear (FpiDeviceGoodix5503 *self)
 {
-  OPENSSL_cleanse (self->fdt_pending_raw, sizeof self->fdt_pending_raw);
-  self->fdt_pending_touch_flag = 0;
-  self->fdt_pending_valid = FALSE;
-  OPENSSL_cleanse (self->fdt_up_base, sizeof self->fdt_up_base);
+  goodix5503_fdt_runtime_pending_clear (&self->fdt_runtime);
 }
 
 static void
-goodix5503_fdt_runtime_reset (FpiDeviceGoodix5503 *self)
+goodix5503_fdt_session_reset (FpiDeviceGoodix5503 *self)
 {
-  self->fdt_phase = GOODIX5503_FDT_PHASE_IDLE;
-  self->fdt_event_command = 0;
-  self->fdt_event_generation = 0;
-  self->fdt_arm_generation++;
-  if (self->fdt_arm_generation == 0)
-    self->fdt_arm_generation = 1;
-  goodix5503_fdt_pending_clear (self);
-  self->fdt_area_mask = 0;
-  OPENSSL_cleanse (self->fdt_down_base, sizeof self->fdt_down_base);
+  goodix5503_fdt_runtime_reset (&self->fdt_runtime);
 }
 
 static void
@@ -706,7 +684,7 @@ goodix5503_pre_reset_fail (FpiDeviceGoodix5503 *self, GError *error)
   OPENSSL_cleanse (self->fresh_transformed, sizeof self->fresh_transformed);
   OPENSSL_cleanse (self->background, sizeof self->background);
   OPENSSL_cleanse (self->finger, sizeof self->finger);
-  goodix5503_fdt_runtime_reset (self);
+  goodix5503_fdt_session_reset (self);
   fpi_image_device_activate_complete (FP_IMAGE_DEVICE (self), error);
 }
 
@@ -731,7 +709,7 @@ goodix5503_cleanup_done (FpiDeviceGoodix5503 *self,
   OPENSSL_cleanse (self->fresh_transformed, sizeof self->fresh_transformed);
   OPENSSL_cleanse (self->background, sizeof self->background);
   OPENSSL_cleanse (self->finger, sizeof self->finger);
-  goodix5503_fdt_runtime_reset (self);
+  goodix5503_fdt_session_reset (self);
   if (self->activated)
     {
       self->activated = FALSE;
@@ -921,9 +899,9 @@ goodix5503_fdt2_done (FpiDeviceGoodix5503 *self,
       return;
     }
 
-  goodix5503_fdt_runtime_reset (self);
-  memcpy (self->fdt_down_base, self->fresh_transformed[2],
-          sizeof self->fdt_down_base);
+  goodix5503_fdt_session_reset (self);
+  memcpy (self->fdt_runtime.down_base, self->fresh_transformed[2],
+          sizeof self->fdt_runtime.down_base);
   OPENSSL_cleanse (self->fresh_raw, sizeof self->fresh_raw);
   OPENSSL_cleanse (self->fresh_transformed, sizeof self->fresh_transformed);
   OPENSSL_cleanse (self->psk, sizeof self->psk);
@@ -1608,7 +1586,7 @@ goodix5503_close_finish (FpiDeviceGoodix5503 *self)
   OPENSSL_cleanse (self->fresh_transformed, sizeof self->fresh_transformed);
   OPENSSL_cleanse (self->background, sizeof self->background);
   OPENSSL_cleanse (self->finger, sizeof self->finger);
-  goodix5503_fdt_runtime_reset (self);
+  goodix5503_fdt_session_reset (self);
   g_clear_error (&self->primary_error);
   if (self->interface_claimed)
     {
@@ -1654,7 +1632,7 @@ goodix5503_deactivate (FpImageDevice *device)
   FpiDeviceGoodix5503 *self = FPI_DEVICE_GOODIX5503 (device);
 
   self->deactivating = TRUE;
-  goodix5503_fdt_runtime_reset (self);
+  goodix5503_fdt_session_reset (self);
   if (self->transaction_cancel)
     {
       /* A queued OUT may still be behind its 25 ms IN-first barrier. Let the
@@ -1682,6 +1660,10 @@ goodix5503_deactivate (FpImageDevice *device)
 static void
 goodix5503_runtime_error (FpiDeviceGoodix5503 *self, GError *error)
 {
+  /* Activation failures use goodix5503_activation_fail() directly. A runtime
+   * failure is terminal for the active session, so invalidate the generation
+   * and wipe every FDT base/pending field before libfprint can re-enter us. */
+  goodix5503_fdt_session_reset (self);
   if (self->deactivating)
     goodix5503_activation_fail (self, error);
   else
@@ -1712,7 +1694,7 @@ goodix5503_finger_image_done (FpiDeviceGoodix5503 *self, GError *error)
 
           g_clear_error (&error);
           goodix5503_fdt_pending_clear (self);
-          self->fdt_phase = GOODIX5503_FDT_PHASE_IDLE;
+          goodix5503_fdt_coordinator_retry_idle (&self->fdt_runtime.coordinator);
           fpi_image_device_retry_scan (FP_IMAGE_DEVICE (self),
                                        FP_DEVICE_RETRY_GENERAL);
           if (action == FPI_DEVICE_ACTION_ENROLL)
@@ -1749,21 +1731,23 @@ goodix5503_fdt_up_base_ready (FpiDeviceGoodix5503 *self,
   guint16 interrupt = 0;
   guint16 touch_flag = 0;
 
-  if (error || self->fdt_phase != GOODIX5503_FDT_PHASE_PREPARE_UP_BASE ||
-      !self->fdt_pending_valid ||
+  if (error ||
+      self->fdt_runtime.coordinator.phase !=
+        GOODIX5503_FDT_PHASE_PREPARE_UP_BASE ||
+      !self->fdt_runtime.pending_valid ||
       !goodix5503_parse_fdt_response (
         body ? body->data : NULL, body ? body->len : 0, &interrupt,
         &touch_flag, raw, transformed, &error))
     goto fail;
 
-  /* An exact command-0x36 response is a pure mask event. Its numeric raw and
-   * transformed buffers are parsed strictly but do not enter DN2 arithmetic.
-   * The official first candidate is T(retained transformed down-base state). */
-  self->fdt_area_mask = touch_flag;
-  if (!goodix5503_generate_fdt_up_base_from_retained (
-        self->fdt_down_base, self->fdt_pending_raw, self->fdt_area_mask,
-        self->fdt_pending_touch_flag, self->fdt_delta, self->fdt_up_base,
-        &error))
+  /* McuParseFdt makes an exact command-0x36 response a pure mask event.
+   * HandleFdt replaces the persistent mask from body+2 before DN2 combines
+   * it with the accepted-down event mask for up-base generation. */
+  self->fdt_runtime.area_mask = touch_flag;
+  if (!goodix5503_generate_fdt_up_base (
+        raw, self->fdt_runtime.pending_raw, self->fdt_runtime.area_mask,
+        self->fdt_runtime.pending_touch_flag, self->fdt_delta,
+        self->fdt_runtime.up_base, &error))
     goto fail;
 
   OPENSSL_cleanse (body->data, body->len);
@@ -1771,11 +1755,10 @@ goodix5503_fdt_up_base_ready (FpiDeviceGoodix5503 *self,
   OPENSSL_cleanse (transformed, sizeof transformed);
   OPENSSL_cleanse (&interrupt, sizeof interrupt);
   OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
-  OPENSSL_cleanse (self->fdt_pending_raw, sizeof self->fdt_pending_raw);
-  self->fdt_pending_touch_flag = 0;
-  self->fdt_pending_valid = FALSE;
-
-  self->fdt_phase = GOODIX5503_FDT_PHASE_CAPTURE;
+  OPENSSL_cleanse (self->fdt_runtime.pending_raw, sizeof self->fdt_runtime.pending_raw);
+  self->fdt_runtime.pending_touch_flag = 0;
+  self->fdt_runtime.pending_valid = FALSE;
+  goodix5503_fdt_coordinator_up_base_ready (&self->fdt_runtime.coordinator);
   goodix5503_fdt_watch_start (self, FALSE);
   return;
 
@@ -1794,12 +1777,7 @@ fail:
 static gboolean
 goodix5503_fdt_event_wait_active (FpiDeviceGoodix5503 *self)
 {
-  return self->fdt_arm_generation != 0 &&
-         self->fdt_arm_generation == self->fdt_event_generation &&
-         ((self->fdt_phase == GOODIX5503_FDT_PHASE_WAIT_DOWN &&
-           self->fdt_event_command == 0x32) ||
-          (self->fdt_phase == GOODIX5503_FDT_PHASE_WAIT_UP &&
-           self->fdt_event_command == 0x34));
+  return goodix5503_fdt_coordinator_wait_active (&self->fdt_runtime.coordinator);
 }
 
 static void
@@ -1827,7 +1805,7 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
   if (error || !goodix5503_fdt_event_wait_active (self) ||
       !goodix5503_packet_decode (frame ? frame->data : NULL,
                                  frame ? frame->len : 0,
-                                 self->fdt_event_command, TRUE,
+                                 self->fdt_runtime.coordinator.armed_command, TRUE,
                                  &body, &error) ||
       !goodix5503_parse_fdt_response (
         body ? body->data : NULL, body ? body->len : 0, &interrupt,
@@ -1846,9 +1824,9 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
       return;
     }
 
-  action = goodix5503_fdt_event_action (
-    self->fdt_phase, self->fdt_event_command, self->fdt_arm_generation,
-    self->fdt_event_generation, self->fdt_event_command);
+  action = goodix5503_fdt_coordinator_event (
+    &self->fdt_runtime.coordinator, self->fdt_runtime.coordinator.armed_command,
+    self->fdt_runtime.coordinator.event_generation);
   OPENSSL_cleanse (frame->data, frame->len);
   OPENSSL_cleanse (body->data, body->len);
   OPENSSL_cleanse (&interrupt, sizeof interrupt);
@@ -1862,18 +1840,17 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
     }
   if (action == GOODIX5503_FDT_EVENT_CAPTURE_DOWN)
     {
-      memcpy (self->fdt_pending_raw, raw, sizeof self->fdt_pending_raw);
-      self->fdt_pending_touch_flag = touch_flag;
-      self->fdt_pending_valid = TRUE;
-      self->fdt_phase = GOODIX5503_FDT_PHASE_CAPTURE;
+      memcpy (self->fdt_runtime.pending_raw, raw,
+              sizeof self->fdt_runtime.pending_raw);
+      self->fdt_runtime.pending_touch_flag = touch_flag;
+      self->fdt_runtime.pending_valid = TRUE;
       fpi_image_device_report_finger_status (FP_IMAGE_DEVICE (self), TRUE);
       goodix5503_capture_image (self, GOODIX5503_CAPTURE_FINGER,
                                 goodix5503_finger_image_done);
     }
   else
     {
-      goodix5503_fdt_next_down_base (raw, self->fdt_down_base);
-      self->fdt_phase = GOODIX5503_FDT_PHASE_IDLE;
+      goodix5503_fdt_next_down_base (raw, self->fdt_runtime.down_base);
       if (fpi_device_get_current_action (FP_DEVICE (self)) ==
           FPI_DEVICE_ACTION_ENROLL)
         goodix5503_fdt_watch_start (self, TRUE);
@@ -1889,22 +1866,27 @@ goodix5503_fdt_arm_done (FpiDeviceGoodix5503 *self,
                           GByteArray          *body,
                           GError              *error)
 {
-  Goodix5503FdtPhase expected_phase =
-    self->fdt_event_command == 0x32 ? GOODIX5503_FDT_PHASE_ARM_DOWN :
-                                     GOODIX5503_FDT_PHASE_ARM_UP;
+  Goodix5503FdtArmAckAction action = GOODIX5503_FDT_ARM_ACK_REJECT;
 
   g_clear_pointer (&body, g_byte_array_unref);
-  if (error || self->fdt_phase != expected_phase ||
-      (self->fdt_event_command != 0x32 && self->fdt_event_command != 0x34))
+  if (!error)
+    action = goodix5503_fdt_coordinator_arm_ack (
+      &self->fdt_runtime.coordinator);
+  if (error || action == GOODIX5503_FDT_ARM_ACK_REJECT)
     {
       goodix5503_runtime_error (
         self, error ? error : goodix5503_fdt_phase_error ());
       return;
     }
-  self->fdt_phase = self->fdt_event_command == 0x32 ?
-                      GOODIX5503_FDT_PHASE_WAIT_DOWN :
-                      GOODIX5503_FDT_PHASE_WAIT_UP;
-  self->fdt_event_generation = self->fdt_arm_generation;
+  if (action == GOODIX5503_FDT_ARM_ACK_REARM_UP)
+    {
+      /* Pinned GF3258 issues the HandleFdtDown arm and then the
+       * ReqOnCaptureData arm with the same generated suffix. No event read is
+       * started until both fixed transactions are acknowledged. */
+      goodix5503_fdt_watch_start (self, FALSE);
+      return;
+    }
+
   goodix5503_outer_start (self, NULL, TRUE,
                           goodix5503_fdt_event_received);
 }
@@ -1917,15 +1899,15 @@ goodix5503_fdt_prepare_up_base (FpiDeviceGoodix5503 *self)
 
   if (self->deactivating || self->closing)
     return;
-  if (self->fdt_phase != GOODIX5503_FDT_PHASE_CAPTURE ||
-      !self->fdt_pending_valid)
+  if (self->fdt_runtime.coordinator.phase != GOODIX5503_FDT_PHASE_CAPTURE ||
+      !self->fdt_runtime.pending_valid)
     {
       goodix5503_runtime_error (self, goodix5503_fdt_phase_error ());
       return;
     }
-  self->fdt_phase = GOODIX5503_FDT_PHASE_PREPARE_UP_BASE;
+  goodix5503_fdt_coordinator_prepare_up (&self->fdt_runtime.coordinator);
   if (!goodix5503_build_fdt_request (0x0d, self->dac,
-                                     self->fdt_down_base, request, &error))
+                                     self->fdt_runtime.down_base, request, &error))
     {
       goodix5503_fdt_pending_clear (self);
       goodix5503_runtime_error (self, g_steal_pointer (&error));
@@ -1942,33 +1924,20 @@ goodix5503_fdt_watch_start (FpiDeviceGoodix5503 *self, gboolean finger_on)
 {
   guint8 request[GOODIX5503_FDT_REQUEST_SIZE];
   g_autoptr(GError) error = NULL;
-  guint8 command = finger_on ? 0x32 : 0x34;
-  Goodix5503FdtPhase required = finger_on ? GOODIX5503_FDT_PHASE_IDLE :
-                                                  GOODIX5503_FDT_PHASE_CAPTURE;
+  guint8 command = 0;
+  guint generation = 0;
 
   if (self->deactivating || self->closing)
     return;
-  if (self->fdt_phase != required)
-    {
-      goodix5503_runtime_error (self, goodix5503_fdt_phase_error ());
-      return;
-    }
-  if (finger_on ?
-        !goodix5503_build_fdt_request (0x0c, self->dac, self->fdt_down_base,
-                                       request, &error) :
-        !goodix5503_build_fdt_up_request (self->dac, self->fdt_up_base,
-                                           request, &error))
+  if (!goodix5503_fdt_coordinator_start_arm (
+        &self->fdt_runtime.coordinator, finger_on, self->dac,
+        self->fdt_runtime.down_base, self->fdt_runtime.up_base, request,
+        &command, &generation, &error))
     {
       goodix5503_runtime_error (self, g_steal_pointer (&error));
       return;
     }
-  self->fdt_arm_generation++;
-  if (self->fdt_arm_generation == 0)
-    self->fdt_arm_generation = 1;
-  self->fdt_event_generation = 0;
-  self->fdt_event_command = command;
-  self->fdt_phase = finger_on ? GOODIX5503_FDT_PHASE_ARM_DOWN :
-                                GOODIX5503_FDT_PHASE_ARM_UP;
+  (void) generation;
   goodix5503_command_start (self, command, request, sizeof request,
                             FALSE, TRUE, goodix5503_fdt_arm_done);
   OPENSSL_cleanse (request, sizeof request);
@@ -1984,8 +1953,9 @@ goodix5503_change_state (FpImageDevice *device,
   if (state != FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON &&
       state != FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF)
     return;
-  action = goodix5503_fdt_state_action (
-    self->fdt_phase, state == FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON);
+  action = goodix5503_fdt_coordinator_state_action (
+    &self->fdt_runtime.coordinator,
+    state == FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON);
   switch (action)
     {
     case GOODIX5503_FDT_STATE_ARM_DOWN:
@@ -2013,7 +1983,7 @@ fpi_device_goodix5503_init (FpiDeviceGoodix5503 *self)
 {
   self->interface_claimed = FALSE;
   self->deactivating = FALSE;
-  goodix5503_fdt_runtime_reset (self);
+  goodix5503_fdt_session_reset (self);
 }
 
 static void

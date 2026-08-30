@@ -469,18 +469,6 @@ for later requests. The DLL retries inconsistent pairs without a numeric bound;
 the free implementation must instead use the existing operation deadline and a
 small explicit retry cap.
 
-The runtime `UpdateFdtUpBase @ 0x18008d210` does not use either numeric buffer
-from the fresh manual command-36 result. That result supplies only its touch
-mask. The first numeric candidate is produced by applying the same transform
-again to retained transformed state at context `+0xf0`; that retained state is
-activation's accepted fresh output2 or a prior accepted-up result transformed
-once. The function then takes an unsigned LE16 minimum against the current
-accepted-down raw output1, combines the persistent and accepted-down masks, and
-runs the configured diff/core up-base formula. The resulting six words are
-copied unchanged into the command-34 suffix; there is no post-generation
-transform. This withdraws the earlier incorrect interpretation that the fresh
-manual result's raw numeric array was the first minimum operand.
-
 The register-82 delta decode is unsigned high-byte extraction. The DLL executes
 `movzx eax,word` before `sar eax,8`, so raw `00 ff` produces threshold 255;
 base comparisons are `abs(u16_a-u16_b) <= zero_extended_delta`.
@@ -489,6 +477,32 @@ There is no C4, D6, D2, AE or wire-92 preparation *between* these acquisitions.
 The pinned-default cold D6 occurs before TLS/config and the single C4 occurs
 after validated config but before host FDT initialization. Duplicate C4 and D2
 must not be introduced.
+
+## Runtime FDT-up arms
+
+The pinned GF3258 lifecycle has two distinct selected call sites after one
+accepted down and the runtime manual-base update. That update uses the fresh
+command-`0x36` raw numeric base in an unsigned wordwise minimum with the
+accepted-down raw base; the retained transformed base is only the request input
+to command `0x36`, not a direct arithmetic operand. `HandleFdtDown` invokes
+`HUFpMcuSwitchToFdtUp`, and the subsequent `ReqOnCaptureData` callback invokes
+the same selected profile operation again. Both calls use the same generated
+12-byte up base and therefore construct the same command-`0x34` payload. They
+are fixed lifecycle calls, not retry attempts.
+
+The free runtime submits these two arm transactions sequentially. It consumes
+the first ACK without starting an unsolicited-event read, submits the identical
+second request, and only after the second ACK binds its generation to WAIT_UP
+and starts the event read. A third arm, configurable retry count, or generic raw
+command path is not permitted. Error, cancellation, deactivation and close reset
+the bounded arm-pass state. The same production coordinator used by the driver
+has a fake-transport host test that asserts the concrete manual request, both
+identical up requests, no read between ACKs, one second-generation read, stale
+first-generation rejection, accepted-up next-down arm and terminal-state
+invalidation. Runtime error reporting centrally resets that coordinator and
+securely clears pending/down/up bases first. Controlled hardware validation must
+keep the finger held through both arm ACKs before release, so an early edge
+cannot enter the command-response path.
 
 ## Embedded 10063 MCU package
 

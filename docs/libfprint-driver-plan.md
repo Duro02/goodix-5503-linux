@@ -27,20 +27,18 @@ Use separate bounded `FpiSsm` machines for activation, capture and cleanup:
    words and area mask, reports ON once and enters command-20 capture first.
    Only after the captured image is submitted upward and libfprint enters
    `AWAIT_FINGER_OFF` does the pinned DN2 path perform one bounded manual `0x36`
-   selector-`0x0d` read using the calibrated down base. That response replaces
-   the persistent mask from body+2, but its raw and transformed numeric buffers
-   are only strictly parsed and wiped; neither enters up-base arithmetic. The
-   first numeric candidate is `T(retained_down_transformed)`, where retained
-   state is activation's accepted fresh transformed base or the prior accepted
-   up event transformed exactly once, and
-   `T(x) = ((x >> 1) << 8) | 0x80` with 16-bit truncation. The runtime takes the
-   unsigned wordwise minimum of that candidate and the accepted-down raw words,
-   combines the persistent and accepted-down area masks, and applies the
-   configured diff/core formula to generate and retain the exact six-word
-   GF3258 up base before arming `0x34`. The pinned normal accepted-down call
-   sends the exact 22-byte payload `0e 01 || DAC[8] || generated-up-base[12]`. The suffix is
+   selector-`0x0d` read using the calibrated down base. The runtime takes the
+   unsigned wordwise minima of that fresh manual raw base and the accepted-down
+   raw base, combines the persistent and event area masks,
+   generates and retains the exact six-word GF3258 up base with the configured
+   delta, then sends exactly two sequential `0x34` arm transactions. The first
+   mirrors `HandleFdtDown`; after its ACK and before any event read, the second
+   mirrors the selected profile's `ReqOnCaptureData`. Both use the same exact
+   22-byte payload `0e 01 || DAC[8] || generated-up-base[12]`. The suffix is
    copied unchanged and is neither optional nor transformed a second time on
-   this path. `McuParseFdt` treats body+0 as an MCU register address, performs a
+   this path. Only the second ACK publishes an event generation and starts the
+   bounded event read; no retry loop or third arm exists. `McuParseFdt` treats
+   body+0 as an MCU register address, performs a
    proprietary nested command-`0x82` read through the selected DN2 profile and
    only then synthesizes DOWN or UP from parsed flags and the data command. The
    fixed free host deliberately omits that extra asynchronous read: after strict
@@ -49,19 +47,25 @@ Use separate bounded `FpiSsm` machines for activation, capture and cleanup:
    WAIT_DOWN/WAIT_UP phase select an action. No raw body word or bit is used as
    a substitute predicate. An exact manual `0x36` response is the pure mask
    action and replaces the persistent 16-bit area mask from body+2 before
-   up-base generation; its numeric buffers are not the first numeric candidate.
-   The three activation manual reads serve only bounded
+   up-base generation. The three activation manual reads serve only bounded
    fresh calibration; runtime reset intentionally clears their mask state, and
    the per-stage manual read establishes the runtime mask at its official
-   lifetime. Duplicate state notifications cannot repeat manual preparation or
-   arming. Only an exact `0x34` event in the matching WAIT_UP generation reports
+   lifetime. Duplicate generic state notifications cannot repeat manual
+   preparation or add another arm beyond the two fixed official call sites.
+   Controlled validation keeps the finger held through both ACKs before a real
+   release. Only an exact `0x34` event in the matching WAIT_UP generation reports
    OFF after strict packet/body validation. Its raw body words are transformed
    once with
    `((x >> 1) << 8) | 0x80` into the dedicated next down base. During
    enrollment, that accepted up immediately arms the next `0x32` before OFF is
    reported and before matcher completion; non-enrollment keeps libfprint's
    deactivation-safe deferred behavior. The generated up base remains until it
-   is overwritten by the next down or wiped by reset/cleanup. The failed
+   is overwritten by the next down or wiped by reset/cleanup. Every terminal
+   runtime error centrally invalidates the arm generation and securely clears
+   pending/down/up FDT state before reporting the session error. The production
+   coordinator is exercised with fake transport actions for both exact `0x34`
+   payloads, ACK ordering, the sole event read, stale generations, accepted-up
+   next-down arm, malformed/error resets and duplicate AWAIT no-ops. The failed
    TX-off/delta qualification experiment is not retained, and no 12-area
    community arithmetic is used.
 3. **Capture:** parse command-36 data through its dedicated FDT policy (two

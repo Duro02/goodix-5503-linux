@@ -5,7 +5,9 @@ repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 build_root="$repo_dir/.tools/arch-package-build"
 pkgdest="$repo_dir/.tools/packages"
 source_date_epoch=1785018985
-package_glob='libfprint-goodix5503-1.94.100-11-x86_64.pkg.tar.zst'
+package_glob='libfprint-goodix5503-1.94.100-12-x86_64.pkg.tar.zst'
+
+"$repo_dir/scripts/test-libfprint-proto.sh"
 
 rm -rf -- "$build_root"
 mkdir -p -- "$build_root/common" "$pkgdest"

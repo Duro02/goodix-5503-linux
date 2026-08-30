@@ -60,6 +60,33 @@ typedef enum
 
 typedef enum
 {
+  GOODIX5503_FDT_ARM_ACK_REJECT,
+  GOODIX5503_FDT_ARM_ACK_REARM_UP,
+  GOODIX5503_FDT_ARM_ACK_WAIT_EVENT,
+} Goodix5503FdtArmAckAction;
+
+typedef struct
+{
+  Goodix5503FdtPhase phase;
+  guint8 armed_command;
+  guint8 up_arm_pass;
+  guint arm_generation;
+  guint event_generation;
+} Goodix5503FdtCoordinator;
+
+typedef struct
+{
+  Goodix5503FdtCoordinator coordinator;
+  guint8 pending_raw[GOODIX5503_FDT_BASE_SIZE];
+  guint16 pending_touch_flag;
+  gboolean pending_valid;
+  guint16 area_mask;
+  guint8 down_base[GOODIX5503_FDT_BASE_SIZE];
+  guint8 up_base[GOODIX5503_FDT_BASE_SIZE];
+} Goodix5503FdtRuntime;
+
+typedef enum
+{
   GOODIX5503_PROTO_ERROR_INVALID,
   GOODIX5503_PROTO_ERROR_LENGTH,
   GOODIX5503_PROTO_ERROR_CHECKSUM,
@@ -147,22 +174,55 @@ gboolean goodix5503_fdt_bases_within_delta (const guint8 first[GOODIX5503_FDT_BA
                                              const guint8 second[GOODIX5503_FDT_BASE_SIZE],
                                              guint16      delta);
 
-Goodix5503FdtEventAction goodix5503_fdt_event_action (
-  Goodix5503FdtPhase phase,
-  guint8             armed_command,
-  guint              arm_generation,
-  guint              event_generation,
-  guint8             received_command);
+void goodix5503_fdt_runtime_reset (Goodix5503FdtRuntime *runtime);
 
-Goodix5503FdtStateAction goodix5503_fdt_state_action (
-  Goodix5503FdtPhase phase,
-  gboolean           await_finger_on);
+void goodix5503_fdt_runtime_pending_clear (Goodix5503FdtRuntime *runtime);
 
-gboolean goodix5503_generate_fdt_up_base_from_retained (
-  const guint8 retained_transformed_base[GOODIX5503_FDT_BASE_SIZE],
-  const guint8 accepted_down_raw_base[GOODIX5503_FDT_BASE_SIZE],
+void goodix5503_fdt_coordinator_reset (Goodix5503FdtCoordinator *coordinator);
+
+void goodix5503_fdt_coordinator_pending_clear (
+  Goodix5503FdtCoordinator *coordinator);
+
+Goodix5503FdtStateAction goodix5503_fdt_coordinator_state_action (
+  const Goodix5503FdtCoordinator *coordinator,
+  gboolean                        await_finger_on);
+
+gboolean goodix5503_fdt_coordinator_start_arm (
+  Goodix5503FdtCoordinator *coordinator,
+  gboolean                  finger_on,
+  const guint8              dac[GOODIX5503_DAC_SIZE],
+  const guint8              down_base[GOODIX5503_FDT_BASE_SIZE],
+  const guint8              up_base[GOODIX5503_FDT_BASE_SIZE],
+  guint8                    request[GOODIX5503_FDT_REQUEST_SIZE],
+  guint8                   *command,
+  guint                    *generation,
+  GError                  **error);
+
+Goodix5503FdtArmAckAction goodix5503_fdt_coordinator_arm_ack (
+  Goodix5503FdtCoordinator *coordinator);
+
+gboolean goodix5503_fdt_coordinator_wait_active (
+  const Goodix5503FdtCoordinator *coordinator);
+
+Goodix5503FdtEventAction goodix5503_fdt_coordinator_event (
+  Goodix5503FdtCoordinator *coordinator,
+  guint8                    received_command,
+  guint                     received_generation);
+
+void goodix5503_fdt_coordinator_prepare_up (
+  Goodix5503FdtCoordinator *coordinator);
+
+void goodix5503_fdt_coordinator_up_base_ready (
+  Goodix5503FdtCoordinator *coordinator);
+
+void goodix5503_fdt_coordinator_retry_idle (
+  Goodix5503FdtCoordinator *coordinator);
+
+gboolean goodix5503_generate_fdt_up_base (
+  const guint8 manual_readings[GOODIX5503_FDT_BASE_SIZE],
+  const guint8 event_readings[GOODIX5503_FDT_BASE_SIZE],
   guint16      persistent_area_mask,
-  guint16      accepted_down_touch_flag,
+  guint16      event_touch_flag,
   guint16      delta,
   guint8       output[GOODIX5503_FDT_BASE_SIZE],
   GError     **error);

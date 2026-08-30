@@ -29,12 +29,6 @@ write_le16 (guint8 *data, guint16 value)
   data[1] = value >> 8;
 }
 
-static guint16
-fdt_down_transform_word (guint16 value)
-{
-  return (guint16) ((((guint32) value >> 1) << 8) | 0x0080);
-}
-
 static void
 append_le16 (GByteArray *array, guint16 value)
 {
@@ -527,7 +521,7 @@ goodix5503_parse_fdt_response (const guint8  *response,
       guint16 word = read_le16 (raw_base + offset);
 
       write_le16 (transformed_base + offset,
-                  fdt_down_transform_word (word));
+                  ((((guint32) word >> 1) << 8) | 0x0080) & 0xffff);
     }
   return TRUE;
 }
@@ -596,57 +590,256 @@ goodix5503_fdt_bases_within_delta (const guint8 first[GOODIX5503_FDT_BASE_SIZE],
   return TRUE;
 }
 
-Goodix5503FdtEventAction
-goodix5503_fdt_event_action (Goodix5503FdtPhase phase,
-                              guint8             armed_command,
-                              guint              arm_generation,
-                              guint              event_generation,
-                              guint8             received_command)
+static void
+fdt_sensitive_clear (gpointer data, gsize size)
 {
-  if (arm_generation == 0 || arm_generation != event_generation ||
-      armed_command != received_command)
-    return GOODIX5503_FDT_EVENT_REJECT;
+  volatile guint8 *cursor = data;
 
-  /* The response's first LE16 is a register address, not dispatcher flags.
-   * The fixed host binds an event to its one exact outstanding command,
-   * generation and phase after strict packet/body validation. */
-  if (phase == GOODIX5503_FDT_PHASE_WAIT_DOWN && received_command == 0x32)
-    return GOODIX5503_FDT_EVENT_CAPTURE_DOWN;
-  if (phase == GOODIX5503_FDT_PHASE_WAIT_UP && received_command == 0x34)
-    return GOODIX5503_FDT_EVENT_REPORT_UP;
-  return GOODIX5503_FDT_EVENT_REJECT;
+  while (size-- > 0)
+    *cursor++ = 0;
+}
+
+void
+goodix5503_fdt_runtime_pending_clear (Goodix5503FdtRuntime *runtime)
+{
+  g_return_if_fail (runtime != NULL);
+
+  fdt_sensitive_clear (runtime->pending_raw, sizeof runtime->pending_raw);
+  runtime->pending_touch_flag = 0;
+  runtime->pending_valid = FALSE;
+  goodix5503_fdt_coordinator_pending_clear (&runtime->coordinator);
+  fdt_sensitive_clear (runtime->up_base, sizeof runtime->up_base);
+}
+
+void
+goodix5503_fdt_runtime_reset (Goodix5503FdtRuntime *runtime)
+{
+  g_return_if_fail (runtime != NULL);
+
+  goodix5503_fdt_coordinator_reset (&runtime->coordinator);
+  goodix5503_fdt_runtime_pending_clear (runtime);
+  runtime->area_mask = 0;
+  fdt_sensitive_clear (runtime->down_base, sizeof runtime->down_base);
+}
+
+void
+goodix5503_fdt_coordinator_reset (Goodix5503FdtCoordinator *coordinator)
+{
+  g_return_if_fail (coordinator != NULL);
+
+  coordinator->phase = GOODIX5503_FDT_PHASE_IDLE;
+  coordinator->armed_command = 0;
+  coordinator->up_arm_pass = 0;
+  coordinator->event_generation = 0;
+  coordinator->arm_generation++;
+  if (coordinator->arm_generation == 0)
+    coordinator->arm_generation = 1;
+}
+
+void
+goodix5503_fdt_coordinator_pending_clear (
+  Goodix5503FdtCoordinator *coordinator)
+{
+  g_return_if_fail (coordinator != NULL);
+  coordinator->up_arm_pass = 0;
 }
 
 Goodix5503FdtStateAction
-goodix5503_fdt_state_action (Goodix5503FdtPhase phase,
-                              gboolean           await_finger_on)
+goodix5503_fdt_coordinator_state_action (
+  const Goodix5503FdtCoordinator *coordinator,
+  gboolean                        await_finger_on)
 {
+  g_return_val_if_fail (coordinator != NULL, GOODIX5503_FDT_STATE_REJECT);
+
   if (await_finger_on)
     {
-      if (phase == GOODIX5503_FDT_PHASE_IDLE)
+      if (coordinator->phase == GOODIX5503_FDT_PHASE_IDLE)
         return GOODIX5503_FDT_STATE_ARM_DOWN;
-      if (phase == GOODIX5503_FDT_PHASE_ARM_DOWN ||
-          phase == GOODIX5503_FDT_PHASE_WAIT_DOWN)
+      if (coordinator->phase == GOODIX5503_FDT_PHASE_ARM_DOWN ||
+          coordinator->phase == GOODIX5503_FDT_PHASE_WAIT_DOWN)
         return GOODIX5503_FDT_STATE_NOOP;
       return GOODIX5503_FDT_STATE_REJECT;
     }
 
-  if (phase == GOODIX5503_FDT_PHASE_CAPTURE)
+  if (coordinator->phase == GOODIX5503_FDT_PHASE_CAPTURE)
     return GOODIX5503_FDT_STATE_PREPARE_UP_BASE;
-  if (phase == GOODIX5503_FDT_PHASE_PREPARE_UP_BASE ||
-      phase == GOODIX5503_FDT_PHASE_ARM_UP ||
-      phase == GOODIX5503_FDT_PHASE_WAIT_UP ||
-      phase == GOODIX5503_FDT_PHASE_IDLE)
+  if (coordinator->phase == GOODIX5503_FDT_PHASE_PREPARE_UP_BASE ||
+      coordinator->phase == GOODIX5503_FDT_PHASE_ARM_UP ||
+      coordinator->phase == GOODIX5503_FDT_PHASE_WAIT_UP ||
+      coordinator->phase == GOODIX5503_FDT_PHASE_IDLE)
     return GOODIX5503_FDT_STATE_NOOP;
   return GOODIX5503_FDT_STATE_REJECT;
 }
 
 gboolean
-goodix5503_generate_fdt_up_base_from_retained (
-  const guint8 retained_transformed_base[GOODIX5503_FDT_BASE_SIZE],
-  const guint8 accepted_down_raw_base[GOODIX5503_FDT_BASE_SIZE],
+goodix5503_fdt_coordinator_start_arm (
+  Goodix5503FdtCoordinator *coordinator,
+  gboolean                  finger_on,
+  const guint8              dac[GOODIX5503_DAC_SIZE],
+  const guint8              down_base[GOODIX5503_FDT_BASE_SIZE],
+  const guint8              up_base[GOODIX5503_FDT_BASE_SIZE],
+  guint8                    request[GOODIX5503_FDT_REQUEST_SIZE],
+  guint8                   *command,
+  guint                    *generation,
+  GError                  **error)
+{
+  Goodix5503FdtPhase required;
+  gboolean built;
+
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+  if (coordinator == NULL || dac == NULL || down_base == NULL ||
+      up_base == NULL || request == NULL || command == NULL ||
+      generation == NULL)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_INVALID,
+                           "invalid Goodix FDT coordinator inputs");
+      return FALSE;
+    }
+
+  required = finger_on ? GOODIX5503_FDT_PHASE_IDLE :
+                         GOODIX5503_FDT_PHASE_CAPTURE;
+  if (coordinator->phase != required ||
+      (!finger_on && coordinator->up_arm_pass >= 2))
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_INVALID,
+                           "unexpected Goodix FDT arm state");
+      return FALSE;
+    }
+
+  built = finger_on ?
+            goodix5503_build_fdt_request (0x0c, dac, down_base, request,
+                                           error) :
+            goodix5503_build_fdt_up_request (dac, up_base, request, error);
+  if (!built)
+    return FALSE;
+
+  if (finger_on)
+    coordinator->up_arm_pass = 0;
+  else
+    coordinator->up_arm_pass++;
+  coordinator->arm_generation++;
+  if (coordinator->arm_generation == 0)
+    coordinator->arm_generation = 1;
+  coordinator->event_generation = 0;
+  coordinator->armed_command = finger_on ? 0x32 : 0x34;
+  coordinator->phase = finger_on ? GOODIX5503_FDT_PHASE_ARM_DOWN :
+                                   GOODIX5503_FDT_PHASE_ARM_UP;
+  *command = coordinator->armed_command;
+  *generation = coordinator->arm_generation;
+  return TRUE;
+}
+
+Goodix5503FdtArmAckAction
+goodix5503_fdt_coordinator_arm_ack (Goodix5503FdtCoordinator *coordinator)
+{
+  g_return_val_if_fail (coordinator != NULL,
+                        GOODIX5503_FDT_ARM_ACK_REJECT);
+
+  if (coordinator->phase == GOODIX5503_FDT_PHASE_ARM_DOWN &&
+      coordinator->armed_command == 0x32 && coordinator->up_arm_pass == 0)
+    {
+      coordinator->phase = GOODIX5503_FDT_PHASE_WAIT_DOWN;
+      coordinator->event_generation = coordinator->arm_generation;
+      return GOODIX5503_FDT_ARM_ACK_WAIT_EVENT;
+    }
+  if (coordinator->phase != GOODIX5503_FDT_PHASE_ARM_UP ||
+      coordinator->armed_command != 0x34)
+    return GOODIX5503_FDT_ARM_ACK_REJECT;
+  if (coordinator->up_arm_pass == 1)
+    {
+      coordinator->phase = GOODIX5503_FDT_PHASE_CAPTURE;
+      return GOODIX5503_FDT_ARM_ACK_REARM_UP;
+    }
+  if (coordinator->up_arm_pass == 2)
+    {
+      coordinator->phase = GOODIX5503_FDT_PHASE_WAIT_UP;
+      coordinator->event_generation = coordinator->arm_generation;
+      return GOODIX5503_FDT_ARM_ACK_WAIT_EVENT;
+    }
+  return GOODIX5503_FDT_ARM_ACK_REJECT;
+}
+
+gboolean
+goodix5503_fdt_coordinator_wait_active (
+  const Goodix5503FdtCoordinator *coordinator)
+{
+  g_return_val_if_fail (coordinator != NULL, FALSE);
+  return coordinator->arm_generation != 0 &&
+         coordinator->arm_generation == coordinator->event_generation &&
+         ((coordinator->phase == GOODIX5503_FDT_PHASE_WAIT_DOWN &&
+           coordinator->armed_command == 0x32) ||
+          (coordinator->phase == GOODIX5503_FDT_PHASE_WAIT_UP &&
+           coordinator->armed_command == 0x34));
+}
+
+Goodix5503FdtEventAction
+goodix5503_fdt_coordinator_event (Goodix5503FdtCoordinator *coordinator,
+                                  guint8                    received_command,
+                                  guint                     received_generation)
+{
+  g_return_val_if_fail (coordinator != NULL, GOODIX5503_FDT_EVENT_REJECT);
+  if (!goodix5503_fdt_coordinator_wait_active (coordinator) ||
+      received_generation != coordinator->event_generation ||
+      received_command != coordinator->armed_command)
+    return GOODIX5503_FDT_EVENT_REJECT;
+
+  /* The response's first LE16 is a register address, not dispatcher flags.
+   * The fixed host binds an event to its one exact outstanding command,
+   * generation and phase after strict packet/body validation. */
+  if (coordinator->phase == GOODIX5503_FDT_PHASE_WAIT_DOWN &&
+      received_command == 0x32)
+    {
+      coordinator->phase = GOODIX5503_FDT_PHASE_CAPTURE;
+      coordinator->up_arm_pass = 0;
+      return GOODIX5503_FDT_EVENT_CAPTURE_DOWN;
+    }
+  if (coordinator->phase == GOODIX5503_FDT_PHASE_WAIT_UP &&
+      received_command == 0x34)
+    {
+      coordinator->phase = GOODIX5503_FDT_PHASE_IDLE;
+      coordinator->up_arm_pass = 0;
+      return GOODIX5503_FDT_EVENT_REPORT_UP;
+    }
+  return GOODIX5503_FDT_EVENT_REJECT;
+}
+
+void
+goodix5503_fdt_coordinator_prepare_up (
+  Goodix5503FdtCoordinator *coordinator)
+{
+  g_return_if_fail (coordinator != NULL);
+  g_return_if_fail (coordinator->phase == GOODIX5503_FDT_PHASE_CAPTURE);
+  coordinator->phase = GOODIX5503_FDT_PHASE_PREPARE_UP_BASE;
+}
+
+void
+goodix5503_fdt_coordinator_up_base_ready (
+  Goodix5503FdtCoordinator *coordinator)
+{
+  g_return_if_fail (coordinator != NULL);
+  g_return_if_fail (coordinator->phase ==
+                    GOODIX5503_FDT_PHASE_PREPARE_UP_BASE);
+  coordinator->phase = GOODIX5503_FDT_PHASE_CAPTURE;
+  coordinator->up_arm_pass = 0;
+}
+
+void
+goodix5503_fdt_coordinator_retry_idle (
+  Goodix5503FdtCoordinator *coordinator)
+{
+  g_return_if_fail (coordinator != NULL);
+  coordinator->phase = GOODIX5503_FDT_PHASE_IDLE;
+  coordinator->up_arm_pass = 0;
+}
+
+gboolean
+goodix5503_generate_fdt_up_base (
+  const guint8 manual_readings[GOODIX5503_FDT_BASE_SIZE],
+  const guint8 event_readings[GOODIX5503_FDT_BASE_SIZE],
   guint16      persistent_area_mask,
-  guint16      accepted_down_touch_flag,
+  guint16      event_touch_flag,
   guint16      delta,
   guint8       output[GOODIX5503_FDT_BASE_SIZE],
   GError     **error)
@@ -654,8 +847,8 @@ goodix5503_generate_fdt_up_base_from_retained (
   guint16 area_mask;
 
   g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
-  if (retained_transformed_base == NULL ||
-      accepted_down_raw_base == NULL || output == NULL || delta < 2)
+  if (manual_readings == NULL || event_readings == NULL || output == NULL ||
+      delta < 2)
     {
       g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
                            GOODIX5503_PROTO_ERROR_INVALID,
@@ -663,13 +856,12 @@ goodix5503_generate_fdt_up_base_from_retained (
       return FALSE;
     }
 
-  area_mask = persistent_area_mask | accepted_down_touch_flag;
+  area_mask = persistent_area_mask | event_touch_flag;
   for (gsize area = 0; area < GOODIX5503_FDT_BASE_SIZE / 2; area++)
     {
-      guint16 retained = read_le16 (retained_transformed_base + area * 2);
-      guint16 retained_candidate = fdt_down_transform_word (retained);
-      guint16 accepted_down = read_le16 (accepted_down_raw_base + area * 2);
-      guint16 source = MIN (retained_candidate, accepted_down);
+      guint16 manual = read_le16 (manual_readings + area * 2);
+      guint16 event = read_le16 (event_readings + area * 2);
+      guint16 source = MIN (manual, event);
       guint32 value = (((guint32) (source >> 1) + delta) << 8) | 0x0080;
 
       if ((area_mask & (1u << area)) == 0)
@@ -690,7 +882,8 @@ goodix5503_fdt_next_down_base (
     {
       guint16 raw = read_le16 (accepted_up_readings + offset);
 
-      write_le16 (output + offset, fdt_down_transform_word (raw));
+      write_le16 (output + offset,
+                  ((((guint32) raw >> 1) << 8) | 0x0080) & 0xffff);
     }
 }
 
