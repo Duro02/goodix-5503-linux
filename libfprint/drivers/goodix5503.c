@@ -938,20 +938,17 @@ goodix5503_delta_done (FpiDeviceGoodix5503 *self,
                        GError              *error)
 {
   g_autoptr(GByteArray) owned_body = body;
+  guint16 delta = 0;
 
-  if (error)
+  if (error ||
+      !goodix5503_parse_delta_response (body ? body->data : NULL,
+                                        body ? body->len : 0,
+                                        &delta, &error))
     {
       goodix5503_activation_fail (self, error);
       return;
     }
-  if (body->len != 2)
-    {
-      goodix5503_activation_fail (
-        self, fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
-                                        "invalid Goodix FDT delta response"));
-      return;
-    }
-  self->fdt_delta = body->data[1];
+  self->fdt_delta = delta;
   if (!goodix5503_fdt_bases_within_delta (self->fresh_raw[0],
                                            self->fresh_raw[1],
                                            self->fdt_delta))

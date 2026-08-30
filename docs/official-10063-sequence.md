@@ -469,9 +469,12 @@ for later requests. The DLL retries inconsistent pairs without a numeric bound;
 the free implementation must instead use the existing operation deadline and a
 small explicit retry cap.
 
-The register-82 delta decode is unsigned high-byte extraction. The DLL executes
-`movzx eax,word` before `sar eax,8`, so raw `00 ff` produces threshold 255;
-base comparisons are `abs(u16_a-u16_b) <= zero_extended_delta`.
+The register-82 delta lives in the first RegRw response byte, followed by a
+marker byte (hardware-observed payload `15 80`; delta 21 matches config offset
+`0xC8`). The earlier high-byte reading (`movzx eax,word` / `sar eax,8`) is
+disproven on hardware: with delta 128 the generated up-base thresholds overflow
+and the device never fires the `0x34` release event, while delta 21 fires it
+reliably. Base comparisons are `abs(u16_a-u16_b) <= zero_extended_delta`.
 
 There is no C4, D6, D2, AE or wire-92 preparation *between* these acquisitions.
 The pinned-default cold D6 occurs before TLS/config and the single C4 occurs

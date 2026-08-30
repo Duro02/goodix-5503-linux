@@ -289,6 +289,40 @@ test_fdt_response_and_request (void)
 }
 
 static void
+test_fdt_delta_response (void)
+{
+  /* Hardware-measured RegRw payload: the first byte carries the configured
+   * FDT delta (0x15 matches config offset 0xC8); the second byte is a
+   * marker. Only the first-byte interpretation fires the 0x34 release
+   * event on the device. */
+  const guint8 observed[2] = { 0x15, 0x80 };
+  const guint8 saturating[2] = { 0x00, 0xff };
+  guint16 delta = 0;
+  g_autoptr(GError) error = NULL;
+
+  g_assert_true (goodix5503_parse_delta_response (
+    observed, sizeof observed, &delta, &error));
+  g_assert_no_error (error);
+  g_assert_cmpuint (delta, ==, 21);
+
+  g_assert_true (goodix5503_parse_delta_response (
+    saturating, sizeof saturating, &delta, &error));
+  g_assert_no_error (error);
+  g_assert_cmpuint (delta, ==, 0);
+
+  g_assert_false (goodix5503_parse_delta_response (
+    observed, sizeof observed - 1, &delta, &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_LENGTH);
+  g_clear_error (&error);
+
+  g_assert_false (goodix5503_parse_delta_response (
+    NULL, 2, &delta, &error));
+  g_assert_error (error, GOODIX5503_PROTO_ERROR,
+                  GOODIX5503_PROTO_ERROR_LENGTH);
+}
+
+static void
 test_fdt_up_request (void)
 {
   const guint8 dac[GOODIX5503_DAC_SIZE] =
@@ -788,6 +822,8 @@ main (int argc, char **argv)
                    test_command_router_ordering);
   g_test_add_func ("/goodix5503/fdt/response-request",
                    test_fdt_response_and_request);
+  g_test_add_func ("/goodix5503/fdt/delta-response",
+                   test_fdt_delta_response);
   g_test_add_func ("/goodix5503/fdt/up-request", test_fdt_up_request);
   g_test_add_func ("/goodix5503/fdt/runtime-coordinator",
                    test_fdt_runtime_coordinator);

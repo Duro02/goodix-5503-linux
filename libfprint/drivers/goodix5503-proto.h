@@ -150,6 +150,11 @@ gboolean goodix5503_command_consume_frame (guint8                   expected_com
                                             GByteArray             **body,
                                             GError                 **error);
 
+gboolean goodix5503_parse_delta_response (const guint8  *body,
+                                          gsize          body_len,
+                                          guint16       *delta,
+                                          GError       **error);
+
 gboolean goodix5503_parse_fdt_response (const guint8  *response,
                                          gsize          response_len,
                                          guint16       *interrupt,

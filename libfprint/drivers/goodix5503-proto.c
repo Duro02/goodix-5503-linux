@@ -494,6 +494,29 @@ goodix5503_command_consume_frame (guint8                   expected_command,
 }
 
 gboolean
+goodix5503_parse_delta_response (const guint8  *body,
+                                 gsize          body_len,
+                                 guint16       *delta,
+                                 GError       **error)
+{
+  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+  if (body == NULL || delta == NULL || body_len != 2)
+    {
+      g_set_error_literal (error, GOODIX5503_PROTO_ERROR,
+                           GOODIX5503_PROTO_ERROR_LENGTH,
+                           "invalid Goodix FDT delta response");
+      return FALSE;
+    }
+
+  /* The RegRw payload reports the configured FDT delta in the first byte
+   * followed by a marker byte (observed: 15 80). Only delta values that
+   * keep the DN2 up-base arithmetic below the 16-bit field fire the exact
+   * 0x34 release event on hardware; the high byte does not. */
+  *delta = body[0];
+  return TRUE;
+}
+
+gboolean
 goodix5503_parse_fdt_response (const guint8  *response,
                                 gsize          response_len,
                                 guint16       *interrupt,
