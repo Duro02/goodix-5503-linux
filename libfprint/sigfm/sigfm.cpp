@@ -20,6 +20,7 @@
 
 #include "sigfm.hpp"
 #include "img-info.hpp"
+#include <cstdio>
 
 #include <algorithm>
 #include <climits>
@@ -485,6 +486,7 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
 {
     if (frame == nullptr || enrolled == nullptr || frame->descriptors.empty() ||
         enrolled->descriptors.empty()) {
+        fprintf (stderr, "SIGFM score=0 (empty descriptors)\n");
         return 0;
     }
 
@@ -519,6 +521,7 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
             }
         }
         if (candidate_indices.value.size() < min_match) {
+            fprintf (stderr, "SIGFM score=0 (insufficient raw matches)\n");
             return 0;
         }
         candidate_descriptors.value.create(
@@ -555,6 +558,7 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
             }
         }
         if (matches.value.size() < min_match) {
+            fprintf (stderr, "SIGFM score=0 (insufficient mutual matches)\n");
             return 0;
         }
 
@@ -588,6 +592,7 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
             }
         }
         if (angles.value.size() < min_match) {
+            fprintf (stderr, "SIGFM score=0 (insufficient geometric matches)\n");
             return 0;
         }
 
@@ -605,12 +610,14 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
                 if (1.0 - std::min(a.sine, b.sine) / max_sine <= angle_match &&
                     1.0 - std::min(a.cosine, b.cosine) / max_cosine <= angle_match) {
                     if (count == INT_MAX) {
+                        fprintf (stderr, "SIGFM score=INT_MAX\n");
                         return INT_MAX;
                     }
                     count++;
                 }
             }
         }
+        fprintf (stderr, "SIGFM score=%d (threshold driver-side)\n", count);
         return count;
     }
     catch (...) {
