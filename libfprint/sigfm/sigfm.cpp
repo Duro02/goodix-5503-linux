@@ -454,13 +454,20 @@ SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height)
         auto clahe = cv::createCLAHE(4.0, cv::Size(4, 4));
         clahe->apply(image.value, enhanced.value);
         const cv::Mat roi = cv::Mat::ones(enhanced.value.size(), CV_8UC1);
-        cv::SIFT::create(sift_nfeatures,
-                         sift_octave_layers,
-                         sift_contrast_threshold,
-                         sift_edge_threshold,
-                         sift_sigma)
-            ->detectAndCompute(enhanced.value, roi, keypoints.value,
-                               descriptors.value);
+        auto sift = cv::SIFT::create(sift_nfeatures,
+                                     sift_octave_layers,
+                                     sift_contrast_threshold,
+                                     sift_edge_threshold,
+                                     sift_sigma);
+        /* The sensor is fixed-orientation and the difference texture is
+         * sparse: SIFT's dominant-orientation assignment is unstable between
+         * captures on this canvas and can flip every descriptor alignment
+         * (observed as all-or-nothing match scores). This reader never sees
+         * rotated input, so force upright descriptors instead. */
+        sift->detect (enhanced.value, keypoints.value, roi);
+        for (auto& keypoint : keypoints.value)
+            keypoint.angle = 0.0f;
+        sift->compute (enhanced.value, keypoints.value, descriptors.value);
 
         const std::size_t retained =
             std::min<std::size_t> (keypoints.value.size (), sift_nfeatures);

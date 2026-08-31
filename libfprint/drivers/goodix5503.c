@@ -121,6 +121,7 @@ struct _FpiDeviceGoodix5503
     guint8 down_base[GOODIX5503_FDT_BASE_SIZE];
     guint8 background[GOODIX5503_PACKED_IMAGE_SIZE];
     Goodix5503Tls *tls;
+    guint probe_retries;
   } warm;
   gboolean warm_rearmed;
   Goodix5503FdtRuntime fdt_runtime;
@@ -972,6 +973,7 @@ goodix5503_fdt2_done (FpiDeviceGoodix5503 *self,
   /* Arm the warm-session state: the powered sensor now holds the TLS
    * session, runtime configuration and calibration across host releases,
    * so the next activation can skip the cold sequence. */
+  self->warm.probe_retries = 0;
   self->session_clean = TRUE;
   memcpy (self->warm.dac, self->dac, sizeof self->warm.dac);
   self->warm.delta = self->fdt_delta;
@@ -1710,6 +1712,10 @@ goodix5503_close (FpImageDevice *device)
   goodix5503_close_finish (self);
 }
 
+static void goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
+                                        GByteArray          *body,
+                                        GError              *error);
+
 static void
 goodix5503_activate (FpImageDevice *device)
 {
@@ -1744,8 +1750,22 @@ goodix5503_activate (FpImageDevice *device)
       self->session_clean = TRUE;
       self->warm_rearmed = TRUE;
 
-      self->stage = "warm re-arm";
-      fp_dbg ("warm activation: state restored, arming retained base");
+      self->stage = "warm probe";
+      fp_dbg ("warm activation: state restored; probing to absorb residual/drift");
+      guint8 request[GOODIX5503_FDT_REQUEST_SIZE];
+      g_autoptr(GError) error = NULL;
+
+      if (goodix5503_build_fdt_request (0x0d, self->dac,
+                                        self->fdt_runtime.down_base, request,
+                                        &error))
+        {
+          goodix5503_command_start (self, GOODIX5503_COMMAND_FDT_MANUAL,
+                                    request, sizeof request, TRUE, TRUE,
+                                    goodix5503_warm_probe_done);
+          OPENSSL_cleanse (request, sizeof request);
+          return;
+        }
+      self->warm_rearmed = TRUE;
       self->activated = TRUE;
       self->activation_reported = TRUE;
       fpi_image_device_activate_complete (FP_IMAGE_DEVICE (self), NULL);
@@ -1759,6 +1779,63 @@ goodix5503_activate (FpImageDevice *device)
                             GOODIX5503_COMMAND_NOP,
                             payload, sizeof payload, FALSE, TRUE,
                             goodix5503_nop_done);
+}
+
+static void
+goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
+                            GByteArray          *body,
+                            GError              *error)
+{
+  g_autoptr(GByteArray) owned_body = body;
+  guint16 interrupt = 0;
+  guint16 touch_flag = 0;
+  guint8 raw[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+  guint8 transformed[GOODIX5503_FDT_BASE_SIZE] = { 0 };
+
+  if (error || !goodix5503_parse_fdt_response (body ? body->data : NULL,
+                                               body ? body->len : 0, &interrupt,
+                                               &touch_flag, raw, transformed,
+                                               &error))
+    {
+      fp_dbg ("warm probe failed: %s", error ? error->message : "unknown");
+      if (self->deactivating || self->closing)
+        {
+          /* Release-path cancellation: the warm state survives. */
+          return;
+        }
+      if (!g_error_matches (error, G_USB_DEVICE_ERROR,
+                            G_USB_DEVICE_ERROR_TIMED_OUT) &&
+          self->warm.probe_retries < 2)
+        {
+          /* A release cancellation can leave a stale frame queued; the
+           * failed probe read consumed it. Re-probe before giving up. */
+          self->warm.probe_retries++;
+          goodix5503_activate (FP_IMAGE_DEVICE (self));
+          return;
+        }
+      /* Silent device: the warm state did not survive. Recover with the
+       * full cold sequence inside the same activation. */
+      goodix5503_warm_invalidate (self);
+      fp_dbg ("warm probe silent, falling back to cold path");
+      goodix5503_activate (FP_IMAGE_DEVICE (self));
+      return;
+    }
+
+  /* 吸收残影与漂移:按下检测基线重建为当前读数(官方抬指后基线更新的
+   * 同款机制)。残影导致的“假按下”因此不再触发:稳定残影 ≈ 基线,
+   * 只有真正的表面变化才会触发 0x32 事件。 */
+  goodix5503_fdt_next_down_base (raw, self->fdt_runtime.down_base);
+  memcpy (self->warm.down_base, self->fdt_runtime.down_base,
+          sizeof self->warm.down_base);
+  self->warm.probe_retries = 0;
+  self->session_clean = TRUE;
+  self->warm_rearmed = TRUE;
+
+  self->stage = "warm re-arm";
+  fp_dbg ("warm probe ok: base rebuilt from current idle");
+  self->activated = TRUE;
+  self->activation_reported = TRUE;
+  fpi_image_device_activate_complete (FP_IMAGE_DEVICE (self), NULL);
 }
 
 static void
