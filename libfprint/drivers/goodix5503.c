@@ -765,9 +765,9 @@ goodix5503_activation_fail (FpiDeviceGoodix5503 *self, GError *error)
 
   if (error && self->primary_error == NULL && self->stage)
     g_prefix_error (&error, "%s: ", self->stage);
-  fp_dbg ("ACTIVATION_FAIL: stage=%s reset_attempted=%d deactivating=%d",
+  fp_dbg ("ACTIVATION_FAIL: stage=%s reset_attempted=%d deactivating=%d err=%s",
           self->stage ? self->stage : "?", self->reset_attempted,
-          self->deactivating);
+          self->deactivating, error ? error->message : "none");
   self->session_clean = FALSE;
   if (self->primary_error == NULL)
     self->primary_error = error;
@@ -1987,6 +1987,9 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
       OPENSSL_cleanse (transformed, sizeof transformed);
       OPENSSL_cleanse (&interrupt, sizeof interrupt);
       OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
+      fp_dbg ("event read failed un-guarded: domain=%s code=%d msg=%s deactivating=%d",
+              g_quark_to_string (error->domain), error->code, error->message,
+              self->deactivating);
       goodix5503_runtime_error (
         self, error ? error : goodix5503_fdt_phase_error ());
       return;
@@ -2003,6 +2006,9 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
       OPENSSL_cleanse (raw, sizeof raw);
       OPENSSL_cleanse (transformed, sizeof transformed);
       OPENSSL_cleanse (&touch_flag, sizeof touch_flag);
+      fp_dbg ("event read failed un-guarded: domain=%s code=%d msg=%s deactivating=%d",
+              g_quark_to_string (error->domain), error->code, error->message,
+              self->deactivating);
       goodix5503_runtime_error (self, goodix5503_fdt_phase_error ());
       return;
     }
