@@ -1818,6 +1818,21 @@ goodix5503_runtime_error (FpiDeviceGoodix5503 *self, GError *error)
   /* Activation failures use goodix5503_activation_fail() directly. A runtime
    * failure is terminal for the active session, so invalidate the generation
    * and wipe every FDT base/pending field before libfprint can re-enter us. */
+  fp_dbg ("RUNTIME_ERROR: err=%s deactivating=%d",
+          error ? error->message : "none", self->deactivating);
+  if (self->deactivating && error &&
+      (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
+       g_error_matches (error, G_USB_DEVICE_ERROR,
+                        G_USB_DEVICE_ERROR_CANCELLED)))
+    {
+      /* The failure is the externally initiated cancellation of a pending
+       * transfer as part of the release/teardown itself (it can retire
+       * after the deactivation completed). Not a device fault: the warm
+       * state survives and the releasing caller completes the
+       * deactivation. */
+      fp_dbg ("runtime error is a benign release cancellation: warm state kept");
+      return;
+    }
   goodix5503_warm_invalidate (self);
   self->session_clean = FALSE;
   goodix5503_fdt_session_reset (self);
