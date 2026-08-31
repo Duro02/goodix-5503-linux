@@ -2042,6 +2042,18 @@ goodix5503_fdt_arm_done (FpiDeviceGoodix5503 *self,
       &self->fdt_runtime.coordinator);
   if (error || action == GOODIX5503_FDT_ARM_ACK_REJECT)
     {
+      if (error && (self->deactivating || self->closing ||
+                    g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED) ||
+                    g_error_matches (error, G_USB_DEVICE_ERROR,
+                                     G_USB_DEVICE_ERROR_CANCELLED)))
+        {
+          /* Externally initiated cancellation: after a successful match
+           * the fprintd teardown cancels the just-armed wait-for-lift
+           * transaction. Never a device fault — the warm state survives
+           * and the cancelling deactivate/close drives completion. */
+          fp_dbg ("arm cancelled during teardown: warm state kept");
+          return;
+        }
       if (self->warm_rearmed && !self->deactivating && !self->closing)
         {
           /* The warm state did not survive (suspend, re-enumeration,
