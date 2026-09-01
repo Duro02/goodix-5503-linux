@@ -74,7 +74,7 @@ PSK state is not queried by default. Protected-record operations first set and v
 
 ## Development
 
-- `src/goodix5503/`: Python probing and experimentation tools (read-only, never touch firmware/PSK)
+- `src/goodix5503/`: the read-only probing CLI (`goodix-5503-probe`)
 - `libfprint/`: the C driver, the SIGFM matcher, and the libfprint patch
 - Tests (no hardware needed): `PYTHONPATH=src python -m unittest discover -s tests -v`
 
