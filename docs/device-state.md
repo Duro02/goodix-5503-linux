@@ -15,23 +15,21 @@ PSK hash:  reprovisioned with the locally prepared random PSK; R-family
 G selector: 0xbb020001 returned MCU status 0x01 (unavailable)
 R recheck: succeeded through the reviewed official R-family parser
 Protected record 0xbb010002: 324 bytes
-Protected record SHA-256: 062cb94a5805bf27bc05d519eaaaaa5fdc20ac17063d352cda9a5a6b92d78b1c
-Protected record backup: artifacts/device-backup/psk-record-bb010002.bin
-Backup validation: owner duro:duro, directory 0700, file 0600, 324 bytes,
+Protected record SHA-256: (device-specific; not published)
+Protected record backup: kept under the Git-ignored artifacts/device-backup/
+Backup validation: owner-only, directory 0700, file 0600, 324 bytes,
                    SHA-256 matches the live metadata read
 White-box record 0xbb010003: MCU status 0x01; not readable/backed up
 Verification record 0xbb020007: 32 bytes, backed up as
-  artifacts/device-backup/psk-record-bb020007.bin
-Verification backup SHA-256:
-  8722cc96d28ae20251c81a853c33dd1f5097c7ddd2e7505b19f38ef33fbbc74d
+  under the Git-ignored artifacts/device-backup/
+Verification backup SHA-256: (device-specific; not published)
 Offline new-pairing material: generated and idempotently reverified; no USB used
-  artifacts/device-backup/new-pairing-psk.bin                  32 bytes, 0600
-  artifacts/device-backup/new-pairing-whitebox-bb010003.bin    96 bytes, 0600
-  artifacts/device-backup/new-pairing-verification-bb020007.bin 32 bytes, 0600
+  new pairing material (PSK, white-box record, verification record)
+  stays in the Git-ignored artifacts/device-backup/
 Read-only OTP/config derivation:
   OTP response length: 64 bytes; raw OTP was neither printed nor saved
-  artifacts/device-backup/runtime-config-5503.bin              256 bytes, 0600
-  config SHA-256: 54e6cd4c0d18b4472e7ec066a11aabcc55389779e426562a9c2bcfd2e188eba6
+  runtime config under the Git-ignored artifacts/device-backup/
+  config SHA-256: (device-specific; not published)
   official checksum: valid; FDT delta: 21 (0x15); image tcode: 224 (0x00e0)
 Runtime clear-frame attempts: no attempt decoded or saved an image, and each
   attempted cleanup reset. Early runs resolved delayed D0 completion and the

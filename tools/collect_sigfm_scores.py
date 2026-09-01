@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Collect SIGFM verification scores for threshold calibration.
 
-Each round runs one `fprintd-verify duro` (one press per round), then parses
+Each round runs one `fprintd-verify` for the given user (one press per round), then parses
 the score lines that the goodix5503 SIGFM matcher wrote to the fprintd debug
 log during that round. Positive samples come from pressing the enrolled
 finger; negative samples from another finger or another person.
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import getpass
 import os
 import re
 import subprocess
@@ -30,7 +31,7 @@ from pathlib import Path
 
 LOG_PATH = Path("/var/log/fprintd-debug.log")
 CSV_DIR = Path(__file__).resolve().parents[1] / ".tools" / "logs"
-VERIFY_COMMAND = ["fprintd-verify", "duro"]
+VERIFY_COMMAND = ["fprintd-verify"]
 NOTIFY_SEND = "notify-send"
 
 
@@ -92,6 +93,8 @@ def parse_round(chunk: str) -> dict[str, int | str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--user", default=getpass.getuser(),
+                        help="fprintd user to verify against")
     parser.add_argument("--log", type=Path, default=LOG_PATH)
     parser.add_argument("--note", default="sample", help="sample group label")
     parser.add_argument("--count", type=int, default=20)
@@ -121,7 +124,7 @@ def main() -> int:
     missed = 0
     round_number = 0
     offset = args.log.stat().st_size
-    command = VERIFY_COMMAND
+    command = VERIFY_COMMAND + [args.user]
 
     print(f"group={args.note}: press the enrolled finger for positive samples, "
           f"another finger/person for negative samples")

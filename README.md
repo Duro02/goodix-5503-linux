@@ -1,6 +1,15 @@
 # goodix-5503-linux
 
-面向 Goodix `27c6:5503` 指纹传感器的实验性 Linux 驱动研究项目。仓库包含只读探测、已验证的配对/TLS与配置派生代码、标准 libfprint SIGFM enrollment/matching 路径，以及已实现但尚未授权安装或写入的持久模板格式。`fprintd`、PAM 和桌面集成仍未完成。
+面向 Goodix `27c6:5503` 指纹传感器的 Linux 驱动研究项目，已在本机安装并日常使用。仓库包含只读探测、已验证的配对/TLS 与配置派生代码、libfprint SIGFM 图像驱动（enrollment/matching）、持久模板格式（私有格式 v3），以及配套的 `fprintd`/PAM 桌面集成与标定工具。
+
+## 当前功能状态（2026-09，本机验证）
+
+- **即点即用（warm session）**：传感器上电后保留 TLS 会话/校准基线；驱动在 close/release 间寄存 warm 状态，每次解锁走热路径（探针 + 背景刷新 + 臂，约 100ms 出事件）。冷启动（开机/挂起后）自动回退完整校准序列。
+- **录入增强**：12-stage 录入（位置/角度覆盖引导）、录入质量门（废图拒绝重按）、完成提示等待抬指。
+- **匹配**：SIGFM(SIFT + 互最近邻 + 几何一致性投票)，格式 v3（512 特征、ratio 0.90、min 3、几何容差 5%、阈值 150）。标定数据：同指单次通过约 1/3~1/2（失败集中在几何容差对按压力度变形零容忍），异指 FAR 0/160+ 轮；测量方法与结论见
+  [`docs/libfprint-driver-plan.md`](docs/libfprint-driver-plan.md) 与校准附录。
+- **安全边界**：只读探测命令集；PSK/TLS 密钥常驻内存且尽力清除；模板格式版本化（v3）；凭据与备份全部落入 Git 忽略目录。
+
 
 工程范围与避免过度设计的规则见 [`docs/engineering-scope.md`](docs/engineering-scope.md)。
 
@@ -35,8 +44,8 @@ SIGFM 持久格式 v3 固定对应本设备字节流的 `64×80` 线性解释，
 SIFT 参数(sift_nfeatures=512, 恢复每个关键点的 SIFT 主方向, 不再强制直立描述子)、mutual/geometric matcher
 (distance_match=0.90, min_match=3)和阈值 150。任何会改变 feature 或匹配
 语义的方向、预处理、descriptor、matcher 或阈值变化都必须提升格式版本。
-该格式仅完成离线实现与畸形输入测试；尚未授权写入任何用户模板，也未安装到
-系统 libfprint/fprintd。
+该格式已完成离线实现、畸形输入测试和本机录入验证（12 个样本的
+gallery 已正常存储/加载/匹配），并随 Arch 包安装到系统 libfprint/fprintd。
 
 ## 测试（不会访问硬件）
 
@@ -68,7 +77,7 @@ sudo .venv/bin/goodix-5503-probe --backup-rollback-set
 - [goodix-fp-linux-dev/libfprint SIGFM branch](https://github.com/goodix-fp-linux-dev/libfprint/tree/0x00002a/libfprint-sigfm)，参考提交 `7ebe0c809b4d1df3400e84299a4ec4acdea84590`
 - [AndyHazz/goodix53x5-libfprint](https://github.com/AndyHazz/goodix53x5-libfprint)，采用其 SIGFM/CLAHE 和 mutual/geometric matching，并在本项目中加入有版本、严格有界且清零临时副本的 libfprint 私有持久格式；参考提交 `309d4c6999a1cdce172c1ca1ee81387b5078d38f`
 
-本项目采用 `LGPL-2.1-or-later`。在能够无刷写地稳定采集图像以前，不会接入 `fprintd/PAM`。
+本项目采用 `LGPL-2.1-or-later`。`fprintd`/PAM 集成已在本机投入日常使用；专有 Windows 驱动二进制与设备凭据（PSK/备份/模板）不随仓库分发。
 
 ## Windows 官方驱动分析
 
