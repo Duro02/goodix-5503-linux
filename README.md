@@ -1,15 +1,14 @@
 # goodix-5503-linux
 
-面向 Goodix `27c6:5503` 指纹传感器的 Linux 驱动研究项目，已在本机安装并日常使用。仓库包含只读探测、已验证的配对/TLS 与配置派生代码、libfprint SIGFM 图像驱动（enrollment/matching）、持久模板格式（私有格式 v3），以及配套的 `fprintd`/PAM 桌面集成与标定工具。
+面向 Goodix `27c6:5503` 传感器的 Linux 指纹驱动研究项目，原为逆向工程，现已在开发者机器上安装并日常使用。
 
-## 当前功能状态（2026-09，本机验证）
+## 现状
 
-- **即点即用（warm session）**：传感器上电后保留 TLS 会话/校准基线；驱动在 close/release 间寄存 warm 状态，每次解锁走热路径（探针 + 背景刷新 + 臂，约 100ms 出事件）。冷启动（开机/挂起后）自动回退完整校准序列。
-- **录入增强**：12-stage 录入（位置/角度覆盖引导）、录入质量门（废图拒绝重按）、完成提示等待抬指。
-- **匹配**：SIGFM(SIFT + 互最近邻 + 几何一致性投票)，格式 v3（512 特征、ratio 0.90、min 3、几何容差 5%、阈值 150）。标定数据：同指单次通过约 1/3~1/2（失败集中在几何容差对按压力度变形零容忍），异指 FAR 0/160+ 轮；测量方法与结论见
-  [`docs/libfprint-driver-plan.md`](docs/libfprint-driver-plan.md) 与校准附录。
-- **安全边界**：只读探测命令集；PSK/TLS 密钥常驻内存且尽力清除；模板格式版本化（v3）；凭据与备份全部落入 Git 忽略目录。
+传感器在本机上的行为：开机或挂起后第一次认证走一次完整的冷启动校准（几秒），之后只要不断电，每次解锁都是热路径——重探一次基线、刷新一张背景、臂朝下检测，约 100ms 内出事件，手指按上后 60ms 内出图，基本是按下即识别。
 
+录入默认 12 次按压，建议每次变换位置和角度；质量过差的按压会要求重按，最后一次按压要抬起手指才提示完成。
+
+匹配用 SIGFM（SIFT 特征 + 互最近邻 + 几何一致性投票），模板格式为自己的私有 v3。本机标定结果：同一手指单次按压约三分之一到一半通过，另一手指 160+ 次尝试零误纳（样本有限）；失败集中在按压变形超出几何容差，参数和测量过程记录在 [`docs/libfprint-driver-plan.md`](docs/libfprint-driver-plan.md)。
 
 工程范围与避免过度设计的规则见 [`docs/engineering-scope.md`](docs/engineering-scope.md)。
 
@@ -67,18 +66,16 @@ sudo .venv/bin/goodix-5503-probe --backup-rollback-set
 
 默认不会查询任何 PSK 状态。受保护记录操作会先设置并验证 `PR_SET_DUMPABLE=0`，同时设置 `RLIMIT_CORE=0`；任一步失败都会在 USB 访问前终止。检查模式只输出长度和 SHA-256。备份模式读取完成后会先关闭 USB 会话，再永久放弃 sudo root 权限；降权后会重新设置并验证 non-dumpable 状态，随后才以原用户身份执行文件系统操作。root 身份的文件写入会被拒绝。记录通过 `0600` 临时文件、`fsync` 和排他硬链接提交，已有文件只允许逐字节验证一致，绝不会覆盖。可读备份包含 `0xbb010002` 和 `0xbb020007`。硬件实测表明 `0xbb010003` 对读取返回状态 `0x01`；它是写入时由 MCU 消费的白盒配对输入，无法备份。备份目录权限为 `0700` 且已被 Git 忽略，所有可变内存副本在使用后覆盖。这意味着重配后可以验证旧状态，但不能完整恢复原 PSK。
 
-## 上游参考、借鉴内容与许可证
+## 上游参考与许可证
 
-本项目是建立在以下开源工作的基础上，每一条都标注了借鉴了什么、来自哪里、许可证是什么：
+这个项目站在以下开源工作的肩膀上：
 
-| 上游项目 | 许可证 | 本项目借鉴的内容 | 合规处理 |
-|---|---|---|---|
-| [libfprint](https://gitlab.freedesktop.org/libfprint/libfprint) | LGPL-2.1-or-later | 驱动框架、`FpImageDevice` 状态机、enroll/verify 流程 | 构建期依赖；PKGBUILD 固定干净提交 `80a4b5ec...`；本项目无 libfprint 代码入库 |
-| [goodix-fp-linux-dev/goodix-fp-dump](https://github.com/goodix-fp-linux-dev/goodix-fp-dump)（提交 `cc43bb3b`、`718ee3c1`） | MIT | 5503 协议帧格式（`0xa0` 外框、校验和、命令集） | 协议格式参考（事实与接口，不复制其代码）；README 与其帧格式说明保持一致 |
-| [goodix-fp-linux-dev/libfprint SIGFM branch](https://github.com/goodix-fp-linux-dev/libfprint/tree/0x00002a/libfprint-sigfm)（提交 `7ebe0c80`） | LGPL-2.1-or-later | SIGFM 算法接线方式（SIFT + CLAHE + mutual/geometric matching 的 libfprint 集成路径） | 核心 `sigfm.{cpp,hpp}` 保留 libfprint 上游原始版权头（2022 年三位作者）并随本仓库以 LGPL-2.1-or-later 分发 |
-| [AndyHazz/goodix53x5-libfprint](https://github.com/AndyHazz/goodix53x5-libfprint)（提交 `309d4c69`） | **无显式许可证**（仓库无 LICENSE 文件） | 仅参考其把 SIGFM 应用于 Goodix 传感器的集成手法与参数取向（CLAHE 参数、matcher 流程） | 未复制其任何文件或代码；本项目驱动、协议、TLS、配置与持久格式均为独立实现；引用只为说明设计来源 |
+- [libfprint](https://gitlab.freedesktop.org/libfprint/libfprint)（LGPL-2.1-or-later）：驱动框架、状态机、enroll/verify 流程。构建时固定在其上游提交 `80a4b5ec...`，本仓库不包含 libfprint 代码。
+- [goodix-fp-linux-dev/goodix-fp-dump](https://github.com/goodix-fp-linux-dev/goodix-fp-dump)（[MIT](https://github.com/goodix-fp-linux-dev/goodix-fp-dump/blob/master/LICENSE)，参考提交 `cc43bb3b`、`718ee3c1`）：5503 协议帧格式（`0xa0` 外框、校验和、命令集），只参考接口，不复制其代码。
+- [goodix-fp-linux-dev/libfprint SIGFM 分支](https://github.com/goodix-fp-linux-dev/libfprint/tree/0x00002a/libfprint-sigfm)（LGPL-2.1-or-later，参考提交 `7ebe0c80`）：SIFT + CLAHE + mutual/geometric matching 在 libfprint 里的接线方式；`sigfm.cpp/hpp` 保留了上游原始版权头（2022 年三位作者），随本仓库以 LGPL 分发。
+- [AndyHazz/goodix53x5-libfprint](https://github.com/AndyHazz/goodix53x5-libfprint)（参考提交 `309d4c69`）：该仓库**没有 LICENSE 文件**，我们只参考了它把 SIGFM 用于 Goodix 传感器的集成思路，没有复制它的任何代码；本项目自有的驱动、协议、TLS、配置和持久格式都是独立实现的。
 
-本项目自身采用 `LGPL-2.1-or-later`。`fprintd`/PAM 集成已在本机投入日常使用；专有 Windows 驱动二进制、设备凭据（PSK/备份/模板）与本机指纹图像不随仓库分发；本机状态的脱敏记录见 `docs/device-state.md`。
+本项目采用 `LGPL-2.1-or-later`。Windows 官方驱动二进制、设备凭据（PSK/备份/模板）和本机指纹图像不随仓库分发。
 
 ## Windows 官方驱动分析
 
