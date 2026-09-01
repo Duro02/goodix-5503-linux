@@ -2430,6 +2430,13 @@ fpi_device_goodix5503_class_init (FpiDeviceGoodix5503Class *klass)
   device_class->type = FP_DEVICE_TYPE_USB;
   device_class->id_table = goodix5503_id_table;
   device_class->scan_type = FP_SCAN_TYPE_PRESS;
+  /* The 5503 is a low-power capacitive sensor whose TLS session and
+   * calibration are meant to persist across unlocks (warm session). The
+   * thermal model's "disabled to prevent overheating" heuristic is driven
+   * by operation frequency, not real temperature: a lock-screen retry
+   * storm (e.g. after suspend/resume) can trip it and brick unlocks for
+   * everyone. Declare always-on like MOC devices do. */
+  device_class->temp_hot_seconds = -1;
   device_class->nr_enroll_stages = 12;
   device_class->features &= ~FP_DEVICE_FEATURE_UPDATE_PRINT;
 
