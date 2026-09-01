@@ -67,17 +67,18 @@ sudo .venv/bin/goodix-5503-probe --backup-rollback-set
 
 默认不会查询任何 PSK 状态。受保护记录操作会先设置并验证 `PR_SET_DUMPABLE=0`，同时设置 `RLIMIT_CORE=0`；任一步失败都会在 USB 访问前终止。检查模式只输出长度和 SHA-256。备份模式读取完成后会先关闭 USB 会话，再永久放弃 sudo root 权限；降权后会重新设置并验证 non-dumpable 状态，随后才以原用户身份执行文件系统操作。root 身份的文件写入会被拒绝。记录通过 `0600` 临时文件、`fsync` 和排他硬链接提交，已有文件只允许逐字节验证一致，绝不会覆盖。可读备份包含 `0xbb010002` 和 `0xbb020007`。硬件实测表明 `0xbb010003` 对读取返回状态 `0x01`；它是写入时由 MCU 消费的白盒配对输入，无法备份。备份目录权限为 `0700` 且已被 Git 忽略，所有可变内存副本在使用后覆盖。这意味着重配后可以验证旧状态，但不能完整恢复原 PSK。
 
-## 上游参考与许可证
+## 上游参考、借鉴内容与许可证
 
-协议帧格式参考：
+本项目是建立在以下开源工作的基础上，每一条都标注了借鉴了什么、来自哪里、许可证是什么：
 
-- [goodix-fp-linux-dev/goodix-fp-dump](https://github.com/goodix-fp-linux-dev/goodix-fp-dump)
-- 参考提交：`cc43bb3b3154a0bccc0412ae024013c7e1923139`
-- `5503` 初始实现提交：`718ee3c1c06fe88e93ab7694d299cb5ad9d185c4`
-- [goodix-fp-linux-dev/libfprint SIGFM branch](https://github.com/goodix-fp-linux-dev/libfprint/tree/0x00002a/libfprint-sigfm)，参考提交 `7ebe0c809b4d1df3400e84299a4ec4acdea84590`
-- [AndyHazz/goodix53x5-libfprint](https://github.com/AndyHazz/goodix53x5-libfprint)，采用其 SIGFM/CLAHE 和 mutual/geometric matching，并在本项目中加入有版本、严格有界且清零临时副本的 libfprint 私有持久格式；参考提交 `309d4c6999a1cdce172c1ca1ee81387b5078d38f`
+| 上游项目 | 许可证 | 本项目借鉴的内容 | 合规处理 |
+|---|---|---|---|
+| [libfprint](https://gitlab.freedesktop.org/libfprint/libfprint) | LGPL-2.1-or-later | 驱动框架、`FpImageDevice` 状态机、enroll/verify 流程 | 构建期依赖；PKGBUILD 固定干净提交 `80a4b5ec...`；本项目无 libfprint 代码入库 |
+| [goodix-fp-linux-dev/goodix-fp-dump](https://github.com/goodix-fp-linux-dev/goodix-fp-dump)（提交 `cc43bb3b`、`718ee3c1`） | MIT | 5503 协议帧格式（`0xa0` 外框、校验和、命令集） | 协议格式参考（事实与接口，不复制其代码）；README 与其帧格式说明保持一致 |
+| [goodix-fp-linux-dev/libfprint SIGFM branch](https://github.com/goodix-fp-linux-dev/libfprint/tree/0x00002a/libfprint-sigfm)（提交 `7ebe0c80`） | LGPL-2.1-or-later | SIGFM 算法接线方式（SIFT + CLAHE + mutual/geometric matching 的 libfprint 集成路径） | 核心 `sigfm.{cpp,hpp}` 保留 libfprint 上游原始版权头（2022 年三位作者）并随本仓库以 LGPL-2.1-or-later 分发 |
+| [AndyHazz/goodix53x5-libfprint](https://github.com/AndyHazz/goodix53x5-libfprint)（提交 `309d4c69`） | **无显式许可证**（仓库无 LICENSE 文件） | 仅参考其把 SIGFM 应用于 Goodix 传感器的集成手法与参数取向（CLAHE 参数、matcher 流程） | 未复制其任何文件或代码；本项目驱动、协议、TLS、配置与持久格式均为独立实现；引用只为说明设计来源 |
 
-本项目采用 `LGPL-2.1-or-later`。`fprintd`/PAM 集成已在本机投入日常使用；专有 Windows 驱动二进制与设备凭据（PSK/备份/模板）不随仓库分发。
+本项目自身采用 `LGPL-2.1-or-later`。`fprintd`/PAM 集成已在本机投入日常使用；专有 Windows 驱动二进制、设备凭据（PSK/备份/模板）与本机指纹图像不随仓库分发；本机状态的脱敏记录见 `docs/device-state.md`。
 
 ## Windows 官方驱动分析
 
