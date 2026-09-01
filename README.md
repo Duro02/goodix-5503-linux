@@ -1,66 +1,66 @@
 # goodix-5503-linux
 
-在 Linux 上使用联想/惠普等笔记本常见的 Goodix `27c6:5503` 指纹传感器的驱动。这个仓库最初是逆向工程项目，现在驱动已经完成，并在开发者自己的机器上安装、日常使用。
+A Linux driver for the Goodix `27c6:5503` fingerprint sensor found in many Lenovo laptops. The project started as reverse engineering; the driver is now finished and in daily use on the developer's own machine.
 
-## 功能
+[中文版](README_zh.md)
 
-- **按下即识别**：开机或挂起后的第一次认证需要几秒校准，之后只要电脑不重启，每次解锁都是即时的（约 100 毫秒完成准备，手指按下后 60 毫秒内出图）。
-- **录入引导**：默认录入 12 次，建议每次换位置和角度；按得太差的次会被要求重按；最后一次录完，要抬起手指才提示完成。
-- **安全**：指纹图像只在本机处理，模板存在本机；没有发现过用其他手指误识别的情况（测试次数有限，见下文"限制"）。
+## Features
 
-## 限制
+- **Instant unlock**: the first authentication after boot or suspend takes a few seconds to calibrate; after that, as long as the machine stays up, every unlock is immediate (about 100 ms to get ready, fingerprint image within 60 ms of touch).
+- **Enrolment guidance**: 12 presses by default, vary position and angle between presses; bad presses are rejected and asked again; the final press waits until you lift your finger before showing "complete".
+- **Safety**: fingerprint images are processed locally and templates stay on the machine; no false acceptance with a different finger has been observed so far (limited testing, see Limitations).
 
-- **识别率**：同一根手指并不是每次都能一次通过——实测约一半的概率需要按第二次，重按基本都能过。失败的原因是按压变形（力度、角度）超出匹配算法的容差，属于算法参数问题，记录在 `docs/libfprint-driver-plan.md`。
-- **只支持这一种设备组合**：传感器 `27c6:5503` + 官方固件 `GF3258_RTSEC_APP_10063`。其他固件版本的设备不支持。
-- **不刷固件、不改 PSK**：驱动的探测工具只读；设备上已有的 Windows 配对密钥不会被改动。
+## Limitations
 
-## 安装
+- **Recognition rate**: the same finger does not always pass on the first press — in practice about half of the presses need a second try, and a retry almost always works. The cause is press deformation (force, angle) exceeding the matcher's geometric tolerance; it is a matcher tuning problem, documented in `docs/libfprint-driver-plan.md`.
+- **One device combination only**: sensor `27c6:5503` with official firmware `GF3258_RTSEC_APP_10063`. Other firmware versions are not supported.
+- **No firmware writes, no PSK changes**: the probing tools are read-only; an existing Windows pairing key on the device is left untouched.
 
-在 Arch 上构建安装（需要 `opencv`、`gobject-introspection`）：
+## Install
+
+On Arch (needs `opencv`, `gobject-introspection`):
 
 ```bash
 bash packaging/arch/build-package.sh
 sudo pacman -U --noconfirm --overwrite "*" .tools/packages/libfprint-goodix5503-*.pkg.tar.zst
 ```
 
-驱动是 libfprint 的一个插件，安装后 `fprintd` 自动就能识别设备。
+The driver is a libfprint plugin; `fprintd` picks up the device automatically after installation.
 
-## 使用
+## Usage
 
-录入指纹：
+Enrol a finger:
 
 ```bash
 sudo fprintd-enroll $USER
 ```
 
-之后系统锁屏（SDDM/omarchy/GNOME 等）在 PAM 里配了 fprintd 的都可以用指纹解锁。为了让驱动在多次解锁之间保持"热"状态（即点即用），fprintd 需要常驻：
+Any login manager with fprintd configured in PAM can then unlock with a fingerprint. To keep the sensor "warm" (instant unlock) between unlocks, fprintd must stay running:
 
 ```bash
 sudo systemctl edit fprintd.service
-# 加入:
+# add:
 # [Service]
 # ExecStart=
 # ExecStart=/usr/lib/fprintd --no-timeout
 ```
 
-## 安全与探测
+## Safety and probing
 
+The probe tool only allows a small set of read-only commands:
 
-探测器只允许以下命令：
+- `NOP`: wake/sync the device;
+- `FIRMWARE_VERSION`: read the application firmware version;
+- `GET_IAP_VERSION`: read the IAP version;
+- `PRESET_PSK_READ`: optional, read-only. Reads the official R-family `0xbb020007` verification record and the `0xbb010002` DPAPI record. `0xbb010003` is a write-only MCU white-box input (hardware-tested unreadable) and is never read again; check mode reports metadata only, backup mode saves opaque raw records but never prints record contents or plaintext keys.
 
-- `NOP`：唤醒/同步设备；
-- `FIRMWARE_VERSION`：读取应用固件版本；
-- `GET_IAP_VERSION`：读取 IAP 版本；
-- `PRESET_PSK_READ`：可选，只读取官方 R-family 的 `0xbb020007` 校验记录和 `0xbb010002` DPAPI 记录。`0xbb010003` 是已由历史硬件试验证明不可读的 MCU 白盒写入输入，当前备份命令不会再次读取它。检查模式只报告元数据；显式备份模式保存不透明原始记录，但绝不把记录内容或明文密钥输出到终端。
+The probe CLI still blocks firmware, PSK, config, reset, register writes and image capture. The pairing and experimental runtime modules in this repo have fixed, bounded command sets; they do not expose a generic raw-command interface through the probe CLI. Firmware/IAP writes and arbitrary protected-record writes remain prohibited or separately approved persistent operations.
 
-默认 probe CLI 仍会阻止固件、PSK、配置、reset、寄存器写入和图像采集。仓库内另有边界固定的配对与实验性 runtime 模块；它们不通过 probe CLI 暴露通用 raw-command 接口。固件/IAP 与任意 protected-record 写入仍属于禁止或单独审批的持久操作。
+"Non-persistent" does not mean zero risk: the tools still send query commands over USB. If the firmware misbehaves the device may become unresponsive until a reboot or full shutdown. But nothing modifies Flash, PSK or IAP.
 
-“非持久性”不代表完全没有风险：程序仍会向 USB 设备发送查询命令。固件异常时，设备可能暂时无响应，需要重启或彻底关机后恢复。但它不会主动修改 Flash、PSK 或 IAP。
+## Probing hardware
 
-## 探测硬件
-
-
-以下命令只使用 probe 的固定只读命令集：
+The following commands only use the fixed read-only command set:
 
 ```bash
 sudo .venv/bin/goodix-5503-probe
@@ -70,23 +70,23 @@ sudo .venv/bin/goodix-5503-probe --backup-protected-record
 sudo .venv/bin/goodix-5503-probe --backup-rollback-set
 ```
 
-默认不会查询任何 PSK 状态。受保护记录操作会先设置并验证 `PR_SET_DUMPABLE=0`，同时设置 `RLIMIT_CORE=0`；任一步失败都会在 USB 访问前终止。检查模式只输出长度和 SHA-256。备份模式读取完成后会先关闭 USB 会话，再永久放弃 sudo root 权限；降权后会重新设置并验证 non-dumpable 状态，随后才以原用户身份执行文件系统操作。root 身份的文件写入会被拒绝。记录通过 `0600` 临时文件、`fsync` 和排他硬链接提交，已有文件只允许逐字节验证一致，绝不会覆盖。可读备份包含 `0xbb010002` 和 `0xbb020007`。硬件实测表明 `0xbb010003` 对读取返回状态 `0x01`；它是写入时由 MCU 消费的白盒配对输入，无法备份。备份目录权限为 `0700` 且已被 Git 忽略，所有可变内存副本在使用后覆盖。这意味着重配后可以验证旧状态，但不能完整恢复原 PSK。
+PSK state is not queried by default. Protected-record operations first set and verify `PR_SET_DUMPABLE=0` and `RLIMIT_CORE=0`; any failure aborts before USB access. Check mode prints only length and SHA-256. Backup mode closes the USB session, permanently drops root, re-verifies non-dumpable state, then does filesystem work as the original user; root-owned file writes are refused. Records are committed via `0600` temp files, `fsync` and exclusive hard links; existing files are only byte-verified, never overwritten. Readable backups are `0xbb010002` and `0xbb020007`; `0xbb010003` returns status `0x01` on read (write-only MCU pairing input, cannot be backed up). The backup directory is `0700` and Git-ignored; all mutable memory copies are overwritten after use. Old state can be verified after reprovisioning, but the original PSK cannot be fully restored.
 
-## 开发
+## Development
 
-- `src/goodix5503/`：Python 探测与实验工具（只读，不碰固件/PSK）
-- `libfprint/`：C 驱动源码、SIGFM 匹配算法、针对 libfprint 的 patch
-- 测试（不需要硬件）：`PYTHONPATH=src python -m unittest discover -s tests -v`
+- `src/goodix5503/`: Python probing and experimentation tools (read-only, never touch firmware/PSK)
+- `libfprint/`: the C driver, the SIGFM matcher, and the libfprint patch
+- Tests (no hardware needed): `PYTHONPATH=src python -m unittest discover -s tests -v`
 
-匹配参数与模板格式是版本化的：任何改动特征提取、匹配语义或判定阈值的修改都必须同步 bump 模板格式版本，否则旧模板会被拒绝加载。具体约束见 `docs/libfprint-driver-plan.md`。
+Matcher parameters and the template format are versioned: any change to feature extraction, match semantics or the decision threshold must bump the template format version, or old templates will be rejected. Details in `docs/libfprint-driver-plan.md`.
 
-## 上游参考与许可
+## Upstream references and license
 
-这个项目站在以下开源工作的肩膀上：
+This project stands on the shoulders of the following open-source work:
 
-- [libfprint](https://gitlab.freedesktop.org/libfprint/libfprint)（LGPL-2.1-or-later）：驱动框架、状态机、录入/验证流程。构建时固定在其上游提交 `80a4b5ec...`，本仓库不包含 libfprint 代码。
-- [goodix-fp-linux-dev/goodix-fp-dump](https://github.com/goodix-fp-linux-dev/goodix-fp-dump)（[MIT](https://github.com/goodix-fp-linux-dev/goodix-fp-dump/blob/master/LICENSE)，参考提交 `cc43bb3b`、`718ee3c1`）：5503 协议帧格式（`0xa0` 外框、校验和、命令集），只参考接口，不复制其代码。
-- [goodix-fp-linux-dev/libfprint SIGFM 分支](https://github.com/goodix-fp-linux-dev/libfprint/tree/0x00002a/libfprint-sigfm)（LGPL-2.1-or-later，参考提交 `7ebe0c80`）：SIFT + CLAHE + mutual/geometric matching 在 libfprint 里的接线方式；`sigfm.cpp/hpp` 保留了上游原始版权头（2022 年三位作者），随本仓库以 LGPL 分发。
-- [AndyHazz/goodix53x5-libfprint](https://github.com/AndyHazz/goodix53x5-libfprint)（参考提交 `309d4c69`）：该仓库**没有 LICENSE 文件**，我们只参考了它把 SIGFM 用于 Goodix 传感器的集成思路，没有复制它的任何代码；本项目自有的驱动、协议、TLS、配置和持久格式都是独立实现的。
+- [libfprint](https://gitlab.freedesktop.org/libfprint/libfprint) (LGPL-2.1-or-later): driver framework, state machine, enrolment/verification flow. Builds are pinned to upstream commit `80a4b5ec...`; this repo does not include libfprint code.
+- [goodix-fp-linux-dev/goodix-fp-dump](https://github.com/goodix-fp-linux-dev/goodix-fp-dump) ([MIT](https://github.com/goodix-fp-linux-dev/goodix-fp-dump/blob/master/LICENSE), reference commit `cc43bb3b`, `718ee3c1`): the 5503 protocol frame format (`0xa0` outer frame, checksums, command set). Interface reference only; their code is not copied.
+- [goodix-fp-linux-dev/libfprint SIGFM branch](https://github.com/goodix-fp-linux-dev/libfprint/tree/0x00002a/libfprint-sigfm) (LGPL-2.1-or-later, reference commit `7ebe0c80`): how SIFT + CLAHE + mutual/geometric matching plugs into libfprint; `sigfm.cpp/hpp` keep the upstream copyright headers (three authors, 2022) and are distributed under LGPL.
+- [AndyHazz/goodix53x5-libfprint](https://github.com/AndyHazz/goodix53x5-libfprint) (reference commit `309d4c69`): that repo has **no LICENSE file**; we only referenced how it wires SIGFM to a Goodix sensor, no code was copied. The driver, protocol, TLS, config and persistent format in this project are independent implementations.
 
-本项目采用 `LGPL-2.1-or-later`。Windows 官方驱动二进制、设备凭据（PSK/备份/模板）和本机指纹图像不随仓库分发。
+This project is licensed under `LGPL-2.1-or-later`. The official Windows driver binaries, device credentials (PSK/backups/templates) and local fingerprint images are not distributed with this repo.
