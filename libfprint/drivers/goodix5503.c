@@ -1985,6 +1985,42 @@ goodix5503_dump_image (const FpImage *image)
 }
 
 static void
+goodix5503_frame_quality (const FpImage *image,
+                          gfloat        *texture_energy,
+                          gfloat        *saturated_fraction)
+{
+  /* Cheap single-pass quality metrics over the difference image.
+   * saturated_fraction: share of pixels stuck at the bright plateau
+   * (poor contact / whole-area offset, no ridge texture).
+   * texture_energy: mean horizontal adjacent-pixel delta (ridge/valley
+   * modulation). Calibrated against /run dumps: good frames sit at
+   * texture >= 10 and saturation <= 45%. */
+  const guint8 *data = image->data;
+  const gsize count = (gsize) image->width * image->height;
+  const guint width = image->width;
+  gint64 edge = 0;
+  gsize saturated = 0;
+
+  for (gsize index = 0; index < count; index++)
+    {
+      if (data[index] > 200)
+        saturated++;
+      if (index % width != width - 1)
+        edge += ABS ((gint) data[index] - (gint) data[index + 1]);
+    }
+  *saturated_fraction = (gfloat) saturated / count;
+  *texture_energy = (gfloat) edge / (gint64) (count - width);
+}
+
+static gboolean
+goodix5503_quality_gate_enabled (void)
+{
+  const gchar *setting = g_getenv ("GOODIX5503_QUALITY_GATE");
+
+  return setting != NULL && *setting != '\0' && *setting != '0';
+}
+
+static void
 goodix5503_finger_image_done (FpiDeviceGoodix5503 *self, GError *error)
 {
   g_autoptr(FpImage) image = NULL;
@@ -2021,6 +2057,33 @@ goodix5503_finger_image_done (FpiDeviceGoodix5503 *self, GError *error)
       return;
     }
   goodix5503_dump_image (image);
+  if (goodix5503_quality_gate_enabled ())
+    {
+      gfloat texture_energy = 0.0f;
+      gfloat saturated_fraction = 0.0f;
+
+      goodix5503_frame_quality (image, &texture_energy,
+                                &saturated_fraction);
+      fp_dbg ("frame quality: texture=%.1f saturated=%.2f",
+              texture_energy, saturated_fraction);
+      if (texture_energy < 10.0f || saturated_fraction > 0.45f)
+        {
+          /* Poor-contact or texture-sparse frame: retry instead of
+           * feeding a garbage image to the matcher. Mirrors the
+           * NO_CONTRAST retry pattern. */
+          fp_dbg ("frame quality gate: retrying capture");
+          g_clear_object (&image);
+          goodix5503_fdt_pending_clear (self);
+          goodix5503_fdt_coordinator_retry_idle (&self->fdt_runtime.coordinator);
+          fpi_image_device_retry_scan (FP_IMAGE_DEVICE (self),
+                                       FP_DEVICE_RETRY_GENERAL);
+          if (fpi_device_get_current_action (FP_DEVICE (self)) ==
+              FPI_DEVICE_ACTION_ENROLL)
+            fpi_image_device_report_finger_status (FP_IMAGE_DEVICE (self),
+                                                    FALSE);
+          return;
+        }
+    }
   fpi_image_device_image_captured (FP_IMAGE_DEVICE (self),
                                    g_steal_pointer (&image));
 }
