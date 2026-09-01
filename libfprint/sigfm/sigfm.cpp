@@ -491,6 +491,13 @@ SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height)
 
 int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
 {
+    /* Calibration aid: the mismatch between live frames and the enrolled
+     * gallery is either a frame-side feature deficit, a gallery-side
+     * deficit, or content incompatibility. Log the descriptor counts on
+     * every comparison to tell those apart without touching image data. */
+    fprintf (stderr, "SIGFM features frame=%d enrolled=%d\n",
+             frame ? (int) frame->descriptors.rows : -1,
+             enrolled ? (int) enrolled->descriptors.rows : -1);
     if (frame == nullptr || enrolled == nullptr || frame->descriptors.empty() ||
         enrolled->descriptors.empty()) {
         fprintf (stderr, "SIGFM score=0 (empty descriptors)\n");
