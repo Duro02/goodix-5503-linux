@@ -1715,6 +1715,8 @@ goodix5503_close (FpImageDevice *device)
 static void goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
                                         GByteArray          *body,
                                         GError              *error);
+static void goodix5503_warm_background_done (FpiDeviceGoodix5503 *self,
+                                             GError              *error);
 
 static void
 goodix5503_activate (FpImageDevice *device)
@@ -1831,8 +1833,34 @@ goodix5503_warm_probe_done (FpiDeviceGoodix5503 *self,
   self->session_clean = TRUE;
   self->warm_rearmed = TRUE;
 
-  self->stage = "warm re-arm";
-  fp_dbg ("warm probe ok: base rebuilt from current idle");
+  /* 热路径背景刷新:探针只重建了 FDT 按下基线,而差分指纹图所需的
+   * 空闲背景也必须在本激活中重采,否则长时间温漂后仍沿用陈旧背景。
+   * 背景采集失败(超时/协议错)时沿用上次校准的背景并照常完成激活,
+   * 绝不因背景问题回冷或中断解锁;失败后 self->background 仍是旧值。
+   * 采集成功时 capture_frame_done 已把新帧写入 self->background,
+   * warm_background_done 将其同步进 warm 状态供下次激活使用。 */
+  self->stage = "warm background";
+  fp_dbg ("warm probe ok: base rebuilt, refreshing background");
+  goodix5503_capture_image (self, GOODIX5503_CAPTURE_BACKGROUND,
+                            goodix5503_warm_background_done);
+}
+
+static void
+goodix5503_warm_background_done (FpiDeviceGoodix5503 *self,
+                                 GError              *error)
+{
+  if (error)
+    {
+      fp_warn ("warm background capture failed: %s; reusing stale background",
+               error->message);
+      g_clear_error (&error);
+    }
+  else
+    {
+      memcpy (self->warm.background, self->background,
+              sizeof self->warm.background);
+      fp_dbg ("warm background refreshed");
+    }
   self->activated = TRUE;
   self->activation_reported = TRUE;
   fpi_image_device_activate_complete (FP_IMAGE_DEVICE (self), NULL);
