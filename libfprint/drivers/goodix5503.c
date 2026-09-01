@@ -2057,30 +2057,33 @@ goodix5503_finger_image_done (FpiDeviceGoodix5503 *self, GError *error)
       return;
     }
   goodix5503_dump_image (image);
-  if (goodix5503_quality_gate_enabled ())
+  if (fpi_device_get_current_action (FP_DEVICE (self)) ==
+        FPI_DEVICE_ACTION_ENROLL &&
+      goodix5503_quality_gate_enabled ())
     {
+      /* Enrol-side quality gate only: verification-side gating was
+       * falsified by measurement (failed frames are indistinguishable
+       * from successful ones in single-frame metrics), but junk frames
+       * that enter the template gallery permanently degrade matching.
+       * Reject poor-contact/texture-sparse frames during enrolment so
+       * the gallery only accumulates healthy samples. */
       gfloat texture_energy = 0.0f;
       gfloat saturated_fraction = 0.0f;
 
       goodix5503_frame_quality (image, &texture_energy,
                                 &saturated_fraction);
-      fp_dbg ("frame quality: texture=%.1f saturated=%.2f",
+      fp_dbg ("enrol frame quality: texture=%.1f saturated=%.2f",
               texture_energy, saturated_fraction);
       if (texture_energy < 10.0f || saturated_fraction > 0.45f)
         {
-          /* Poor-contact or texture-sparse frame: retry instead of
-           * feeding a garbage image to the matcher. Mirrors the
-           * NO_CONTRAST retry pattern. */
-          fp_dbg ("frame quality gate: retrying capture");
+          fp_dbg ("enrol quality gate: rejecting frame, retry stage");
           g_clear_object (&image);
           goodix5503_fdt_pending_clear (self);
           goodix5503_fdt_coordinator_retry_idle (&self->fdt_runtime.coordinator);
           fpi_image_device_retry_scan (FP_IMAGE_DEVICE (self),
                                        FP_DEVICE_RETRY_GENERAL);
-          if (fpi_device_get_current_action (FP_DEVICE (self)) ==
-              FPI_DEVICE_ACTION_ENROLL)
-            fpi_image_device_report_finger_status (FP_IMAGE_DEVICE (self),
-                                                    FALSE);
+          fpi_image_device_report_finger_status (FP_IMAGE_DEVICE (self),
+                                                  FALSE);
           return;
         }
     }
@@ -2427,7 +2430,7 @@ fpi_device_goodix5503_class_init (FpiDeviceGoodix5503Class *klass)
   device_class->type = FP_DEVICE_TYPE_USB;
   device_class->id_table = goodix5503_id_table;
   device_class->scan_type = FP_SCAN_TYPE_PRESS;
-  device_class->nr_enroll_stages = 8;
+  device_class->nr_enroll_stages = 12;
   device_class->features &= ~FP_DEVICE_FEATURE_UPDATE_PRINT;
 
   image_class->algorithm = FPI_DEVICE_ALGO_SIGFM;

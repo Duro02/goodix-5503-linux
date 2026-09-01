@@ -45,7 +45,7 @@ main ()
   info = sigfm_extract (pattern.data (), 80, 64);
   assert (info != nullptr);
   assert (sigfm_keypoints_count (info) > 0);
-  assert (sigfm_keypoints_count (info) <= 256);
+  assert (sigfm_keypoints_count (info) <= 512);
   copy = sigfm_copy_info (info);
   assert (copy != nullptr && sigfm_equal (info, copy));
   serialized = sigfm_serialize (info, &length);

@@ -1,8 +1,16 @@
-diff --git i/libfprint/fp-image-device-private.h w/libfprint/fp-image-device-private.h
-index b075634..27c3cf0 100644
---- i/libfprint/fp-image-device-private.h
+diff --git c/libfprint/fp-image-device-private.h w/libfprint/fp-image-device-private.h
+index b075634..2fbaa86 100644
+--- c/libfprint/fp-image-device-private.h
 +++ w/libfprint/fp-image-device-private.h
-@@ -36,7 +36,9 @@ typedef struct
+@@ -27,6 +27,7 @@ typedef struct
+ {
+   FpiImageDeviceState state;
+   gboolean            active;
++  gboolean            enroll_final_stage;
+ 
+   gboolean            finger_present;
+ 
+@@ -36,7 +37,9 @@ typedef struct
    GError             *action_error;
    FpImage            *capture_image;
  
@@ -13,9 +21,9 @@ index b075634..27c3cf0 100644
  } FpImageDevicePrivate;
  
  
-diff --git i/libfprint/fp-image-device.c w/libfprint/fp-image-device.c
+diff --git c/libfprint/fp-image-device.c w/libfprint/fp-image-device.c
 index ac88ffd..3b0d784 100644
---- i/libfprint/fp-image-device.c
+--- c/libfprint/fp-image-device.c
 +++ w/libfprint/fp-image-device.c
 @@ -125,8 +125,10 @@ fp_image_device_start_capture_action (FpDevice *device)
  
@@ -48,9 +56,9 @@ index ac88ffd..3b0d784 100644
  
    G_OBJECT_CLASS (fp_image_device_parent_class)->constructed (obj);
  }
-diff --git i/libfprint/fp-image.c w/libfprint/fp-image.c
-index f9c60b3..6e02ab1 100644
---- i/libfprint/fp-image.c
+diff --git c/libfprint/fp-image.c w/libfprint/fp-image.c
+index f9c60b3..3aa6049 100644
+--- c/libfprint/fp-image.c
 +++ w/libfprint/fp-image.c
 @@ -23,6 +23,8 @@
  #include "fpi-compat.h"
@@ -284,11 +292,11 @@ index f9c60b3..6e02ab1 100644
  
    if (g_task_had_error (task))
      {
-diff --git i/libfprint/fp-print.c w/libfprint/fp-print.c
-index d541437..21658aa 100644
---- i/libfprint/fp-print.c
+diff --git c/libfprint/fp-print.c w/libfprint/fp-print.c
+index d541437..c98fa35 100644
+--- c/libfprint/fp-print.c
 +++ w/libfprint/fp-print.c
-@@ -23,6 +23,11 @@
+@@ -23,6 +23,12 @@
  #include "fp-print-private.h"
  #include "fpi-compat.h"
  #include "fpi-log.h"
@@ -296,11 +304,12 @@ index d541437..21658aa 100644
 +#include "sigfm/sigfm.hpp"
 +
 +#define SIGFM_ENROLL_SAMPLES 8
++#define SIGFM_MAX_ENROLL_SAMPLES 12
 +#define SIGFM_MAX_SAMPLE_SIZE (1024 * 1024)
  
  /**
   * SECTION: fp-print
-@@ -67,6 +72,64 @@ enum {
+@@ -67,6 +73,65 @@ enum {
  
  static GParamSpec *properties[N_PROPS];
  
@@ -332,10 +341,11 @@ index d541437..21658aa 100644
 +    g_ptr_array_new_with_free_func ((GDestroyNotify) sensitive_variant_data_free);
 +
 +  if (print->prints == NULL ||
-+      print->prints->len != SIGFM_ENROLL_SAMPLES)
++      print->prints->len < SIGFM_ENROLL_SAMPLES ||
++      print->prints->len > SIGFM_MAX_ENROLL_SAMPLES)
 +    {
 +      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-+                           "SIGFM gallery must contain exactly eight samples");
++                           "SIGFM gallery must contain 8 to 12 samples");
 +      return NULL;
 +    }
 +  for (guint i = 0; i < print->prints->len; i++)
@@ -365,7 +375,7 @@ index d541437..21658aa 100644
  static void
  fp_print_finalize (GObject *object)
  {
-@@ -628,6 +691,16 @@ fp_print_equal (FpPrint *self, FpPrint *other)
+@@ -628,6 +693,16 @@ fp_print_equal (FpPrint *self, FpPrint *other)
  
        return TRUE;
  
@@ -382,7 +392,7 @@ index d541437..21658aa 100644
      case FPI_PRINT_UNDEFINED:
        g_assert_not_reached ();
      }
-@@ -658,11 +731,21 @@ fp_print_serialize (FpPrint *print,
+@@ -658,11 +733,21 @@ fp_print_serialize (FpPrint *print,
                      GError **error)
  {
    g_autoptr(GVariant) result = NULL;
@@ -404,7 +414,7 @@ index d541437..21658aa 100644
  
    g_variant_builder_add (&builder, "i", print->type);
    g_variant_builder_add (&builder, "s", print->driver);
-@@ -716,6 +799,24 @@ fp_print_serialize (FpPrint *print,
+@@ -716,6 +801,24 @@ fp_print_serialize (FpPrint *print,
        g_variant_builder_close (&nested);
        g_variant_builder_add (&builder, "v", g_variant_builder_end (&nested));
      }
@@ -429,7 +439,7 @@ index d541437..21658aa 100644
    else
      {
        g_variant_builder_add (&builder, "v", g_variant_new_variant (print->data));
-@@ -725,6 +826,12 @@ fp_print_serialize (FpPrint *print,
+@@ -725,6 +828,12 @@ fp_print_serialize (FpPrint *print,
  
  #if (G_BYTE_ORDER == G_BIG_ENDIAN)
    GVariant *tmp;
@@ -442,7 +452,7 @@ index d541437..21658aa 100644
    tmp = g_variant_byteswap (result);
    g_variant_unref (result);
    result = tmp;
-@@ -734,15 +841,17 @@ fp_print_serialize (FpPrint *print,
+@@ -734,15 +843,17 @@ fp_print_serialize (FpPrint *print,
    /* Add 3 bytes of header */
    len += 3;
  
@@ -464,7 +474,7 @@ index d541437..21658aa 100644
  
    return TRUE;
  }
-@@ -768,6 +877,7 @@ fp_print_deserialize (const guchar *data,
+@@ -768,6 +879,7 @@ fp_print_deserialize (const guchar *data,
    g_autoptr(GVariant) print_data = NULL;
    g_autoptr(GDate) date = NULL;
    g_autoptr(GBytes) bytes = NULL;
@@ -472,7 +482,7 @@ index d541437..21658aa 100644
    guint8 finger_int8;
    FpFinger finger;
    g_autofree gchar *username = NULL;
-@@ -789,18 +899,38 @@ fp_print_deserialize (const guchar *data,
+@@ -789,18 +901,38 @@ fp_print_deserialize (const guchar *data,
     * of this function (meaning we don't need to keep the data around.
     */
  
@@ -516,7 +526,7 @@ index d541437..21658aa 100644
  #endif
  
    g_variant_get (value,
-@@ -872,6 +1002,48 @@ fp_print_deserialize (const guchar *data,
+@@ -872,6 +1004,49 @@ fp_print_deserialize (const guchar *data,
        }
        break;
  
@@ -532,7 +542,8 @@ index d541437..21658aa 100644
 +        if (!g_variant_is_of_type (prints, G_VARIANT_TYPE ("aay")))
 +          goto invalid_format;
 +        sample_count = g_variant_n_children (prints);
-+        if (sample_count != SIGFM_ENROLL_SAMPLES)
++        if (sample_count < SIGFM_ENROLL_SAMPLES ||
++            sample_count > SIGFM_MAX_ENROLL_SAMPLES)
 +          goto invalid_format;
 +        result = g_object_new (FP_TYPE_PRINT,
 +                               "driver", driver,
@@ -565,9 +576,9 @@ index d541437..21658aa 100644
      case FPI_PRINT_RAW:
        {
          g_autoptr(GVariant) fp_data = g_variant_get_child_value (print_data, 0);
-diff --git i/libfprint/fpi-image-device.c w/libfprint/fpi-image-device.c
-index 87bdc60..f110168 100644
---- i/libfprint/fpi-image-device.c
+diff --git c/libfprint/fpi-image-device.c w/libfprint/fpi-image-device.c
+index 87bdc60..c2050e6 100644
+--- c/libfprint/fpi-image-device.c
 +++ w/libfprint/fpi-image-device.c
 @@ -22,6 +22,7 @@
  
@@ -611,7 +622,7 @@ index 87bdc60..f110168 100644
        if (!fpi_print_add_from_image (print, image, &error))
          {
            g_clear_object (&print);
-@@ -304,7 +309,14 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+@@ -304,18 +309,34 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
  
        if (print)
          {
@@ -627,7 +638,30 @@ index 87bdc60..f110168 100644
            priv->enroll_stage += 1;
          }
  
-@@ -333,7 +345,14 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+       fpi_device_enroll_progress (device, priv->enroll_stage,
+                                   g_steal_pointer (&print), error);
+ 
+-      /* Start another scan or deactivate. */
++      /* Start another scan or deactivate. The final stage waits for
++       * the finger to be lifted (the device is left in AWAIT_FINGER_OFF)
++       * so the "enrollment complete" prompt never races the user's
++       * still-pressed finger; the off event finishes the action. */
+       if (priv->enroll_stage == fp_device_get_nr_enroll_stages (device))
+         {
+-          fp_image_device_maybe_complete_action (self, g_steal_pointer (&error));
+-          fpi_image_device_deactivate (self, FALSE);
++          priv->enroll_final_stage = TRUE;
++          if (!priv->finger_present)
++            {
++              priv->enroll_final_stage = FALSE;
++              fp_image_device_maybe_complete_action (self,
++                                                     g_steal_pointer (&error));
++              fpi_image_device_deactivate (self, FALSE);
++            }
+         }
+       else
+         {
+@@ -333,7 +354,14 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
          {
            FpPrint *template = g_ptr_array_index (templates, i);
  
@@ -643,7 +677,25 @@ index 87bdc60..f110168 100644
              {
                result = template;
                break;
-@@ -485,10 +504,17 @@ fpi_image_device_image_captured (FpImageDevice *self, FpImage *image)
+@@ -445,7 +473,16 @@ fpi_image_device_report_finger_status (FpImageDevice *self,
+       fp_image_device_change_state (self, FPI_IMAGE_DEVICE_STATE_IDLE);
+ 
+       if (action != FPI_DEVICE_ACTION_ENROLL)
+-        fpi_image_device_deactivate (self, FALSE);
++        {
++          fpi_image_device_deactivate (self, FALSE);
++        }
++      else if (priv->enroll_final_stage && !priv->minutiae_scan_active)
++        {
++          /* Final enrol stage: finger lifted and minutiae done. */
++          priv->enroll_final_stage = FALSE;
++          fp_image_device_maybe_complete_action (self, NULL);
++          fpi_image_device_deactivate (self, FALSE);
++        }
+       else
+         fp_image_device_enroll_maybe_await_finger_on (self);
+     }
+@@ -485,10 +522,17 @@ fpi_image_device_image_captured (FpImageDevice *self, FpImage *image)
  
    /* XXX: We also detect minutiae in capture mode, we solely do this
     *      to normalize the image which will happen as a by-product. */
@@ -662,9 +714,9 @@ index 87bdc60..f110168 100644
  
    /* XXX: This is wrong if we add support for raw capture mode. */
    fp_image_device_change_state (self, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF);
-diff --git i/libfprint/fpi-image-device.h w/libfprint/fpi-image-device.h
+diff --git c/libfprint/fpi-image-device.h w/libfprint/fpi-image-device.h
 index 71472db..00e3280 100644
---- i/libfprint/fpi-image-device.h
+--- c/libfprint/fpi-image-device.h
 +++ w/libfprint/fpi-image-device.h
 @@ -70,6 +70,11 @@ typedef enum {
    FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF,
@@ -691,9 +743,9 @@ index 71472db..00e3280 100644
    gint          img_height;
  
    void          (*img_open)     (FpImageDevice *dev);
-diff --git i/libfprint/fpi-image.c w/libfprint/fpi-image.c
+diff --git c/libfprint/fpi-image.c w/libfprint/fpi-image.c
 index 98f412a..e338b6a 100644
---- i/libfprint/fpi-image.c
+--- c/libfprint/fpi-image.c
 +++ w/libfprint/fpi-image.c
 @@ -22,6 +22,7 @@
  
@@ -817,9 +869,9 @@ index 98f412a..e338b6a 100644
 +  g_return_val_if_fail (FP_IS_IMAGE (self), NULL);
 +  return g_steal_pointer (&self->sigfm_info);
 +}
-diff --git i/libfprint/fpi-image.h w/libfprint/fpi-image.h
+diff --git c/libfprint/fpi-image.h w/libfprint/fpi-image.h
 index fdc376c..4c3224e 100644
---- i/libfprint/fpi-image.h
+--- c/libfprint/fpi-image.h
 +++ w/libfprint/fpi-image.h
 @@ -22,6 +22,8 @@
  
@@ -856,21 +908,22 @@ index fdc376c..4c3224e 100644
 +                                        GAsyncResult *result,
 +                                        GError      **error);
 +SigfmImgInfo *fpi_image_steal_sigfm_info (FpImage *self);
-diff --git i/libfprint/fpi-print.c w/libfprint/fpi-print.c
-index 6c5e20d..ede97e8 100644
---- i/libfprint/fpi-print.c
+diff --git c/libfprint/fpi-print.c w/libfprint/fpi-print.c
+index 6c5e20d..db01f62 100644
+--- c/libfprint/fpi-print.c
 +++ w/libfprint/fpi-print.c
-@@ -24,6 +24,9 @@
+@@ -24,6 +24,10 @@
  #include "fp-print-private.h"
  #include "fpi-device.h"
  #include "fpi-compat.h"
 +#include "sigfm/sigfm.hpp"
 +
 +#define SIGFM_ENROLL_SAMPLES 8
++#define SIGFM_MAX_ENROLL_SAMPLES 12
  
  /**
   * SECTION: fpi-print
-@@ -43,14 +46,45 @@
+@@ -43,14 +47,45 @@
   * prints in @print. Both print objects need to be of type #FPI_PRINT_NBIS
   * for this to work.
   */
@@ -896,7 +949,7 @@ index 6c5e20d..ede97e8 100644
 +      return FALSE;
 +    }
 +  if (print->type == FPI_PRINT_SIGFM &&
-+      print->prints->len >= SIGFM_ENROLL_SAMPLES)
++      print->prints->len >= SIGFM_MAX_ENROLL_SAMPLES)
 +    {
 +      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NO_SPACE,
 +                           "SIGFM enrollment gallery is full");
@@ -922,7 +975,7 @@ index 6c5e20d..ede97e8 100644
  }
  
  /**
-@@ -71,10 +105,12 @@ fpi_print_set_type (FpPrint     *print,
+@@ -71,10 +106,12 @@ fpi_print_set_type (FpPrint     *print,
    g_return_if_fail (print->type == FPI_PRINT_UNDEFINED);
  
    print->type = type;
@@ -937,7 +990,7 @@ index 6c5e20d..ede97e8 100644
      }
    g_object_notify (G_OBJECT (print), "fpi-type");
  }
-@@ -176,7 +212,8 @@ fpi_print_add_from_image (FpPrint *print,
+@@ -176,7 +213,8 @@ fpi_print_add_from_image (FpPrint *print,
    struct fp_minutiae _minutiae;
    struct xyt_struct *xyt;
  
@@ -947,7 +1000,7 @@ index 6c5e20d..ede97e8 100644
      {
        g_set_error (error,
                     G_IO_ERROR,
-@@ -185,6 +222,22 @@ fpi_print_add_from_image (FpPrint *print,
+@@ -185,6 +223,22 @@ fpi_print_add_from_image (FpPrint *print,
        return FALSE;
      }
  
@@ -970,7 +1023,7 @@ index 6c5e20d..ede97e8 100644
    minutiae = fp_image_get_minutiae (image);
    if (!minutiae || minutiae->len == 0)
      {
-@@ -268,6 +321,44 @@ fpi_print_bz3_match (FpPrint *print_template,
+@@ -268,6 +322,45 @@ fpi_print_bz3_match (FpPrint *print_template,
    return FPI_MATCH_FAIL;
  }
  
@@ -985,7 +1038,8 @@ index 6c5e20d..ede97e8 100644
 +  if (template == NULL || print == NULL || threshold <= 0 ||
 +      template->type != FPI_PRINT_SIGFM || print->type != FPI_PRINT_SIGFM ||
 +      template->prints == NULL || template->prints->len == 0 ||
-+      template->prints->len != SIGFM_ENROLL_SAMPLES ||
++      (template->prints->len < SIGFM_ENROLL_SAMPLES ||
++       template->prints->len > SIGFM_MAX_ENROLL_SAMPLES) ||
 +      print->prints == NULL || print->prints->len != 1)
 +    {
 +      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_DATA_INVALID,
@@ -1015,9 +1069,9 @@ index 6c5e20d..ede97e8 100644
  /**
   * fpi_print_generate_user_id:
   * @print: #FpPrint to generate the ID for
-diff --git i/libfprint/fpi-print.h w/libfprint/fpi-print.h
+diff --git c/libfprint/fpi-print.h w/libfprint/fpi-print.h
 index 773407d..e2c4709 100644
---- i/libfprint/fpi-print.h
+--- c/libfprint/fpi-print.h
 +++ w/libfprint/fpi-print.h
 @@ -16,6 +16,7 @@ typedef enum {
    FPI_PRINT_UNDEFINED = 0,
@@ -1050,7 +1104,7 @@ index 773407d..e2c4709 100644
  
  /* Helpers to encode metadata into user ID strings. */
  gchar *  fpi_print_generate_user_id (FpPrint *print);
-diff --git i/libfprint/fpi-sensitive-data.c w/libfprint/fpi-sensitive-data.c
+diff --git c/libfprint/fpi-sensitive-data.c w/libfprint/fpi-sensitive-data.c
 new file mode 100644
 index 0000000..5b7c92a
 --- /dev/null
@@ -1072,7 +1126,7 @@ index 0000000..5b7c92a
 +  return g_variant_new_from_data (G_VARIANT_TYPE ("ay"), data, length, TRUE,
 +                                  destroy, owner);
 +}
-diff --git i/libfprint/fpi-sensitive-data.h w/libfprint/fpi-sensitive-data.h
+diff --git c/libfprint/fpi-sensitive-data.h w/libfprint/fpi-sensitive-data.h
 new file mode 100644
 index 0000000..6f60088
 --- /dev/null
@@ -1091,9 +1145,9 @@ index 0000000..6f60088
 +                                              gpointer        owner);
 +
 +G_END_DECLS
-diff --git i/libfprint/fprint-list-udev-hwdb.c w/libfprint/fprint-list-udev-hwdb.c
+diff --git c/libfprint/fprint-list-udev-hwdb.c w/libfprint/fprint-list-udev-hwdb.c
 index 539f3e6..b0f034f 100644
---- i/libfprint/fprint-list-udev-hwdb.c
+--- c/libfprint/fprint-list-udev-hwdb.c
 +++ w/libfprint/fprint-list-udev-hwdb.c
 @@ -173,7 +173,6 @@ static const FpIdEntry allowlist_id_table[] = {
    { .vid = 0x27c6, .pid = 0x538c },
@@ -1103,9 +1157,9 @@ index 539f3e6..b0f034f 100644
    { .vid = 0x27c6, .pid = 0x550a },
    { .vid = 0x27c6, .pid = 0x550c },
    { .vid = 0x27c6, .pid = 0x5584 },
-diff --git i/libfprint/meson.build w/libfprint/meson.build
+diff --git c/libfprint/meson.build w/libfprint/meson.build
 index f11533c..34fd266 100644
---- i/libfprint/meson.build
+--- c/libfprint/meson.build
 +++ w/libfprint/meson.build
 @@ -12,6 +12,7 @@ libfprint_sources = [
      'fp-image.c',
@@ -1174,9 +1228,9 @@ index f11533c..34fd266 100644
      install: true)
  
  libfprint_dep = declare_dependency(link_with: libfprint,
-diff --git i/tests/meson.build w/tests/meson.build
+diff --git c/tests/meson.build w/tests/meson.build
 index aad0675..45bba8f 100644
---- i/tests/meson.build
+--- c/tests/meson.build
 +++ w/tests/meson.build
 @@ -300,6 +300,48 @@ else
      endforeach

@@ -48,7 +48,7 @@ int main ()
                                     NULL));
   g_object_ref_sink (gallery);
   fpi_print_set_type (gallery, FPI_PRINT_SIGFM);
-  for (guint stage = 0; stage < 8; stage++)
+  for (guint stage = 0; stage < 12; stage++)
     {
       auto stage_image = pattern (stage);
       SigfmImgInfo *stage_info =
@@ -73,7 +73,7 @@ int main ()
   {
     g_autoptr(FpPrint) sample = single (info);
     assert (!fpi_print_add_print (gallery, sample, &error));
-    assert (error != nullptr && gallery->prints->len == 8);
+    assert (error != nullptr && gallery->prints->len == 12);
     g_clear_error (&error);
   }
   assert (fp_print_serialize (gallery, &serialized, &serialized_len, &error));
