@@ -51,7 +51,7 @@ constexpr auto sift_sigma = 2.0;
 constexpr std::size_t max_correspondences = 32;
 constexpr double pi = 3.14159265358979323846;
 constexpr unsigned char template_magic[] = { 'G', '5', '5', 'S' };
-constexpr std::uint16_t template_version = 2;
+constexpr std::uint16_t template_version = 3;
 constexpr std::size_t max_persisted_keypoints = 512;
 constexpr std::size_t descriptor_columns = 128;
 constexpr std::size_t persisted_keypoint_size = 28;
@@ -459,14 +459,13 @@ SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height)
                                      sift_contrast_threshold,
                                      sift_edge_threshold,
                                      sift_sigma);
-        /* The sensor is fixed-orientation and the difference texture is
-         * sparse: SIFT's dominant-orientation assignment is unstable between
-         * captures on this canvas and can flip every descriptor alignment
-         * (observed as all-or-nothing match scores). This reader never sees
-         * rotated input, so force upright descriptors instead. */
+        /* v3: re-enable SIFT's per-keypoint dominant orientation. The v1
+         * upright-descriptor restriction (keypoint.angle forced to zero)
+         * made every descriptor alignment intolerant to the natural
+         * +-5..10 degree rotation between presses; v2 data still showed
+         * all-or-nothing scores, so the rotation hypothesis gets one
+         * directed experiment with a measured baseline. */
         sift->detect (enhanced.value, keypoints.value, roi);
-        for (auto& keypoint : keypoints.value)
-            keypoint.angle = 0.0f;
         sift->compute (enhanced.value, keypoints.value, descriptors.value);
 
         const std::size_t retained =

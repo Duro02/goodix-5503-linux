@@ -118,7 +118,7 @@ no template was serialized or persisted. This is a functional result, not a
 statistical FAR/FRR claim.
 
 SIGFM persistent format v1 is therefore bound to the 64x80 interpretation and
-the current preprocessing, SIFT, 256-feature/32-correspondence limits,
+the current preprocessing, SIFT, 512-feature/32-correspondence limits,
 mutual/geometric matcher and threshold 150. Any orientation, preprocessing,
 descriptor, matcher or threshold change that alters feature/match semantics
 requires a format-version bump. Persistence is implemented and malformed-input
