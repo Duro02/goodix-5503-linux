@@ -178,3 +178,21 @@ Before adding the USB ID to a production build:
 Password authentication must remain available throughout development and PAM
 installation. Firmware flashing, downgrade, general register access and public
 raw commands remain out of scope.
+
+## Measured matching behaviour (calibration log, 2026-09-01)
+
+- v1 (upright descriptors, 256 features, ratio 0.85, min 5): 25-37% single-press
+  pass, failures all 0-95 (no intermediate scores).
+- v2 (512 features, ratio 0.90, min 3): pass dropped to 20%, but intermediate
+  scores 10-149 appeared; failures stopped being all-zero.
+- v3 (restore SIFT per-keypoint dominant orientation): pass back to 37-40%,
+  FAR 0/20 (negative max 54). Isolates the residual 40-45% hard failures as
+  template-content compatibility, not parameters.
+- Image quality gate (texture energy < 10 or >45% saturated plateau): rejected
+  ZERO of 30 frames; low-score frames are statistically indistinguishable from
+  successful ones in single-frame metrics (texture, saturation, keypoint
+  count). Single-frame quality gating is therefore falsified; compatibility
+  is only measurable against the gallery.
+- Remaining untested lever: geometric tolerance length_match/angle_match at
+  0.05 rejects soft-tissue deformation between presses; a 0.10 comparison is
+  the next directed experiment.
