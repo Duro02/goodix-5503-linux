@@ -196,3 +196,10 @@ raw commands remain out of scope.
 - Remaining untested lever: geometric tolerance length_match/angle_match at
   0.05 rejects soft-tissue deformation between presses; a 0.10 comparison is
   the next directed experiment.
+- v4 (geometric tolerance 0.10, format v4): pass 50% and continuous score
+  distribution with zero all-zero failures, but FAR broke at 3/20 (142-193
+  range, max 193) - the widened tolerance lets wrong correspondences pass
+  geometric voting. Negative tail now overlaps the positive intermediate
+  band 142-193. v4 as-is is rejected; a threshold of 200 restores FAR 0 in
+  this sample but leaves only 7 points of safety margin, and an
+  intermediate tolerance (0.075) is the remaining untested candidate.
