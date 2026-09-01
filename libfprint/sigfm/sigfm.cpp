@@ -39,11 +39,11 @@
 #include <opencv2/imgproc.hpp>
 
 namespace {
-constexpr auto distance_match = 0.85;
+constexpr auto distance_match = 0.90;
 constexpr auto length_match = 0.05;
 constexpr auto angle_match = 0.05;
-constexpr std::size_t min_match = 5;
-constexpr int sift_nfeatures = 256;
+constexpr std::size_t min_match = 3;
+constexpr int sift_nfeatures = 512;
 constexpr auto sift_octave_layers = 3;
 constexpr auto sift_contrast_threshold = 0.04;
 constexpr auto sift_edge_threshold = 18.0;
@@ -51,8 +51,8 @@ constexpr auto sift_sigma = 2.0;
 constexpr std::size_t max_correspondences = 32;
 constexpr double pi = 3.14159265358979323846;
 constexpr unsigned char template_magic[] = { 'G', '5', '5', 'S' };
-constexpr std::uint16_t template_version = 1;
-constexpr std::size_t max_persisted_keypoints = 256;
+constexpr std::uint16_t template_version = 2;
+constexpr std::size_t max_persisted_keypoints = 512;
 constexpr std::size_t descriptor_columns = 128;
 constexpr std::size_t persisted_keypoint_size = 28;
 constexpr std::size_t persisted_header_size = 20;
