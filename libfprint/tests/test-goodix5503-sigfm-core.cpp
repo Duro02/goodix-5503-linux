@@ -45,7 +45,7 @@ static void append_float (std::vector<guint8>& out, float value)
 static std::vector<guint8> make_sample ()
 {
   std::vector<guint8> sample = { 'G', '5', '5', 'S' };
-  append_u16 (sample, 3);
+  append_u16 (sample, 4);
   append_u16 (sample, 0);
   append_u32 (sample, 1);
   append_u16 (sample, 128);

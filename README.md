@@ -30,10 +30,10 @@ python -m venv .venv
 时使用无 OpenCV 依赖的 C stub。构建脚本仅接受干净的 libfprint v1.94.10
 提交 `0c97a47d8ef405cd577b87058c1e89cae9d242e7`。
 
-SIGFM 持久格式 v3 固定对应本设备字节流的 `64×80` 线性解释，以及当前的
+SIGFM 持久格式 v4 固定对应本设备字节流的 `64×80` 线性解释，以及当前的
 方向 TX-off subtraction、3%–97% normalization、饱和区稳定化、CLAHE、
 SIFT 参数(sift_nfeatures=512, 恢复每个关键点的 SIFT 主方向, 不再强制直立描述子)、mutual/geometric matcher
-(distance_match=0.90, min_match=3)和阈值 150。任何会改变 feature 或匹配
+(distance_match=0.90, min_match=3, length/angle_match=0.10)和阈值 150。任何会改变 feature 或匹配
 语义的方向、预处理、descriptor、matcher 或阈值变化都必须提升格式版本。
 该格式仅完成离线实现与畸形输入测试；尚未授权写入任何用户模板，也未安装到
 系统 libfprint/fprintd。

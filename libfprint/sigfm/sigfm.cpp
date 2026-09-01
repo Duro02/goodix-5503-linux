@@ -40,8 +40,8 @@
 
 namespace {
 constexpr auto distance_match = 0.90;
-constexpr auto length_match = 0.05;
-constexpr auto angle_match = 0.05;
+constexpr auto length_match = 0.10;
+constexpr auto angle_match = 0.10;
 constexpr std::size_t min_match = 3;
 constexpr int sift_nfeatures = 512;
 constexpr auto sift_octave_layers = 3;
@@ -51,7 +51,7 @@ constexpr auto sift_sigma = 2.0;
 constexpr std::size_t max_correspondences = 32;
 constexpr double pi = 3.14159265358979323846;
 constexpr unsigned char template_magic[] = { 'G', '5', '5', 'S' };
-constexpr std::uint16_t template_version = 3;
+constexpr std::uint16_t template_version = 4;
 constexpr std::size_t max_persisted_keypoints = 512;
 constexpr std::size_t descriptor_columns = 128;
 constexpr std::size_t persisted_keypoint_size = 28;
