@@ -80,17 +80,6 @@ sudo .venv/bin/goodix-5503-probe --backup-rollback-set
 
 匹配参数与模板格式是版本化的：任何改动特征提取、匹配语义或判定阈值的修改都必须同步 bump 模板格式版本，否则旧模板会被拒绝加载。具体约束见 `docs/libfprint-driver-plan.md`。
 
-## Windows 官方驱动分析
-
-
-已下载并校验与机型 `21A2`、设备 `27c6:5503` 精确匹配的 Lenovo 官方 Windows 10/11 驱动。专有二进制保存在 Git 忽略的 `artifacts/windows-driver/`，不会提交或分发。
-
-静态分析结论见 [`docs/windows-driver-analysis.md`](docs/windows-driver-analysis.md)。分析确认该设备会把 TLS 加密的指纹图像传给主机，并由主机侧算法完成特征提取和匹配。
-
-本机只读探测结果见 [`docs/device-state.md`](docs/device-state.md)：设备已运行官方 `10063` 固件，并存在与社区开发密钥不同的 PSK 状态。因此不会刷写固件或覆盖 PSK。
-
-PSK/TLS 逆向结论见 [`docs/psk-tls-analysis.md`](docs/psk-tls-analysis.md)：官方驱动存在 Windows DPAPI 回退路径和条件式 enclave 路径。旧系统使用了哪条路径尚未证明；设备哈希本身不能恢复随机 PSK，而 enclave 能否在隔离 Windows 环境中复用现有受保护记录仍待验证。
-
 ## 上游参考与许可
 
 这个项目站在以下开源工作的肩膀上：
