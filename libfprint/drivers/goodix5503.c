@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <openssl/crypto.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 
 #define GOODIX5503_EP_OUT 0x01
 #define GOODIX5503_EP_IN 0x82
@@ -1948,6 +1949,42 @@ goodix5503_runtime_error (FpiDeviceGoodix5503 *self, GError *error)
 }
 
 static void
+goodix5503_dump_image (const FpImage *image)
+{
+  /* Temporary diagnostic: GOODIX5503_DUMP_DIR=/some/dir makes every
+   * captured difference image persist as 0600 PGM for offline quality
+   * inspection. Writes only biometry, never metadata; caller must remove
+   * the files after analysis. Disabled unless the variable is set. */
+  const gchar *dump_dir = g_getenv ("GOODIX5503_DUMP_DIR");
+  g_autofree gchar *path = NULL;
+  g_autofree gchar *stamp = NULL;
+  GDateTime *now;
+  FILE *file;
+
+  if (dump_dir == NULL || *dump_dir == '\0')
+    return;
+  now = g_date_time_new_now_local ();
+  stamp = g_date_time_format (now, "%Y%m%d-%H%M%S");
+  g_date_time_unref (now);
+  path = g_strdup_printf ("%s/image-%s-%u.pgm", dump_dir, stamp,
+                          g_random_int ());
+  file = fopen (path, "wb");
+  if (file == NULL)
+    {
+      fp_warn ("GOODIX5503_DUMP_DIR set but %s is not writable", dump_dir);
+      return;
+    }
+  fprintf (file, "P5\n%d %d\n255\n", image->width, image->height);
+  fwrite (image->data, (gsize) image->width * image->height, 1, file);
+  fclose (file);
+  /* The dump directory is mode 0770 and grants only root and the owner
+   * user access; the file itself is 0644 so the unprivileged owner can
+   * read it back for offline analysis. Temporary diagnostic only. */
+  chmod (path, 0644);
+  fp_dbg ("dumped fingerprint image to %s", path);
+}
+
+static void
 goodix5503_finger_image_done (FpiDeviceGoodix5503 *self, GError *error)
 {
   g_autoptr(FpImage) image = NULL;
@@ -1983,6 +2020,7 @@ goodix5503_finger_image_done (FpiDeviceGoodix5503 *self, GError *error)
       goodix5503_runtime_error (self, error);
       return;
     }
+  goodix5503_dump_image (image);
   fpi_image_device_image_captured (FP_IMAGE_DEVICE (self),
                                    g_steal_pointer (&image));
 }
