@@ -74,6 +74,10 @@ sudo .venv/bin/goodix-5503-probe --backup-rollback-set
 
 默认不会查询任何 PSK 状态。受保护记录操作会先设置并验证 `PR_SET_DUMPABLE=0`，同时设置 `RLIMIT_CORE=0`；任一步失败都会在 USB 访问前终止。检查模式只输出长度和 SHA-256。备份模式读取完成后会先关闭 USB 会话，再永久放弃 sudo root 权限；降权后会重新设置并验证 non-dumpable 状态，随后才以原用户身份执行文件系统操作。root 身份的文件写入会被拒绝。记录通过 `0600` 临时文件、`fsync` 和排他硬链接提交，已有文件只允许逐字节验证一致，绝不会覆盖。可读备份包含 `0xbb010002` 和 `0xbb020007`。硬件实测表明 `0xbb010003` 对读取返回状态 `0x01`；它是写入时由 MCU 消费的白盒配对输入，无法备份。备份目录权限为 `0700` 且已被 Git 忽略，所有可变内存副本在使用后覆盖。这意味着重配后可以验证旧状态，但不能完整恢复原 PSK。
 
+## systemd 部署配件
+
+仓库附带开发者机器上使用的 systemd 配置（`packaging/systemd/`）：fprintd 常驻、唤醒自动重启（修复挂起恢复后的认领竞态，对应上游 libfprint #731）、登录预热与可选诊断开关。安装命令见 `packaging/systemd/README.md`。
+
 ## 开发
 
 - `src/goodix5503/`：Python 探测与实验工具（只读，不碰固件/PSK）

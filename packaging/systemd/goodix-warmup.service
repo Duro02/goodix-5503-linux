@@ -1,0 +1,11 @@
+[Unit]
+Description=Goodix 5503 fingerprint sensor warm-up (background cold calibration)
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/timeout 10 /usr/bin/fprintd-verify duro
+SuccessExitStatus=124
+
+[Install]
+WantedBy=graphical-session.target

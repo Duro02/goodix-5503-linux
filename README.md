@@ -72,6 +72,14 @@ sudo .venv/bin/goodix-5503-probe --backup-rollback-set
 
 PSK state is not queried by default. Protected-record operations first set and verify `PR_SET_DUMPABLE=0` and `RLIMIT_CORE=0`; any failure aborts before USB access. Check mode prints only length and SHA-256. Backup mode closes the USB session, permanently drops root, re-verifies non-dumpable state, then does filesystem work as the original user; root-owned file writes are refused. Records are committed via `0600` temp files, `fsync` and exclusive hard links; existing files are only byte-verified, never overwritten. Readable backups are `0xbb010002` and `0xbb020007`; `0xbb010003` returns status `0x01` on read (write-only MCU pairing input, cannot be backed up). The backup directory is `0700` and Git-ignored; all mutable memory copies are overwritten after use. Old state can be verified after reprovisioning, but the original PSK cannot be fully restored.
 
+## Deploying the systemd helpers
+
+The repo ships the systemd configuration used on the developer machine
+(`packaging/systemd/`): fprintd keep-alive, wake-up auto-restart (fixes
+the suspend/resume claim race, upstream libfprint #731), login warm-up
+and optional diagnostics. See `packaging/systemd/README.md` for install
+commands.
+
 ## Development
 
 - `src/goodix5503/`: the read-only probing CLI (`goodix-5503-probe`)
