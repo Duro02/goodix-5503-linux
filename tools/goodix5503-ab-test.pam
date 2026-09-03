@@ -1,0 +1,3 @@
+#%PAM-1.0
+# Isolated test profile; not referenced by login, sudo, or the lock screen.
+auth required pam_fprintd.so max-tries=1 timeout=30
