@@ -33,17 +33,23 @@ The package also installs the fprintd keep-alive/no-core drop-ins, the suspend/r
 
 The host and sensor must share the same 32-byte PSK or TLS cannot start. Installing libfprint alone is insufficient. Setup first performs a read-only comparison with `/var/lib/fprint/goodix5503/psk.bin`; a match exits without writing. Otherwise it requires exact interactive confirmation, creates a random PSK, backs up the readable old records, performs one fixed provisioning write with immediate readback, and atomically installs a root-owned `0600` host key.
 
+Install the setup tool and run its initial check as the desktop user. Do not prefix it with `sudo`; it invokes sudo only for a few fixed helpers:
+
 ```bash
 python -m venv .venv
 .venv/bin/pip install -e '.[whitebox]'
-
-# Only if setup reports that the pinned official encoder is missing:
-bash scripts/download-windows-drivers.sh
-bash scripts/extract-windows-drivers.sh
-
-# Run as the desktop user, not with sudo; fixed helpers invoke sudo themselves.
 .venv/bin/goodix-5503-setup
 ```
+
+If it reports `already-paired-no-write`, the existing PSK is ready and no other pairing command is needed. If it reports that the pinned official encoder is missing, run:
+
+```bash
+bash scripts/download-windows-drivers.sh
+bash scripts/extract-windows-drivers.sh
+.venv/bin/goodix-5503-setup
+```
+
+A clean Linux installation normally has no host PSK, so new users will usually follow the second path. Setup warns that Windows fingerprint pairing will stop working and requires the displayed confirmation text; without confirmation it does not generate a key, create a backup, or write the sensor.
 
 Provisioning is never run by package install or upgrade. An ambiguous write is not retried automatically. Keep the owner-only files under `artifacts/device-backup/` and rerun setup; it preserves the original backup, validates the prepared key, and first checks whether the sensor already committed it.
 

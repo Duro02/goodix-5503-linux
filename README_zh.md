@@ -33,17 +33,23 @@ sudo pacman -U --noconfirm --overwrite "*" .tools/packages/libfprint-goodix5503-
 
 主机和传感器必须持有同一个 32 字节 PSK，否则驱动无法建立 TLS，单独安装 libfprint 包没有用。setup 会先只读检查 `/var/lib/fprint/goodix5503/psk.bin` 与设备状态：已经匹配时不写任何内容；不匹配时会明确警告原 Windows 指纹配对将失效，并要求用户输入确认后才生成随机 PSK、备份可读旧记录、执行一次固定写入、立即回读验证并原子安装 root-owned `0600` 主机密钥。
 
+先安装 setup 工具并执行一次检查。必须以桌面用户运行，不要在命令前加 `sudo`；程序只会对几个固定 helper 调用 sudo：
+
 ```bash
 python -m venv .venv
 .venv/bin/pip install -e '.[whitebox]'
-
-# 仅当 setup 提示缺少固定版本的官方编码器时执行：
-bash scripts/download-windows-drivers.sh
-bash scripts/extract-windows-drivers.sh
-
-# 必须以桌面用户运行，不要 sudo；程序只对固定 helper 使用 sudo
 .venv/bin/goodix-5503-setup
 ```
+
+如果显示 `already-paired-no-write`，说明现有 PSK 可以直接使用，不需要执行其他配对命令。如果提示缺少固定版本的官方编码器，则执行：
+
+```bash
+bash scripts/download-windows-drivers.sh
+bash scripts/extract-windows-drivers.sh
+.venv/bin/goodix-5503-setup
+```
+
+全新 Linux 安装通常没有主机 PSK，因此一般会走第二种流程。setup 会警告 Windows 指纹配对将失效，并要求输入指定文字；没有确认就不会生成密钥、备份或写入传感器。
 
 PSK 写入不是包安装脚本的一部分，不会在升级时重复执行。写入结果不明确时不会自动重试。保留 `artifacts/device-backup/` 下仅用户可读的文件并重新运行 setup；它会保留原始备份、验证准备好的密钥，并先判断传感器是否已经提交该密钥。
 
