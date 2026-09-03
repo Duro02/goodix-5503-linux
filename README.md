@@ -13,19 +13,39 @@ A Linux driver for the Goodix `27c6:5503` fingerprint sensor found in many Lenov
 ## Limitations
 
 - **Recognition rate**: the same finger does not always pass on the first press — in practice about half of the presses need a second try, and a retry almost always works. The cause is press deformation (force, angle) exceeding the matcher's geometric tolerance; it is a matcher tuning problem, documented in `docs/libfprint-driver-plan.md`.
-- **One device combination only**: sensor `27c6:5503` with official firmware `GF3258_RTSEC_APP_10063`. Other firmware versions are not supported.
-- **No firmware writes, no PSK changes**: the probing tools are read-only; an existing Windows pairing key on the device is left untouched.
+- **One device combination only**: sensor `27c6:5503` with firmware `GF3258_RTSEC_APP_10063` and IAP `MILAN_RTSEC_IAP_10027`. Other firmware/IAP versions are not supported.
+- **No firmware writes; no runtime PSK writes**: the driver and probe only read pairing state. A single fixed PSK write is available only through an explicitly invoked `goodix-5503-setup`, after warning that the existing Windows fingerprint pairing will stop working and requiring exact confirmation.
 
 ## Install
 
-On Arch (needs `opencv`, `gobject-introspection`):
+This assumes that fprintd and PAM are already installed/configured. On Arch, install the build and setup prerequisites, then build the custom libfprint:
 
 ```bash
+sudo pacman -S --needed base-devel git meson ninja gobject-introspection \
+  cairo opencv libgudev libgusb openssl pixman python python-pip curl innoextract
 bash packaging/arch/build-package.sh
 sudo pacman -U --noconfirm --overwrite "*" .tools/packages/libfprint-goodix5503-*.pkg.tar.zst
 ```
 
-The driver is a libfprint plugin; `fprintd` picks up the device automatically after installation.
+The package also installs the fprintd keep-alive/no-core drop-ins, the suspend/resume restart hook, and an optional user warm-up unit. It never silently generates or writes a PSK.
+
+### PSK pairing (mandatory first-use check)
+
+The host and sensor must share the same 32-byte PSK or TLS cannot start. Installing libfprint alone is insufficient. Setup first performs a read-only comparison with `/var/lib/fprint/goodix5503/psk.bin`; a match exits without writing. Otherwise it requires exact interactive confirmation, creates a random PSK, backs up the readable old records, performs one fixed provisioning write with immediate readback, and atomically installs a root-owned `0600` host key.
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -e '.[whitebox]'
+
+# Only if setup reports that the pinned official encoder is missing:
+bash scripts/download-windows-drivers.sh
+bash scripts/extract-windows-drivers.sh
+
+# Run as the desktop user, not with sudo; fixed helpers invoke sudo themselves.
+.venv/bin/goodix-5503-setup
+```
+
+Provisioning is never run by package install or upgrade. An ambiguous write is not retried automatically. Keep the owner-only files under `artifacts/device-backup/` and rerun setup; it preserves the original backup, validates the prepared key, and first checks whether the sensor already committed it.
 
 ## Usage
 
@@ -35,15 +55,7 @@ Enrol a finger:
 sudo fprintd-enroll $USER
 ```
 
-Any login manager with fprintd configured in PAM can then unlock with a fingerprint. To keep the sensor "warm" (instant unlock) between unlocks, fprintd must stay running:
-
-```bash
-sudo systemctl edit fprintd.service
-# add:
-# [Service]
-# ExecStart=
-# ExecStart=/usr/lib/fprintd --no-timeout
-```
+Any login manager with fprintd configured in PAM can then unlock with a fingerprint. To keep the sensor "warm" between unlocks, fprintd must stay running. The Arch package installs the `--no-timeout` drop-in under `/usr/lib/systemd/system/fprintd.service.d/`; see `packaging/systemd/README.md` for manual source deployments.
 
 ## Safety and probing
 
@@ -56,7 +68,7 @@ The probe tool only allows a small set of read-only commands:
 
 The probe CLI still blocks firmware, PSK, config, reset, register writes and image capture. The pairing and experimental runtime modules in this repo have fixed, bounded command sets; they do not expose a generic raw-command interface through the probe CLI. Firmware/IAP writes and arbitrary protected-record writes remain prohibited or separately approved persistent operations.
 
-"Non-persistent" does not mean zero risk: the tools still send query commands over USB. If the firmware misbehaves the device may become unresponsive until a reboot or full shutdown. But nothing modifies Flash, PSK or IAP.
+"Non-persistent" does not mean zero risk: the probe still sends query commands over USB. If the firmware misbehaves the device may become unresponsive until a reboot or full shutdown. The probe never modifies Flash, PSK or IAP; only the separately confirmed setup workflow can make its one bounded PSK write.
 
 ## Probing hardware
 
@@ -74,15 +86,11 @@ PSK state is not queried by default. Protected-record operations first set and v
 
 ## Deploying the systemd helpers
 
-The repo ships the systemd configuration used on the developer machine
-(`packaging/systemd/`): fprintd keep-alive, wake-up auto-restart (fixes
-the suspend/resume claim race, upstream libfprint #731), login warm-up
-and optional diagnostics. See `packaging/systemd/README.md` for install
-commands.
+The repo ships systemd configuration (`packaging/systemd/`): fprintd keep-alive, core-dump prevention, wake-up auto-restart (fixes the suspend/resume claim race, upstream libfprint #731), and optional login warm-up. The Arch package installs the first three plus the disabled warm-up unit. Debug logging, fingerprint-image dumps, and the experimental quality gate are never installed by default. See `packaging/systemd/README.md` for manual deployment.
 
 ## Development
 
-- `src/goodix5503/`: the read-only probing CLI (`goodix-5503-probe`)
+- `src/goodix5503/`: the read-only probe and explicitly confirmed pairing setup CLIs
 - `libfprint/`: the C driver, the SIGFM matcher, and the libfprint patch
 - Tests (no hardware needed): `PYTHONPATH=src python -m unittest discover -s tests -v`
 

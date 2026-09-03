@@ -1,7 +1,7 @@
 # Maintainer: local Goodix 5503 integration
 pkgname=libfprint-goodix5503
 pkgver=1.94.100
-pkgrel=38
+pkgrel=39
 pkgdesc='libfprint with bounded Goodix 27c6:5503 SIGFM support'
 arch=(x86_64)
 url='https://fprint.freedesktop.org/'
@@ -23,6 +23,7 @@ prepare() {
   cp -a "$srcdir/overlay/libfprint/sigfm" libfprint/
   cp "$srcdir"/overlay/libfprint/drivers/goodix5503* libfprint/drivers/
   cp "$srcdir"/overlay/libfprint/tests/test-goodix5503-sigfm-{core.cpp,detection.c,gallery.cpp} tests/
+  cp "$srcdir/overlay/libfprint/tests/test-goodix5503-sigfm.cpp" tests/
 
   python - <<'PY'
 from pathlib import Path
@@ -75,9 +76,20 @@ PY
 
 check() {
   meson test -C build --print-errorlogs \
-    goodix5503-sigfm-core goodix5503-sigfm-detection goodix5503-sigfm-gallery
+    goodix5503-sigfm goodix5503-sigfm-core \
+    goodix5503-sigfm-detection goodix5503-sigfm-gallery
 }
 
 package() {
   meson install -C build --destdir "$pkgdir"
+
+  local helpers="$srcdir/overlay/packaging/systemd"
+  install -Dm0644 "$helpers/fprintd.service.d/keep-running.conf" \
+    "$pkgdir/usr/lib/systemd/system/fprintd.service.d/20-goodix5503-keep-running.conf"
+  install -Dm0644 "$helpers/fprintd.service.d/10-goodix-no-core.conf" \
+    "$pkgdir/usr/lib/systemd/system/fprintd.service.d/10-goodix5503-no-core.conf"
+  install -Dm0755 "$helpers/goodix5503-fprintd-restart.sh" \
+    "$pkgdir/usr/lib/systemd/system-sleep/goodix5503-fprintd-restart"
+  install -Dm0644 "$helpers/goodix-warmup.service" \
+    "$pkgdir/usr/lib/systemd/user/goodix-warmup.service"
 }

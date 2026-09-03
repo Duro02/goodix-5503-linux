@@ -13,19 +13,39 @@
 ## 限制
 
 - **识别率**：同一根手指并不是每次都能一次通过——实测约一半的概率需要按第二次，重按基本都能过。失败的原因是按压变形（力度、角度）超出匹配算法的容差，属于算法参数问题，记录在 `docs/libfprint-driver-plan.md`。
-- **只支持这一种设备组合**：传感器 `27c6:5503` + 官方固件 `GF3258_RTSEC_APP_10063`。其他固件版本的设备不支持。
-- **不刷固件、不改 PSK**：驱动的探测工具只读；设备上已有的 Windows 配对密钥不会被改动。
+- **只支持这一种设备组合**：传感器 `27c6:5503`、固件 `GF3258_RTSEC_APP_10063`、IAP `MILAN_RTSEC_IAP_10027`。其他固件或 IAP 版本不支持。
+- **不刷固件、运行时不改 PSK**：日常驱动与 probe 只读配对状态。只有用户显式运行 `goodix-5503-setup` 并确认 Windows 指纹配对会失效时，setup 才会执行一次固定 PSK 配对写入和立即回读校验。
 
 ## 安装
 
-在 Arch 上构建安装（需要 `opencv`、`gobject-introspection`）：
+前提是系统已经有可用的 `fprintd`/PAM 环境。在 Arch 上先安装构建与 setup 依赖，再构建定制 libfprint：
 
 ```bash
+sudo pacman -S --needed base-devel git meson ninja gobject-introspection \
+  cairo opencv libgudev libgusb openssl pixman python python-pip curl innoextract
 bash packaging/arch/build-package.sh
 sudo pacman -U --noconfirm --overwrite "*" .tools/packages/libfprint-goodix5503-*.pkg.tar.zst
 ```
 
-驱动是 libfprint 的一个插件，安装后 `fprintd` 自动就能识别设备。
+安装包会同时部署 fprintd 常驻/no-core drop-in、挂起恢复重启 hook，并提供可选的登录预热 user service；不会静默生成或写入 PSK。
+
+### PSK 配对（首次使用必须检查）
+
+主机和传感器必须持有同一个 32 字节 PSK，否则驱动无法建立 TLS，单独安装 libfprint 包没有用。setup 会先只读检查 `/var/lib/fprint/goodix5503/psk.bin` 与设备状态：已经匹配时不写任何内容；不匹配时会明确警告原 Windows 指纹配对将失效，并要求用户输入确认后才生成随机 PSK、备份可读旧记录、执行一次固定写入、立即回读验证并原子安装 root-owned `0600` 主机密钥。
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -e '.[whitebox]'
+
+# 仅当 setup 提示缺少固定版本的官方编码器时执行：
+bash scripts/download-windows-drivers.sh
+bash scripts/extract-windows-drivers.sh
+
+# 必须以桌面用户运行，不要 sudo；程序只对固定 helper 使用 sudo
+.venv/bin/goodix-5503-setup
+```
+
+PSK 写入不是包安装脚本的一部分，不会在升级时重复执行。写入结果不明确时不会自动重试。保留 `artifacts/device-backup/` 下仅用户可读的文件并重新运行 setup；它会保留原始备份、验证准备好的密钥，并先判断传感器是否已经提交该密钥。
 
 ## 使用
 
@@ -35,15 +55,7 @@ sudo pacman -U --noconfirm --overwrite "*" .tools/packages/libfprint-goodix5503-
 sudo fprintd-enroll $USER
 ```
 
-之后系统锁屏（SDDM/omarchy/GNOME 等）在 PAM 里配了 fprintd 的都可以用指纹解锁。为了让驱动在多次解锁之间保持"热"状态（即点即用），fprintd 需要常驻：
-
-```bash
-sudo systemctl edit fprintd.service
-# 加入:
-# [Service]
-# ExecStart=
-# ExecStart=/usr/lib/fprintd --no-timeout
-```
+之后系统锁屏（SDDM/omarchy/GNOME 等）在 PAM 里配了 fprintd 的都可以用指纹解锁。为了让驱动在多次解锁之间保持"热"状态（即点即用），fprintd 需要常驻。Arch 包已经把 `--no-timeout` drop-in 安装到 `/usr/lib/systemd/system/fprintd.service.d/`；从源码手工部署时见 `packaging/systemd/README.md`。
 
 ## 安全与探测
 
@@ -57,7 +69,7 @@ sudo systemctl edit fprintd.service
 
 默认 probe CLI 仍会阻止固件、PSK、配置、reset、寄存器写入和图像采集。仓库内另有边界固定的配对与实验性 runtime 模块；它们不通过 probe CLI 暴露通用 raw-command 接口。固件/IAP 与任意 protected-record 写入仍属于禁止或单独审批的持久操作。
 
-“非持久性”不代表完全没有风险：程序仍会向 USB 设备发送查询命令。固件异常时，设备可能暂时无响应，需要重启或彻底关机后恢复。但它不会主动修改 Flash、PSK 或 IAP。
+“非持久性”不代表完全没有风险：probe 仍会向 USB 设备发送查询命令。固件异常时，设备可能暂时无响应，需要重启或彻底关机后恢复。probe 不会修改 Flash、PSK 或 IAP；只有单独确认的 setup 流程能执行一次有界 PSK 写入。
 
 ## 探测硬件
 
@@ -76,11 +88,11 @@ sudo .venv/bin/goodix-5503-probe --backup-rollback-set
 
 ## systemd 部署配件
 
-仓库附带开发者机器上使用的 systemd 配置（`packaging/systemd/`）：fprintd 常驻、唤醒自动重启（修复挂起恢复后的认领竞态，对应上游 libfprint #731）、登录预热与可选诊断开关。安装命令见 `packaging/systemd/README.md`。
+仓库附带 systemd 配置（`packaging/systemd/`）：fprintd 常驻、禁止 core dump、唤醒自动重启（修复挂起恢复后的认领竞态，对应上游 libfprint #731）和可选登录预热。Arch 包自动安装前三项与预热 unit 文件，但不会替用户启用 user service。调试日志、指纹图像 dump 和实验性质量门不会默认安装。手工部署说明见 `packaging/systemd/README.md`。
 
 ## 开发
 
-- `src/goodix5503/`：Python 探测与实验工具（只读，不碰固件/PSK）
+- `src/goodix5503/`：只读 probe，以及需要明确确认的 PSK 配对 setup 工具
 - `libfprint/`：C 驱动源码、SIGFM 匹配算法、针对 libfprint 的 patch
 - 测试（不需要硬件）：`PYTHONPATH=src python -m unittest discover -s tests -v`
 

@@ -40,7 +40,8 @@ cp -a --reflink=auto "$source_dir/." "$work_dir/source"
 cp -a -- "$repo_dir/libfprint/sigfm" "$work_dir/source/libfprint/"
 patch -d "$work_dir/source" -p1 --forward --batch \
   < "$repo_dir/libfprint/patches/sigfm-core-v1.94.100.patch"
-cp -- "$repo_dir/libfprint/tests/test-goodix5503-sigfm-core.cpp" \
+cp -- "$repo_dir/libfprint/tests/test-goodix5503-sigfm.cpp" \
+      "$repo_dir/libfprint/tests/test-goodix5503-sigfm-core.cpp" \
       "$repo_dir/libfprint/tests/test-goodix5503-sigfm-detection.c" \
       "$repo_dir/libfprint/tests/test-goodix5503-sigfm-gallery.cpp" \
       "$work_dir/source/tests/"
@@ -88,11 +89,12 @@ meson setup "$work_dir/build" "$work_dir/source" \
 ninja -C "$work_dir/build" \
   libfprint/libfprint-2.so.2.0.0 \
   examples/enroll examples/verify examples/img-capture \
+  tests/test-goodix5503-sigfm \
   tests/test-goodix5503-sigfm-core \
   tests/test-goodix5503-sigfm-detection \
   tests/test-goodix5503-sigfm-gallery
 meson test -C "$work_dir/build" --print-errorlogs \
-  goodix5503-sigfm-core goodix5503-sigfm-detection \
+  goodix5503-sigfm goodix5503-sigfm-core goodix5503-sigfm-detection \
   goodix5503-sigfm-gallery
 
 cc -std=c11 -Wall -Wextra -Werror -O2 \

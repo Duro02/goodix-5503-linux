@@ -76,12 +76,36 @@ pkginfo=$tmp/.PKGINFO
 buildinfo=$tmp/.BUILDINFO
 hwdb=$tmp/usr/lib/udev/hwdb.d/60-autosuspend-libfprint-2.hwdb
 library=$tmp/usr/lib/libfprint-2.so.2.0.0
+keep_running=$tmp/usr/lib/systemd/system/fprintd.service.d/20-goodix5503-keep-running.conf
+no_core=$tmp/usr/lib/systemd/system/fprintd.service.d/10-goodix5503-no-core.conf
+resume_hook=$tmp/usr/lib/systemd/system-sleep/goodix5503-fprintd-restart
+warmup=$tmp/usr/lib/systemd/user/goodix-warmup.service
 grep -qx 'pkgname = libfprint-goodix5503' "$pkginfo"
-grep -qx 'pkgver = 1.94.100-38' "$pkginfo"
+grep -qx 'pkgver = 1.94.100-39' "$pkginfo"
 grep -qx 'provides = libfprint=1.94.100' "$pkginfo"
 grep -qx 'provides = libfprint-2.so=2-64' "$pkginfo"
 grep -qx "builddate = $epoch" "$pkginfo"
 grep -qx "builddate = $epoch" "$buildinfo"
+grep -qx 'packager = goodix-5503-linux release builder' "$buildinfo"
+grep -qx 'builddir = /tmp/goodix5503-arch-package-build/build' "$buildinfo"
+grep -qx 'startdir = /tmp/goodix5503-arch-package-build/run' "$buildinfo"
+if grep -Eq '/home/|/Users/' "$buildinfo"; then
+  printf 'package build metadata contains a personal checkout path\n' >&2
+  exit 1
+fi
+
+grep -qx 'ExecStart=/usr/lib/fprintd --no-timeout' "$keep_running"
+grep -qx 'LimitCORE=0' "$no_core"
+grep -qx '\[ "$1" = post \] && systemctl restart fprintd.service' "$resume_hook"
+grep -qx 'ExecStart=/usr/bin/timeout 10 /usr/bin/fprintd-verify %u' "$warmup"
+[[ $(stat -c %a "$keep_running") == 644 ]]
+[[ $(stat -c %a "$no_core") == 644 ]]
+[[ $(stat -c %a "$resume_hook") == 755 ]]
+[[ $(stat -c %a "$warmup") == 644 ]]
+if find "$tmp/usr/lib/systemd" -type f \( -name 'debug.conf' -o -name 'dump.conf' -o -name 'quality.conf' \) | grep -q .; then
+  printf 'package unexpectedly enables diagnostic/experimental drop-ins\n' >&2
+  exit 1
+fi
 
 python - "$hwdb" <<'PY'
 from pathlib import Path

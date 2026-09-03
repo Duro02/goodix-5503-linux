@@ -5,7 +5,23 @@ repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 build_root="$repo_dir/.tools/arch-package-build"
 pkgdest="$repo_dir/.tools/packages"
 source_date_epoch=1785018985
-package_glob='libfprint-goodix5503-1.94.100-38-x86_64.pkg.tar.zst'
+package_glob='libfprint-goodix5503-1.94.100-39-x86_64.pkg.tar.zst'
+runtime_root=/tmp/goodix5503-arch-package-build
+
+exec 9>"/tmp/goodix5503-arch-package-build-${UID}.lock"
+if ! flock -n 9; then
+  printf 'another Goodix 5503 package build is active\n' >&2
+  exit 1
+fi
+if [[ -e $runtime_root ]] &&
+   { [[ ! -d $runtime_root || -L $runtime_root ]] ||
+     [[ $(stat -c %u "$runtime_root") != "$UID" ]]; }; then
+  printf 'refusing unsafe fixed build directory: %s\n' "$runtime_root" >&2
+  exit 1
+fi
+rm -rf -- "$runtime_root"
+install -d -m 0700 "$runtime_root"
+trap 'rm -rf -- "$runtime_root"' EXIT
 
 "$repo_dir/scripts/test-libfprint-proto.sh"
 
@@ -28,9 +44,14 @@ tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 --numeric-owne
   libfprint/drivers/goodix5503-image.h \
   libfprint/drivers/goodix5503-tls.c \
   libfprint/drivers/goodix5503-tls.h \
+  libfprint/tests/test-goodix5503-sigfm.cpp \
   libfprint/tests/test-goodix5503-sigfm-core.cpp \
   libfprint/tests/test-goodix5503-sigfm-detection.c \
-  libfprint/tests/test-goodix5503-sigfm-gallery.cpp
+  libfprint/tests/test-goodix5503-sigfm-gallery.cpp \
+  packaging/systemd/fprintd.service.d/keep-running.conf \
+  packaging/systemd/fprintd.service.d/10-goodix-no-core.conf \
+  packaging/systemd/goodix5503-fprintd-restart.sh \
+  packaging/systemd/goodix-warmup.service
 tar -xf "$build_root/common/overlay-input.tar" -C "$build_root/common/overlay"
 rm -f -- "$build_root/common/overlay-input.tar"
 tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 --numeric-owner \
@@ -39,7 +60,7 @@ overlay_sha=$(sha256sum "$overlay" | cut -d' ' -f1)
 
 build_once() {
   local label=$1
-  local stage="$build_root/run"
+  local stage="$runtime_root/run"
 
   rm -rf -- "$stage"
   mkdir -p -- "$stage/out" "$build_root/results"
@@ -47,7 +68,8 @@ build_once() {
   cp -- "$overlay" "$stage/goodix5503-overlay.tar"
   sed -i "s/OVERLAY_SHA256/$overlay_sha/" "$stage/PKGBUILD"
   cp -- /etc/makepkg.conf "$stage/makepkg.conf"
-  printf '\nSOURCE_DATE_EPOCH=%s\n' "$source_date_epoch" >> "$stage/makepkg.conf"
+  printf "\nSOURCE_DATE_EPOCH=%s\nPACKAGER='goodix-5503-linux release builder'\nBUILDDIR='%s/build'\n" \
+    "$source_date_epoch" "$runtime_root" >> "$stage/makepkg.conf"
   (
     cd "$stage"
     SOURCE_DATE_EPOCH=$source_date_epoch \

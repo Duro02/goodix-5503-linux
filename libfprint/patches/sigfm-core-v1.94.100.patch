@@ -1300,12 +1300,22 @@ diff --git c/tests/meson.build w/tests/meson.build
 index aad0675..45bba8f 100644
 --- c/tests/meson.build
 +++ w/tests/meson.build
-@@ -300,6 +300,48 @@ else
+@@ -300,6 +300,58 @@ else
      endforeach
  endif
  
 +if 'goodix5503' in supported_drivers
 +    sigfm_test_inc = include_directories('../libfprint')
++    sigfm_matcher_test = executable('test-goodix5503-sigfm',
++        sources: ['test-goodix5503-sigfm.cpp'],
++        include_directories: [sigfm_test_inc, include_directories('../libfprint/sigfm')],
++        dependencies: sigfm_deps,
++        link_with: libsigfm,
++        cpp_args: ['-std=c++17'],
++    )
++    test('goodix5503-sigfm', sigfm_matcher_test,
++        suite: ['unit-tests'], env: envs)
++
 +    sigfm_core_test = executable('test-goodix5503-sigfm-core',
 +        sources: [
 +            'test-goodix5503-sigfm-core.cpp',

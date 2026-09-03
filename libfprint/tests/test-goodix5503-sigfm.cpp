@@ -3,9 +3,39 @@
 
 #include <array>
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
+
+#include <unistd.h>
+
+static std::string
+capture_null_match_stderr ()
+{
+  FILE *capture = tmpfile ();
+  assert (capture != nullptr);
+  fflush (stderr);
+  int saved_stderr = dup (STDERR_FILENO);
+  assert (saved_stderr >= 0);
+  assert (dup2 (fileno (capture), STDERR_FILENO) >= 0);
+  assert (sigfm_match_score (nullptr, nullptr) == 0);
+  fflush (stderr);
+  assert (dup2 (saved_stderr, STDERR_FILENO) >= 0);
+  close (saved_stderr);
+
+  assert (fseek (capture, 0, SEEK_END) == 0);
+  long length = ftell (capture);
+  assert (length >= 0);
+  assert (fseek (capture, 0, SEEK_SET) == 0);
+  std::string output (static_cast<std::size_t> (length), '\0');
+  if (!output.empty ())
+    assert (fread (output.data (), 1, output.size (), capture) == output.size ());
+  fclose (capture);
+  return output;
+}
 
 static std::vector<SigfmPix>
 synthetic_pattern ()
@@ -21,7 +51,7 @@ synthetic_pattern ()
 int
 main ()
 {
-  std::array<SigfmPix, 64> flat = { 0 };
+  std::array<SigfmPix, 64> flat{};
   auto pattern = synthetic_pattern ();
   SigfmImgInfo *info;
   SigfmImgInfo *copy;
@@ -33,7 +63,12 @@ main ()
   assert (sigfm_extract (nullptr, 8, 8) == nullptr);
   assert (sigfm_extract (flat.data (), 0, 8) == nullptr);
   assert (sigfm_extract (flat.data (), 8, -1) == nullptr);
-  assert (sigfm_match_score (nullptr, nullptr) == 0);
+  unsetenv ("GOODIX5503_SIGFM_DEBUG");
+  assert (capture_null_match_stderr ().empty ());
+  assert (setenv ("GOODIX5503_SIGFM_DEBUG", "1", 1) == 0);
+  assert (capture_null_match_stderr ().find ("SIGFM features") !=
+          std::string::npos);
+  unsetenv ("GOODIX5503_SIGFM_DEBUG");
 
   info = sigfm_extract (flat.data (), 8, 8);
   assert (info != nullptr);

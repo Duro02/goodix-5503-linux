@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdarg>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -43,6 +44,23 @@ constexpr auto distance_match = 0.90;
 constexpr auto length_match = 0.05;
 constexpr auto angle_match = 0.05;
 constexpr std::size_t min_match = 3;
+
+void sigfm_debug (const char *format, ...)
+  __attribute__ ((format (printf, 1, 2)));
+
+void
+sigfm_debug (const char *format, ...)
+{
+    const char *enabled = std::getenv ("GOODIX5503_SIGFM_DEBUG");
+    if (enabled == nullptr || std::strcmp (enabled, "1") != 0)
+        return;
+
+    va_list arguments;
+    va_start (arguments, format);
+    std::vfprintf (stderr, format, arguments);
+    va_end (arguments);
+}
+
 constexpr int sift_nfeatures = 512;
 constexpr auto sift_octave_layers = 3;
 constexpr auto sift_contrast_threshold = 0.04;
@@ -490,16 +508,15 @@ SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height)
 
 int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
 {
-    /* Calibration aid: the mismatch between live frames and the enrolled
-     * gallery is either a frame-side feature deficit, a gallery-side
-     * deficit, or content incompatibility. Log the descriptor counts on
-     * every comparison to tell those apart without touching image data. */
-    fprintf (stderr, "SIGFM features frame=%d enrolled=%d\n",
-             frame ? (int) frame->descriptors.rows : -1,
-             enrolled ? (int) enrolled->descriptors.rows : -1);
+    /* When explicitly enabled, descriptor counts distinguish a frame-side
+     * feature deficit, a gallery-side deficit, and content incompatibility
+     * without writing image data. Normal authentication emits no telemetry. */
+    sigfm_debug ("SIGFM features frame=%d enrolled=%d\n",
+                 frame ? (int) frame->descriptors.rows : -1,
+                 enrolled ? (int) enrolled->descriptors.rows : -1);
     if (frame == nullptr || enrolled == nullptr || frame->descriptors.empty() ||
         enrolled->descriptors.empty()) {
-        fprintf (stderr, "SIGFM score=0 (empty descriptors)\n");
+        sigfm_debug ("SIGFM score=0 (empty descriptors)\n");
         return 0;
     }
 
@@ -534,7 +551,7 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
             }
         }
         if (candidate_indices.value.size() < min_match) {
-            fprintf (stderr, "SIGFM score=0 (insufficient raw matches)\n");
+            sigfm_debug ("SIGFM score=0 (insufficient raw matches)\n");
             return 0;
         }
         candidate_descriptors.value.create(
@@ -571,7 +588,7 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
             }
         }
         if (matches.value.size() < min_match) {
-            fprintf (stderr, "SIGFM score=0 (insufficient mutual matches)\n");
+            sigfm_debug ("SIGFM score=0 (insufficient mutual matches)\n");
             return 0;
         }
 
@@ -605,7 +622,7 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
             }
         }
         if (angles.value.size() < min_match) {
-            fprintf (stderr, "SIGFM score=0 (insufficient geometric matches)\n");
+            sigfm_debug ("SIGFM score=0 (insufficient geometric matches)\n");
             return 0;
         }
 
@@ -623,14 +640,14 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
                 if (1.0 - std::min(a.sine, b.sine) / max_sine <= angle_match &&
                     1.0 - std::min(a.cosine, b.cosine) / max_cosine <= angle_match) {
                     if (count == INT_MAX) {
-                        fprintf (stderr, "SIGFM score=INT_MAX\n");
+                        sigfm_debug ("SIGFM score=INT_MAX\n");
                         return INT_MAX;
                     }
                     count++;
                 }
             }
         }
-        fprintf (stderr, "SIGFM score=%d (threshold driver-side)\n", count);
+        sigfm_debug ("SIGFM score=%d (threshold driver-side)\n", count);
         return count;
     }
     catch (...) {

@@ -4,7 +4,7 @@ After=graphical-session.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/timeout 10 /usr/bin/fprintd-verify duro
+ExecStart=/usr/bin/timeout 10 /usr/bin/fprintd-verify %u
 SuccessExitStatus=124
 
 [Install]
