@@ -48,7 +48,7 @@ int main ()
                                     NULL));
   g_object_ref_sink (gallery);
   fpi_print_set_type (gallery, FPI_PRINT_SIGFM);
-  for (guint stage = 0; stage < 12; stage++)
+  for (guint stage = 0; stage < 24; stage++)
     {
       auto stage_image = pattern (stage);
       SigfmImgInfo *stage_info =
@@ -56,9 +56,19 @@ int main ()
       assert (stage_info != nullptr);
       g_autoptr(FpPrint) sample = single (stage_info);
       sigfm_free_info (stage_info);
+      if (stage == 0)
+        assert (!fpi_print_sigfm_is_duplicate (gallery, sample, 150, &error));
+      assert (error == nullptr);
       assert (fpi_print_add_print (gallery, sample, &error));
       assert (error == nullptr);
       assert (gallery->prints->len == stage + 1);
+      if (stage == 0)
+        {
+          g_autoptr(FpPrint) duplicate = single (info);
+          assert (fpi_print_sigfm_is_duplicate (gallery, duplicate, 150,
+                                                &error));
+          assert (error == nullptr);
+        }
       if (stage == 6)
         {
           serialized = reinterpret_cast<guchar *> (0x1);
@@ -73,7 +83,7 @@ int main ()
   {
     g_autoptr(FpPrint) sample = single (info);
     assert (!fpi_print_add_print (gallery, sample, &error));
-    assert (error != nullptr && gallery->prints->len == 12);
+    assert (error != nullptr && gallery->prints->len == 24);
     g_clear_error (&error);
   }
   assert (fp_print_serialize (gallery, &serialized, &serialized_len, &error));

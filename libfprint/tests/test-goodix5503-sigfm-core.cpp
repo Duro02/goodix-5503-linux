@@ -87,7 +87,7 @@ make_fp3 (GVariant *print_data)
   return bytes;
 }
 
-static GVariant *make_gallery (guint count = 12)
+static GVariant *make_gallery (guint count = 24)
 {
   auto sample = make_sample ();
   GVariantBuilder nested = G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE ("(aay)"));
@@ -129,7 +129,7 @@ int main ()
   std::memset (serialized, 0, serialized_len);
   g_free (serialized);
 
-  for (guint count : { 7U, 13U })
+  for (guint count : { 7U, 25U })
     {
       auto wrong_count = make_fp3 (make_gallery (count));
       g_clear_object (&print);

@@ -293,7 +293,7 @@ index f9c60b3..3aa6049 100644
    if (g_task_had_error (task))
      {
 diff --git c/libfprint/fp-print.c w/libfprint/fp-print.c
-index d541437..c98fa35 100644
+index d541437..7282e69 100644
 --- c/libfprint/fp-print.c
 +++ w/libfprint/fp-print.c
 @@ -23,6 +23,12 @@
@@ -304,7 +304,7 @@ index d541437..c98fa35 100644
 +#include "sigfm/sigfm.hpp"
 +
 +#define SIGFM_ENROLL_SAMPLES 8
-+#define SIGFM_MAX_ENROLL_SAMPLES 12
++#define SIGFM_MAX_ENROLL_SAMPLES 24
 +#define SIGFM_MAX_SAMPLE_SIZE (1024 * 1024)
  
  /**
@@ -345,7 +345,7 @@ index d541437..c98fa35 100644
 +      print->prints->len > SIGFM_MAX_ENROLL_SAMPLES)
 +    {
 +      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-+                           "SIGFM gallery must contain 8 to 12 samples");
++                           "SIGFM gallery must contain 8 to 24 samples");
 +      return NULL;
 +    }
 +  for (guint i = 0; i < print->prints->len; i++)
@@ -577,7 +577,7 @@ index d541437..c98fa35 100644
        {
          g_autoptr(GVariant) fp_data = g_variant_get_child_value (print_data, 0);
 diff --git c/libfprint/fpi-image-device.c w/libfprint/fpi-image-device.c
-index 87bdc60..c2050e6 100644
+index 87bdc60..55e89b8 100644
 --- c/libfprint/fpi-image-device.c
 +++ w/libfprint/fpi-image-device.c
 @@ -22,6 +22,7 @@
@@ -622,8 +622,32 @@ index 87bdc60..c2050e6 100644
        if (!fpi_print_add_from_image (print, image, &error))
          {
            g_clear_object (&print);
-@@ -304,18 +309,34 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+@@ -302,20 +307,58 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+       FpPrint *enroll_print;
+       fpi_device_get_enroll_data (device, &enroll_print);
  
++      if (print && priv->algorithm == FPI_DEVICE_ALGO_SIGFM)
++        {
++          gboolean duplicate = fpi_print_sigfm_is_duplicate (
++            enroll_print, print, priv->sigfm_threshold, &error);
++
++          if (error)
++            {
++              g_clear_object (&print);
++              fp_image_device_maybe_complete_action (self,
++                                                     g_steal_pointer (&error));
++              fpi_image_device_deactivate (self, TRUE);
++              return;
++            }
++          if (duplicate)
++            {
++              g_clear_object (&print);
++              error = fpi_device_retry_new_msg (
++                FP_DEVICE_RETRY_CENTER_FINGER,
++                "Sample is too similar; move your finger and retry");
++            }
++        }
++
        if (print)
          {
 -          fpi_print_add_print (enroll_print, print);
@@ -661,7 +685,7 @@ index 87bdc60..c2050e6 100644
          }
        else
          {
-@@ -333,7 +354,14 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
+@@ -333,7 +376,14 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
          {
            FpPrint *template = g_ptr_array_index (templates, i);
  
@@ -677,7 +701,7 @@ index 87bdc60..c2050e6 100644
              {
                result = template;
                break;
-@@ -445,7 +473,16 @@ fpi_image_device_report_finger_status (FpImageDevice *self,
+@@ -445,7 +495,16 @@ fpi_image_device_report_finger_status (FpImageDevice *self,
        fp_image_device_change_state (self, FPI_IMAGE_DEVICE_STATE_IDLE);
  
        if (action != FPI_DEVICE_ACTION_ENROLL)
@@ -695,7 +719,7 @@ index 87bdc60..c2050e6 100644
        else
          fp_image_device_enroll_maybe_await_finger_on (self);
      }
-@@ -485,10 +522,17 @@ fpi_image_device_image_captured (FpImageDevice *self, FpImage *image)
+@@ -485,10 +544,17 @@ fpi_image_device_image_captured (FpImageDevice *self, FpImage *image)
  
    /* XXX: We also detect minutiae in capture mode, we solely do this
     *      to normalize the image which will happen as a by-product. */
@@ -909,7 +933,7 @@ index fdc376c..4c3224e 100644
 +                                        GError      **error);
 +SigfmImgInfo *fpi_image_steal_sigfm_info (FpImage *self);
 diff --git c/libfprint/fpi-print.c w/libfprint/fpi-print.c
-index 6c5e20d..db01f62 100644
+index 6c5e20d..322173b 100644
 --- c/libfprint/fpi-print.c
 +++ w/libfprint/fpi-print.c
 @@ -24,6 +24,10 @@
@@ -919,7 +943,7 @@ index 6c5e20d..db01f62 100644
 +#include "sigfm/sigfm.hpp"
 +
 +#define SIGFM_ENROLL_SAMPLES 8
-+#define SIGFM_MAX_ENROLL_SAMPLES 12
++#define SIGFM_MAX_ENROLL_SAMPLES 24
  
  /**
   * SECTION: fpi-print
@@ -1023,10 +1047,50 @@ index 6c5e20d..db01f62 100644
    minutiae = fp_image_get_minutiae (image);
    if (!minutiae || minutiae->len == 0)
      {
-@@ -268,6 +322,45 @@ fpi_print_bz3_match (FpPrint *print_template,
+@@ -268,6 +322,85 @@ fpi_print_bz3_match (FpPrint *print_template,
    return FPI_MATCH_FAIL;
  }
  
++gboolean
++fpi_print_sigfm_is_duplicate (FpPrint *gallery,
++                                FpPrint *sample,
++                                gint     threshold,
++                                GError **error)
++{
++  SigfmImgInfo *probe;
++
++  g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
++  if (gallery == NULL || sample == NULL || threshold <= 0 ||
++      gallery->type != FPI_PRINT_SIGFM ||
++      sample->type != FPI_PRINT_SIGFM ||
++      gallery->prints == NULL ||
++      gallery->prints->len > SIGFM_MAX_ENROLL_SAMPLES ||
++      sample->prints == NULL || sample->prints->len != 1)
++    {
++      g_set_error_literal (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_DATA_INVALID,
++                           "Invalid SIGFM duplicate check data");
++      return FALSE;
++    }
++
++  probe = g_ptr_array_index (sample->prints, 0);
++  for (guint index = 0; index < gallery->prints->len; index++)
++    {
++      gint score = sigfm_match_score (probe,
++                                      g_ptr_array_index (gallery->prints,
++                                                         index));
++      if (score < 0)
++        {
++          g_set_error_literal (error, FP_DEVICE_ERROR,
++                               FP_DEVICE_ERROR_GENERAL,
++                               "SIGFM duplicate check failed");
++          return FALSE;
++        }
++      if (score >= threshold)
++        return TRUE;
++    }
++  return FALSE;
++}
++
 +FpiMatchResult
 +fpi_print_sigfm_match (FpPrint *template,
 +                       FpPrint *print,
@@ -1070,7 +1134,7 @@ index 6c5e20d..db01f62 100644
   * fpi_print_generate_user_id:
   * @print: #FpPrint to generate the ID for
 diff --git c/libfprint/fpi-print.h w/libfprint/fpi-print.h
-index 773407d..e2c4709 100644
+index 773407d..606685c 100644
 --- c/libfprint/fpi-print.h
 +++ w/libfprint/fpi-print.h
 @@ -16,6 +16,7 @@ typedef enum {
@@ -1093,14 +1157,18 @@ index 773407d..e2c4709 100644
  
  void     fpi_print_set_type (FpPrint     *print,
                               FpiPrintType type);
-@@ -49,6 +51,10 @@ FpiMatchResult fpi_print_bz3_match (FpPrint *print_template,
+@@ -49,6 +51,14 @@ FpiMatchResult fpi_print_bz3_match (FpPrint *print_template,
                                      FpPrint *print,
                                      gint     bz3_threshold,
                                      GError **error);
-+FpiMatchResult fpi_print_sigfm_match (FpPrint *temp,
-+                                      FpPrint *print,
-+                                      gint     threshold,
-+                                      GError **error);
++gboolean       fpi_print_sigfm_is_duplicate (FpPrint *gallery,
++                                              FpPrint *sample,
++                                              gint     threshold,
++                                              GError **error);
++FpiMatchResult fpi_print_sigfm_match        (FpPrint *temp,
++                                              FpPrint *print,
++                                              gint     threshold,
++                                              GError **error);
  
  /* Helpers to encode metadata into user ID strings. */
  gchar *  fpi_print_generate_user_id (FpPrint *print);

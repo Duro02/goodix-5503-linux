@@ -7,7 +7,7 @@ A Linux driver for the Goodix `27c6:5503` fingerprint sensor found in many Lenov
 ## Features
 
 - **Instant unlock**: the first authentication after boot or suspend takes a few seconds to calibrate; after that, as long as the machine stays up, every unlock is immediate (about 100 ms to get ready, fingerprint image within 60 ms of touch).
-- **Enrolment guidance**: 12 presses by default, vary position and angle between presses; bad presses are rejected and asked again; the final press waits until you lift your finger before showing "complete".
+- **Enrolment guidance**: 24 accepted presses by default; vary position and angle between presses. Overly similar or bad presses are rejected and asked again, and the final press waits until you lift your finger before showing "complete".
 - **Safety**: fingerprint images are processed locally and templates stay on the machine; no false acceptance with a different finger has been observed so far (limited testing, see Limitations).
 
 ## Limitations

@@ -2437,7 +2437,9 @@ fpi_device_goodix5503_class_init (FpiDeviceGoodix5503Class *klass)
    * storm (e.g. after suspend/resume) can trip it and brick unlocks for
    * everyone. Declare always-on like MOC devices do. */
   device_class->temp_hot_seconds = -1;
-  device_class->nr_enroll_stages = 12;
+  /* Collect a broad gallery: duplicate SIGFM samples are rejected by the
+   * image-device enrolment path and therefore do not advance this count. */
+  device_class->nr_enroll_stages = 24;
   device_class->features &= ~FP_DEVICE_FEATURE_UPDATE_PRINT;
 
   image_class->algorithm = FPI_DEVICE_ALGO_SIGFM;
