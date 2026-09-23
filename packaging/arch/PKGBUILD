@@ -1,12 +1,13 @@
 # Maintainer: local Goodix 5503 integration
 pkgname=libfprint-goodix5503
 pkgver=1.94.100
-pkgrel=39
+pkgrel=45
 pkgdesc='libfprint with bounded Goodix 27c6:5503 SIGFM support'
 arch=(x86_64)
 url='https://fprint.freedesktop.org/'
 license=(LGPL-2.1-or-later)
-depends=(glib2 glibc libgcc libgudev libgusb openssl pixman opencv)
+depends=(glib2 glibc libgcc libgudev libgusb openssl pixman opencv fprintd python-gobject)
+optdepends=('libnotify: desktop prompts during guided fingerprint enrollment')
 makedepends=(git meson ninja gobject-introspection python cairo)
 provides=("libfprint=${pkgver}" 'libfprint-2.so=2-64')
 conflicts=(libfprint)
@@ -78,6 +79,7 @@ check() {
   meson test -C build --print-errorlogs \
     goodix5503-sigfm goodix5503-sigfm-core \
     goodix5503-sigfm-detection goodix5503-sigfm-gallery
+  python -m unittest discover -s "$srcdir/overlay/tests" -p test_guided_enroll.py
 }
 
 package() {
@@ -92,4 +94,6 @@ package() {
     "$pkgdir/usr/lib/systemd/system-sleep/goodix5503-fprintd-restart"
   install -Dm0644 "$helpers/goodix-warmup.service" \
     "$pkgdir/usr/lib/systemd/user/goodix-warmup.service"
+  install -Dm0755 "$srcdir/overlay/tools/goodix_enroll.py" \
+    "$pkgdir/usr/bin/goodix5503-enroll"
 }

@@ -81,7 +81,7 @@ no_core=$tmp/usr/lib/systemd/system/fprintd.service.d/10-goodix5503-no-core.conf
 resume_hook=$tmp/usr/lib/systemd/system-sleep/goodix5503-fprintd-restart
 warmup=$tmp/usr/lib/systemd/user/goodix-warmup.service
 grep -qx 'pkgname = libfprint-goodix5503' "$pkginfo"
-grep -qx 'pkgver = 1.94.100-39' "$pkginfo"
+grep -qx 'pkgver = 1.94.100-45' "$pkginfo"
 grep -qx 'provides = libfprint=1.94.100' "$pkginfo"
 grep -qx 'provides = libfprint-2.so=2-64' "$pkginfo"
 grep -qx "builddate = $epoch" "$pkginfo"
@@ -102,6 +102,11 @@ grep -qx 'ExecStart=/usr/bin/timeout 10 /usr/bin/fprintd-verify %u' "$warmup"
 [[ $(stat -c %a "$no_core") == 644 ]]
 [[ $(stat -c %a "$resume_hook") == 755 ]]
 [[ $(stat -c %a "$warmup") == 644 ]]
+[[ $(stat -c %a "$tmp/usr/bin/goodix5503-enroll") == 755 ]]
+head -n 1 "$tmp/usr/bin/goodix5503-enroll" | grep -Fxq '#!/usr/bin/env python3'
+grep -Fxq 'TRAINING = 40' "$tmp/usr/bin/goodix5503-enroll"
+grep -Fxq 'CHECKS = 8' "$tmp/usr/bin/goodix5503-enroll"
+[[ ! -e $tmp/usr/share/applications/goodix5503-enroll.desktop ]]
 if find "$tmp/usr/lib/systemd" -type f \( -name 'debug.conf' -o -name 'dump.conf' -o -name 'quality.conf' \) | grep -q .; then
   printf 'package unexpectedly enables diagnostic/experimental drop-ins\n' >&2
   exit 1

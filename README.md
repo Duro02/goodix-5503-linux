@@ -1,18 +1,18 @@
 # goodix-5503-linux
 
-A Linux driver for the Goodix `27c6:5503` fingerprint sensor found in many Lenovo laptops. The project started as reverse engineering; the driver is now finished and in daily use on the developer's own machine.
+A Linux driver for the Goodix `27c6:5503` fingerprint sensor found in many Lenovo laptops. The driver was developed through reverse engineering and is being tested in daily use on the developer's machine; recognition reliability is still being improved.
 
 [中文版](README_zh.md)
 
 ## Features
 
-- **Instant unlock**: the first authentication after boot or suspend takes a few seconds to calibrate; after that, as long as the machine stays up, every unlock is immediate (about 100 ms to get ready, fingerprint image within 60 ms of touch).
-- **Enrolment guidance**: 24 accepted presses by default; vary position and angle between presses. Overly similar or bad presses are rejected and asked again, and the final press waits until you lift your finger before showing "complete".
+- **Fast capture**: cold activation takes a few seconds to calibrate. With the sensor state retained, preparation usually takes about 100 ms and an image arrives about 55 ms after touch detection. Quick retries reuse the confirmed lift baseline and background to avoid recalibrating during the next press; a USB reset requires cold activation again.
+- **Fresh enrolment**: collect 40 accepted presses in four guided groups, select 24 references, then require at least 6 matches in 8 new presses before completing. Those checks never enter the template. Near-identical samples are rejected, the enrolment quality gate is enabled by default, and completion waits for the final finger lift. See the [fresh-enrolment design and validation](docs/fresh-enrollment-2026-09-22.md).
 - **Safety**: fingerprint images are processed locally and templates stay on the machine; no false acceptance with a different finger has been observed so far (limited testing, see Limitations).
 
 ## Limitations
 
-- **Recognition rate**: the same finger does not always pass on the first press — in practice about half of the presses need a second try, and a retry almost always works. The cause is press deformation (force, angle) exceeding the matcher's geometric tolerance; it is a matcher tuning problem, documented in `docs/libfprint-driver-plan.md`.
+- **Recognition rate**: controlled presses and rapid lock-screen retries can behave very differently. Version 1.94.100-41 fixes a retry calibration defect; switching between the old and fixed driver reproduced the improvement in real lock-screen tests with the same template. Subsequent tests also identified coverage lost when replacing a template. Some presses still fail. See the [controlled enrollment experiment](docs/recognition-experiment-2026-09-22.md) and [lock-screen investigation](docs/recognition-runtime-gap-2026-09-22.md); their small-sample results do not establish a long-term success rate.
 - **One device combination only**: sensor `27c6:5503` with firmware `GF3258_RTSEC_APP_10063` and IAP `MILAN_RTSEC_IAP_10027`. Other firmware/IAP versions are not supported.
 - **No firmware writes; no runtime PSK writes**: the driver and probe only read pairing state. A single fixed PSK write is available only through an explicitly invoked `goodix-5503-setup`, after warning that the existing Windows fingerprint pairing will stop working and requiring exact confirmation.
 
@@ -55,11 +55,19 @@ Provisioning is never run by package install or upgrade. An ambiguous write is n
 
 ## Usage
 
-Enrol a finger:
+Use your existing system fingerprint settings to enrol a finger. Standard fprintd clients use the driver’s collection, selection and checks. An optional terminal guide adds placement and pacing prompts:
 
 ```bash
-sudo fprintd-enroll $USER
+goodix5503-enroll --finger right-index-finger
 ```
+
+Use the same finger throughout. Allow about 49 presses plus retries: one fprintd duplicate check, 40 training samples, followed by 8 checks using your natural unlocking motion. Keep your finger off the sensor until each ready prompt. Poor or duplicate training samples do not advance progress. Fewer than 6 successful checks means enrolment fails; repeat with more varied natural placement. Passing this short check is not a guarantee of a particular long-term unlock rate.
+
+The `1.94.100-45` guide asks you to use your usual unlock pressure and return your whole hand to the keyboard or mouse between presses. Ready prompts wait at least 2.5 seconds between presses and 6 seconds after each group; allow about 3–5 minutes. These pauses delay prompts, not the sensor. After fresh enrolment on 2026-09-23, five independent lock-screen rounds each succeeded on the first press; nine wrong-finger presses were rejected. This small sample does not establish a long-term success rate. See the [full results](docs/fresh-enrollment-2026-09-22.md).
+
+The helper uses the standard fprintd API and requests authorization through the desktop when needed. `--no-notify` uses terminal prompts only. It refuses to overwrite an existing finger unless you pass `--replace`: fprintd deletes that finger's previous template as soon as re-enrolment starts, and cancellation does not restore it. Standard `fprintd-enroll -f right-index-finger "$USER"` also uses the driver selection and checks, but lacks the helper's placement guidance and replacement guard. fprintd reports 49 stages including its initial duplicate check; the driver uses 48.
+
+The optional guide defaults to concise English; use `--language zh` for Chinese. No standalone application or menu entry is installed. System settings retain their own interface and do not display the optional guide’s timed prompts.
 
 Any login manager with fprintd configured in PAM can then unlock with a fingerprint. To keep the sensor "warm" between unlocks, fprintd must stay running. The Arch package installs the `--no-timeout` drop-in under `/usr/lib/systemd/system/fprintd.service.d/`; see `packaging/systemd/README.md` for manual source deployments.
 

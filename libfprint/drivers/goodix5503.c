@@ -9,6 +9,7 @@
 #include "goodix5503-proto.h"
 #include "goodix5503-security.h"
 #include "goodix5503-tls.h"
+#include "sigfm/sigfm.hpp"
 
 #include <errno.h>
 #include <openssl/crypto.h>
@@ -37,6 +38,7 @@
 #define GOODIX5503_TLS_FLAGS 0xb0
 #define GOODIX5503_MAX_FRESH_ATTEMPTS 10
 #define GOODIX5503_FRESH_RETRY_MS 500
+#define GOODIX5503_RECENT_LIFT_MS 1500
 #define GOODIX5503_MAX_TLS_CLIENT_FRAMES 3
 #define GOODIX5503_CAPTURE_DISCARD 0
 #define GOODIX5503_CAPTURE_BACKGROUND 1
@@ -123,6 +125,7 @@ struct _FpiDeviceGoodix5503
     guint8 background[GOODIX5503_PACKED_IMAGE_SIZE];
     Goodix5503Tls *tls;
     guint probe_retries;
+    gint64 last_lift_at;
   } warm;
   gboolean warm_rearmed;
   Goodix5503FdtRuntime fdt_runtime;
@@ -226,6 +229,7 @@ static void
 goodix5503_warm_invalidate (FpiDeviceGoodix5503 *self)
 {
   memset (self->warm.down_base, 0, sizeof self->warm.down_base);
+  self->warm.last_lift_at = 0;
 }
 
 static void
@@ -1729,14 +1733,10 @@ goodix5503_activate (FpImageDevice *device)
   self->activation_reported = FALSE;
   if (goodix5503_warm_available (self))
     {
-      /* Warm re-activation: the sensor kept power across the host-side
-       * release and close, so the TLS session, runtime configuration and
-       * the idle-calibrated base survive indefinitely. Hardware-verified
-       * (2026-08-30): restoring the state and arming detects a finger
-       * immediately — whether it is already resting on the sensor (the
-       * 0x32 event fires within ~60 ms of the arm) or arrives later. No
-       * probe is needed; if the device state was lost (suspend, power
-       * cycle) the arm completion falls back to the cold sequence. */
+      /* Restore the powered sensor's session across host-side releases.
+       * A recent accepted lift allows a direct re-arm; other activations
+       * probe to absorb residual signal and drift. A failed warm arm
+       * falls back to cold activation if the device lost its state. */
       memcpy (self->dac, self->warm.dac, sizeof self->dac);
       self->fdt_delta = self->warm.delta;
       memcpy (self->fdt_runtime.down_base, self->warm.down_base,
@@ -1752,6 +1752,24 @@ goodix5503_activate (FpImageDevice *device)
         }
       self->session_clean = TRUE;
       self->warm_rearmed = TRUE;
+
+      /* An accepted UP already supplies the official next-down base.
+       * A quick retry must not replace it with readings taken during the
+       * next press, or capture that press as a new background. This is
+       * the same direct UP-to-DOWN transition used during enrollment.
+       * A match normally cancels UP; it cannot take this path. */
+      if (self->warm.last_lift_at != 0 &&
+          g_get_monotonic_time () - self->warm.last_lift_at <
+            GOODIX5503_RECENT_LIFT_MS * G_TIME_SPAN_MILLISECOND)
+        {
+          fp_dbg ("warm retry: reusing confirmed lift base and background");
+          self->warm.last_lift_at = 0;
+          self->activated = TRUE;
+          self->activation_reported = TRUE;
+          fpi_image_device_activate_complete (device, NULL);
+          return;
+        }
+      self->warm.last_lift_at = 0;
 
       self->stage = "warm probe";
       fp_dbg ("warm activation: state restored; probing to absorb residual/drift");
@@ -2017,7 +2035,7 @@ goodix5503_quality_gate_enabled (void)
 {
   const gchar *setting = g_getenv ("GOODIX5503_QUALITY_GATE");
 
-  return setting != NULL && *setting != '\0' && *setting != '0';
+  return setting == NULL || (*setting != '\0' && *setting != '0');
 }
 
 static void
@@ -2238,6 +2256,7 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
     }
   if (action == GOODIX5503_FDT_EVENT_CAPTURE_DOWN)
     {
+      self->warm.last_lift_at = 0;
       memcpy (self->fdt_runtime.pending_raw, raw,
               sizeof self->fdt_runtime.pending_raw);
       self->fdt_runtime.pending_touch_flag = touch_flag;
@@ -2249,9 +2268,12 @@ goodix5503_fdt_event_received (FpiDeviceGoodix5503 *self,
   else
     {
       goodix5503_fdt_next_down_base (raw, self->fdt_runtime.down_base);
-      if (fpi_device_get_current_action (FP_DEVICE (self)) ==
-          FPI_DEVICE_ACTION_ENROLL)
-        goodix5503_fdt_watch_start (self, TRUE);
+      memcpy (self->warm.down_base, self->fdt_runtime.down_base,
+              sizeof self->warm.down_base);
+      self->warm.last_lift_at = g_get_monotonic_time ();
+      /* The image-device state machine re-arms after both lift and image
+       * processing finish. Enrollment selection may still be running; an
+       * unconditional arm here could capture before the core is ready. */
       fpi_image_device_report_finger_status (FP_IMAGE_DEVICE (self), FALSE);
     }
   OPENSSL_cleanse (raw, sizeof raw);
@@ -2437,9 +2459,10 @@ fpi_device_goodix5503_class_init (FpiDeviceGoodix5503Class *klass)
    * storm (e.g. after suspend/resume) can trip it and brick unlocks for
    * everyone. Declare always-on like MOC devices do. */
   device_class->temp_hot_seconds = -1;
-  /* Collect a broad gallery: duplicate SIGFM samples are rejected by the
-   * image-device enrolment path and therefore do not advance this count. */
-  device_class->nr_enroll_stages = 24;
+  /* Forty fresh training samples select a bounded 24-reference gallery.
+   * Eight later checks must validate that fixed gallery before completion.
+   * Duplicate/poor training frames do not advance the training count. */
+  device_class->nr_enroll_stages = SIGFM_ENROLL_TOTAL_STAGES;
   device_class->features &= ~FP_DEVICE_FEATURE_UPDATE_PRINT;
 
   image_class->algorithm = FPI_DEVICE_ALGO_SIGFM;

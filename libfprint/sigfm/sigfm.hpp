@@ -34,6 +34,24 @@ typedef unsigned char SigfmPix;
  */
 typedef struct SigfmImgInfo SigfmImgInfo;
 
+/* Enrollment work is bounded separately from the persisted gallery. */
+#define SIGFM_ENROLL_POOL_SAMPLES 40
+#define SIGFM_ENROLL_TARGET_SAMPLES 24
+#define SIGFM_ENROLL_BATCH_SAMPLES 10
+#define SIGFM_ENROLL_BATCH_KEEP 6
+#define SIGFM_ENROLL_CHECK_SAMPLES 8
+#define SIGFM_ENROLL_CHECK_REQUIRED 6
+#define SIGFM_ENROLL_TOTAL_STAGES (SIGFM_ENROLL_POOL_SAMPLES + SIGFM_ENROLL_CHECK_SAMPLES)
+
+/** Select 24 indices from 40 newly collected samples. Six references survive
+ * from each consecutive ten-sample guidance batch. Only training samples
+ * enter selection; self-matches do not count as coverage. The subsequent
+ * eight checks must remain held out.
+ * Returns 0 on success or -1 on invalid input/matching error. */
+int sigfm_select_enrollment(SigfmImgInfo *const *samples, size_t count,
+                            int identity_threshold, unsigned *indices,
+                            size_t capacity);
+
 /**
  * @brief Extracts information from an image for later use sigfm_match_score
  *
@@ -59,6 +77,13 @@ void sigfm_free_info(SigfmImgInfo* info);
  * @return int Score of how closely they match, values <0 indicate error, 0 means always reject
  */
 int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled);
+
+/** Enrollment-only redundancy check; never use this as an identity decision.
+ * Returns 1 only for near-identical, extensively shared feature coverage,
+ * 0 when another view may add information, and -1 on error.
+ */
+int sigfm_is_redundant(SigfmImgInfo* frame, SigfmImgInfo* enrolled,
+                       int identity_threshold);
 
 /**
  * @brief Keypoints for an image. Low keypoints generally means the image is

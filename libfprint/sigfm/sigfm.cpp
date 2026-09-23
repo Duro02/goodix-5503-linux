@@ -655,6 +655,188 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
     }
 }
 
+int sigfm_is_redundant(SigfmImgInfo* frame, SigfmImgInfo* enrolled,
+                       int identity_threshold)
+{
+    if (frame == nullptr || enrolled == nullptr || identity_threshold <= 0)
+        return -1;
+    for (const auto* info : { frame, enrolled })
+        if (info->keypoints.size() > max_persisted_keypoints ||
+            info->descriptors.rows != static_cast<int>(info->keypoints.size()))
+            return -1;
+    const int score = sigfm_match_score(frame, enrolled);
+    if (score < 0)
+        return -1;
+    if (score < identity_threshold)
+        return 0;
+    if (sigfm_equal(frame, enrolled))
+        return 1;
+
+    try {
+        /* Matching proves identity, not redundant coverage. Keep overlapping
+         * views unless >=80% of the distinct feature locations on BOTH views
+         * agree, across a substantial part of this 64x80 sensor. A small
+         * translation accommodates localization jitter; larger shifts and
+         * rotations are useful enrollment variation and are retained.
+         * These conservative enrollment limits do not affect verification,
+         * descriptors, or the persisted v3 representation. */
+        SensitiveVector<cv::Point2f> locations[2];
+        SensitiveVector<int> location_ids[2];
+        SensitiveVector<unsigned char> covered[2];
+        SigfmImgInfo* infos[] = { frame, enrolled };
+        for (int side = 0; side < 2; side++) {
+            const auto* info = infos[side];
+            for (const auto& keypoint : info->keypoints) {
+                std::size_t id = 0;
+                for (; id < locations[side].value.size(); id++)
+                    if (cv::norm(keypoint.pt - locations[side].value[id]) <= 1.0)
+                        break;
+                if (id == locations[side].value.size())
+                    locations[side].value.push_back(keypoint.pt);
+                location_ids[side].value.push_back(static_cast<int>(id));
+            }
+            covered[side].value.assign(locations[side].value.size(), 0);
+        }
+        SensitiveNestedVector<cv::DMatch> forward, backward;
+        auto matcher = cv::BFMatcher::create();
+        matcher->knnMatch(frame->descriptors, enrolled->descriptors, forward.value, 2);
+        matcher->knnMatch(enrolled->descriptors, frame->descriptors, backward.value, 1);
+        SensitiveVector<cv::DMatch> mutual;
+        SensitiveVector<float> shifts_x, shifts_y;
+        for (const auto& candidates : forward.value) {
+            if (candidates.size() != 2 ||
+                candidates[0].distance >= 0.8 * candidates[1].distance)
+                continue;
+            const auto& m = candidates[0];
+            if (backward.value.at(m.trainIdx).empty() ||
+                backward.value[m.trainIdx][0].trainIdx != m.queryIdx)
+                continue;
+            const auto delta = enrolled->keypoints.at(m.trainIdx).pt -
+                               frame->keypoints.at(m.queryIdx).pt;
+            mutual.value.push_back(m);
+            shifts_x.value.push_back(delta.x);
+            shifts_y.value.push_back(delta.y);
+        }
+        if (mutual.value.size() < 12)
+            return 0;
+        const auto median = [](std::vector<float>& values) {
+            auto middle = values.begin() + values.size() / 2;
+            std::nth_element(values.begin(), middle, values.end());
+            return *middle;
+        };
+        const cv::Point2f shift(median(shifts_x.value), median(shifts_y.value));
+        if (cv::norm(shift) > 3.0)
+            return 0;
+        float left = INFINITY, right = -INFINITY;
+        float top = INFINITY, bottom = -INFINITY;
+        unsigned shared = 0;
+        for (const auto& m : mutual.value) {
+            const auto& a = frame->keypoints.at(m.queryIdx);
+            const auto& b = enrolled->keypoints.at(m.trainIdx);
+            const auto u = location_ids[0].value.at(m.queryIdx);
+            const auto v = location_ids[1].value.at(m.trainIdx);
+            if (covered[0].value[u] || covered[1].value[v] ||
+                cv::norm(a.pt + shift - b.pt) > 1.5 ||
+                a.size <= 0 || b.size <= 0 ||
+                std::min(a.size, b.size) / std::max(a.size, b.size) < 0.95 ||
+                std::abs(std::remainder(a.angle - b.angle, 360.0)) > 5.0)
+                continue;
+            covered[0].value[u] = covered[1].value[v] = 1;
+            shared++;
+            left = std::min(left, a.pt.x);
+            right = std::max(right, a.pt.x);
+            top = std::min(top, a.pt.y);
+            bottom = std::max(bottom, a.pt.y);
+        }
+        return shared >= 12 &&
+               shared * 5 >= locations[0].value.size() * 4 &&
+               shared * 5 >= locations[1].value.size() * 4 &&
+               right - left >= 24.0 && bottom - top >= 32.0;
+    }
+    catch (...) {
+        return -1;
+    }
+}
+
+int sigfm_select_enrollment(SigfmImgInfo *const *samples, size_t count,
+                            int identity_threshold, unsigned *indices,
+                            size_t capacity)
+{
+    if (!samples || !indices || count != SIGFM_ENROLL_POOL_SAMPLES ||
+        capacity != SIGFM_ENROLL_TARGET_SAMPLES || identity_threshold <= 0 ||
+        identity_threshold > INT_MAX / 10)
+        return -1;
+    for (std::size_t i = 0; i < count; i++)
+        if (!samples[i] || sigfm_keypoints_count(samples[i]) < 20)
+            return -1;
+
+    try {
+        SensitiveNestedVector<int> scores;
+        scores.value.assign(count, std::vector<int>(count));
+        for (std::size_t i = 0; i < count; i++)
+            for (std::size_t j = 0; j < count; j++) {
+                /* Self-matches provide no evidence that a reference will
+                 * recognize another press. Counting them rewards isolated
+                 * outliers and can discard the second useful view of a
+                 * repeatable region. Measure cross-press coverage only. */
+                if (i == j)
+                    continue;
+                int score = sigfm_match_score(samples[i], samples[j]);
+                if (score < 0)
+                    return -1;
+                scores.value[i][j] = score;
+            }
+
+        SensitiveVector<int> best;
+        best.value.assign(count, 0);
+        unsigned kept[SIGFM_ENROLL_POOL_SAMPLES / SIGFM_ENROLL_BATCH_SAMPLES] = {};
+        bool used[SIGFM_ENROLL_POOL_SAMPLES] = {};
+        unsigned result[SIGFM_ENROLL_TARGET_SAMPLES] = {};
+        for (unsigned slot = 0; slot < SIGFM_ENROLL_TARGET_SAMPLES; slot++) {
+            bool found = false;
+            unsigned chosen = 0;
+            std::tuple<unsigned, double, int, int> merit_best;
+            for (unsigned i = 0; i < count; i++) {
+                if (used[i] || kept[i / SIGFM_ENROLL_BATCH_SAMPLES] >= SIGFM_ENROLL_BATCH_KEEP)
+                    continue;
+                unsigned newly_covered = 0;
+                double margin = 0;
+                for (std::size_t j = 0; j < count; j++) {
+                    const int old = best.value[j];
+                    const int next = std::max(old, scores.value[j][i]);
+                    newly_covered += old < identity_threshold && next >= identity_threshold;
+                    /* Scores measure evidence, not geometric area. Cap the
+                     * tie-breaker so near-identical samples cannot dominate
+                     * the count of previously uncovered training views. */
+                    const int cap = identity_threshold * 10;
+                    margin += std::log1p(std::min(next, cap)) -
+                              std::log1p(std::min(old, cap));
+                }
+                const auto merit = std::make_tuple(newly_covered, margin,
+                                                   sigfm_keypoints_count(samples[i]),
+                                                   -static_cast<int>(i));
+                if (!found || merit > merit_best) {
+                    found = true;
+                    chosen = i;
+                    merit_best = merit;
+                }
+            }
+            if (!found)
+                return -1;
+            result[slot] = chosen;
+            used[chosen] = true;
+            kept[chosen / SIGFM_ENROLL_BATCH_SAMPLES]++;
+            for (std::size_t j = 0; j < count; j++)
+                best.value[j] = std::max(best.value[j], scores.value[j][chosen]);
+        }
+        std::copy(std::begin(result), std::end(result), indices);
+        return 0;
+    }
+    catch (...) {
+        return -1;
+    }
+}
+
 void sigfm_free_info(SigfmImgInfo* info)
 {
     wipe_info(info);

@@ -5,7 +5,7 @@ repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 build_root="$repo_dir/.tools/arch-package-build"
 pkgdest="$repo_dir/.tools/packages"
 source_date_epoch=1785018985
-package_glob='libfprint-goodix5503-1.94.100-39-x86_64.pkg.tar.zst'
+package_glob='libfprint-goodix5503-1.94.100-45-x86_64.pkg.tar.zst'
 runtime_root=/tmp/goodix5503-arch-package-build
 
 exec 9>"/tmp/goodix5503-arch-package-build-${UID}.lock"
@@ -48,6 +48,8 @@ tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 --numeric-owne
   libfprint/tests/test-goodix5503-sigfm-core.cpp \
   libfprint/tests/test-goodix5503-sigfm-detection.c \
   libfprint/tests/test-goodix5503-sigfm-gallery.cpp \
+  tools/goodix_enroll.py \
+  tests/test_guided_enroll.py \
   packaging/systemd/fprintd.service.d/keep-running.conf \
   packaging/systemd/fprintd.service.d/10-goodix-no-core.conf \
   packaging/systemd/goodix5503-fprintd-restart.sh \

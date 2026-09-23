@@ -12,6 +12,11 @@ int sigfm_match_score (SigfmImgInfo *frame, SigfmImgInfo *enrolled)
 {
   (void) frame; (void) enrolled; return -1;
 }
+int sigfm_is_redundant (SigfmImgInfo *frame, SigfmImgInfo *enrolled,
+                        int identity_threshold)
+{
+  (void) frame; (void) enrolled; (void) identity_threshold; return -1;
+}
 int sigfm_keypoints_count (SigfmImgInfo *info) { (void) info; return 0; }
 SigfmImgInfo *sigfm_copy_info (const SigfmImgInfo *info)
 {
@@ -34,4 +39,10 @@ void sigfm_free_serialized (unsigned char *data, size_t length)
 int sigfm_equal (const SigfmImgInfo *left, const SigfmImgInfo *right)
 {
   return left == right;
+}
+int sigfm_select_enrollment (SigfmImgInfo *const *samples, size_t count,
+                             int threshold, unsigned *indices, size_t capacity)
+{
+  (void) samples; (void) count; (void) threshold;
+  (void) indices; (void) capacity; return -1;
 }

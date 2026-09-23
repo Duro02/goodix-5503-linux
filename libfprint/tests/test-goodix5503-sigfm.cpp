@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "sigfm.hpp"
+#include "img-info.hpp"
 
 #include <array>
 #include <cassert>
@@ -48,6 +49,56 @@ synthetic_pattern ()
   return image;
 }
 
+static void
+test_enrollment_redundancy ()
+{
+  auto *reference = new SigfmImgInfo;
+  reference->descriptors = cv::Mat::zeros (36, 128, CV_32F);
+  for (int i = 0; i < 36; i++)
+    {
+      reference->keypoints.emplace_back (8 + (i % 6) * 8,
+                                          8 + (i / 6) * 10, 2, 0);
+      reference->descriptors.at<float> (i, i) = 512;
+    }
+  assert (sigfm_is_redundant (nullptr, reference, 150) == -1);
+  assert (sigfm_is_redundant (reference, reference, 0) == -1);
+  assert (sigfm_is_redundant (reference, reference, 150) == 1);
+
+  auto *jitter = sigfm_copy_info (reference);
+  for (auto& kp : jitter->keypoints)
+    kp.pt += cv::Point2f (1, -1);
+  assert (sigfm_is_redundant (jitter, reference, 150) == 1);
+
+  auto *shifted = sigfm_copy_info (reference);
+  for (auto& kp : shifted->keypoints)
+    kp.pt += cv::Point2f (8, 0);
+  assert (sigfm_match_score (shifted, reference) >= 150);
+  assert (sigfm_is_redundant (shifted, reference, 150) == 0);
+
+  auto *partial = sigfm_copy_info (reference);
+  partial->keypoints.resize (24);
+  partial->descriptors = partial->descriptors.rowRange (0, 24).clone ();
+  assert (sigfm_match_score (partial, reference) >= 150);
+  assert (sigfm_is_redundant (partial, reference, 150) == 0);
+  assert (sigfm_is_redundant (reference, partial, 150) == 0);
+
+  auto *repeated_locations = sigfm_copy_info (reference);
+  for (int i = 0; i < 36; i++)
+    repeated_locations->keypoints[i].pt = reference->keypoints[i % 8].pt;
+  assert (sigfm_is_redundant (repeated_locations, repeated_locations, 150) == 1);
+  auto *cluster_jitter = sigfm_copy_info (repeated_locations);
+  for (auto& kp : cluster_jitter->keypoints)
+    kp.pt.x += 1;
+  assert (sigfm_is_redundant (cluster_jitter, repeated_locations, 150) == 0);
+
+  sigfm_free_info (cluster_jitter);
+  sigfm_free_info (repeated_locations);
+  sigfm_free_info (partial);
+  sigfm_free_info (shifted);
+  sigfm_free_info (jitter);
+  sigfm_free_info (reference);
+}
+
 int
 main ()
 {
@@ -58,6 +109,8 @@ main ()
   SigfmImgInfo *roundtrip;
   unsigned char *serialized;
   size_t length = 0;
+
+  test_enrollment_redundancy ();
 
   assert (sigfm_keypoints_count (nullptr) == 0);
   assert (sigfm_extract (nullptr, 8, 8) == nullptr);
