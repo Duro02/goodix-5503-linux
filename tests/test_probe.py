@@ -3,8 +3,9 @@ import stat
 import struct
 import tempfile
 import unittest
+import importlib
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from goodix5503.probe import (
     COMMAND_ACK,
@@ -26,6 +27,7 @@ from goodix5503.probe import (
     _write_secure_backup,
 )
 
+probe_module = importlib.import_module("goodix5503.probe")
 
 class FakeInEndpoint:
     wMaxPacketSize = 64
@@ -436,6 +438,50 @@ class PacketTests(unittest.TestCase):
             with self.subTest(timeout=timeout), self.assertRaises(ValueError):
                 ReadOnlyUsbSession(timeout)
 
+class ProbeChipIdTests(unittest.TestCase):
+    def run_probe_with_chip_id(self, enabled: bool, value: int):
+        session = MagicMock()
+        session.device.bus = 1
+        session.device.address = 3
+
+        def request(command, payload=b"", *, checksum=True):
+            if command == probe_module.COMMAND_NOP:
+                return b""
+            if command == probe_module.COMMAND_FIRMWARE_VERSION:
+                return b"GF3258_RTSEC_APP_10062\x00"
+            if command == probe_module.COMMAND_GET_IAP_VERSION:
+                return b"MILAN_RTSEC_IAP_10027\x00"
+            raise AssertionError(f"Unexpected command: {command:#x}")
+
+        session.request.side_effect = request
+        session.read_chip_id.return_value = value
+
+        context = MagicMock()
+        context.__enter__.return_value = session
+        context.__exit__.return_value = False
+
+        with patch.object(probe_module, "ReadOnlyUsbSession", return_value=context):
+            result = probe_module.probe(read_chip_id=enabled)
+
+        return result, session
+
+    def test_chip_id_not_read_by_default(self):
+        result, session = self.run_probe_with_chip_id(False, 0x220F)
+
+        self.assertIsNone(result.chip_id)
+        session.read_chip_id.assert_not_called()
+
+    def test_zero_chip_id_is_unresolved(self):
+        result, session = self.run_probe_with_chip_id(True, 0)
+
+        self.assertIsNone(result.chip_id)
+        session.read_chip_id.assert_called_once_with()
+
+    def test_valid_chip_id_is_reported(self):
+        result, session = self.run_probe_with_chip_id(True, 0x220F)
+
+        self.assertEqual(result.chip_id, "0x220f")
+        session.read_chip_id.assert_called_once_with()
 
 if __name__ == "__main__":
     unittest.main()
