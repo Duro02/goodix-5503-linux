@@ -87,6 +87,7 @@ class ProbeResult:
     protected_record_sha256: str | None
     protected_record_backup: str | None
     rollback_set: dict[str, dict[str, int | str]] | None
+    chip_id: str | None = None
 
 
 def _encode_packet(command: int, payload: bytes = b"", *, checksum: bool = True) -> bytes:
@@ -608,6 +609,7 @@ def probe(
     inspect_protected_record: bool = False,
     backup_protected_record: bool = False,
     backup_rollback_set: bool = False,
+    read_chip_id: bool = False,
     timeout_seconds: float = 5.0,
 ) -> ProbeResult:
     if inspect_protected_record or backup_protected_record or backup_rollback_set:
@@ -621,6 +623,13 @@ def probe(
         iap = _decode_c_string(
             session.request(COMMAND_GET_IAP_VERSION, b"\x19\x00")
         )
+
+        chip_id = None
+
+        if read_chip_id:
+            raw_chip_id = session.read_chip_id()
+            if raw_chip_id != 0:
+                chip_id = f"0x{raw_chip_id:04x}"
 
         psk_state = _read_psk_state(session) if check_psk_state else "not-queried"
         protected_record_length = None
@@ -651,6 +660,7 @@ def probe(
             protected_record_sha256=protected_record_sha256,
             protected_record_backup=protected_record_backup,
             rollback_set=rollback_set,
+            chip_id=chip_id,
         )
 
 
@@ -680,6 +690,11 @@ def main() -> int:
         help="save readable R-family PSK records and report the write-only record",
     )
     parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument(
+        "--chip-id",
+        action="store_true",
+        help="read the fixed MCU chip-ID register",
+    )
     args = parser.parse_args()
 
     result = probe(
@@ -688,6 +703,7 @@ def main() -> int:
         backup_protected_record=args.backup_protected_record,
         backup_rollback_set=args.backup_rollback_set,
         timeout_seconds=args.timeout,
+        read_chip_id=args.chip_id,
     )
     print(json.dumps(asdict(result), indent=2, sort_keys=True))
     return 0
