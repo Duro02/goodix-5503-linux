@@ -12,3 +12,6 @@ artifacts/windows-driver/
 artifacts/device-backup/
 *.pgm
 promotion-post.md
+
+# JetBrains IDE
+.idea/
