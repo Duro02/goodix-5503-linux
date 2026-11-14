@@ -106,7 +106,15 @@ The repo ships systemd configuration (`packaging/systemd/`): fprintd keep-alive,
 
 - `src/goodix5503/`: the read-only probe and explicitly confirmed pairing setup CLIs
 - `libfprint/`: the C driver, the SIGFM matcher, and the libfprint patch
-- Tests (no hardware needed): `PYTHONPATH=src python -m unittest discover -s tests -v`
+- Offline Python regression suite (no PyUSB or hardware needed):
+  `python3 tests/run_offline_tests.py`
+
+The offline runner replaces PyUSB with an inert in-memory stub before importing
+the package. Any unmocked attempt to enumerate, claim, transfer to, or release
+a USB device fails the test immediately. It includes the firmware guard and
+protocol tests with fake endpoints; optional Unicorn-based white-box tests are
+skipped when Unicorn is absent. It never runs the command-line probe or opens a
+physical device.
 
 Matcher parameters and the template format are versioned: any change to feature extraction, match semantics or the decision threshold must bump the template format version, or old templates will be rejected. Details in `docs/libfprint-driver-plan.md`.
 

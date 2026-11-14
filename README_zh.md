@@ -108,7 +108,13 @@ sudo .venv/bin/goodix-5503-probe --backup-rollback-set
 
 - `src/goodix5503/`：只读 probe，以及需要明确确认的 PSK 配对 setup 工具
 - `libfprint/`：C 驱动源码、SIGFM 匹配算法、针对 libfprint 的 patch
-- 测试（不需要硬件）：`PYTHONPATH=src python -m unittest discover -s tests -v`
+- 离线 Python 回归测试（不需要 PyUSB 或硬件）：
+  `python3 tests/run_offline_tests.py`
+
+离线运行器会在导入包之前以惰性的内存 stub 替换 PyUSB。任何未被 mock 的
+USB 枚举、接口认领、传输或释放都会立即令测试失败。它包含固件保护与使用
+fake endpoint 的协议测试；未安装可选 Unicorn 时，白盒测试会跳过。该命令
+不会运行 probe CLI，也不会打开物理设备。
 
 匹配参数与模板格式是版本化的：任何改动特征提取、匹配语义或判定阈值的修改都必须同步 bump 模板格式版本，否则旧模板会被拒绝加载。具体约束见 `docs/libfprint-driver-plan.md`。
 

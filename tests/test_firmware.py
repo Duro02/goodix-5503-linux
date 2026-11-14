@@ -27,22 +27,29 @@ class FirmwareSupportTests(unittest.TestCase):
         )
 
     def test_unknown_firmware(self):
-        self.assertEqual(
-            classify_firmware(
-                "GF3258_RTSEC_APP_10061",
-                "MILAN_RTSEC_IAP_10027",
-            ),
-            FirmwareSupport.UNKNOWN,
-        )
+        for firmware in (
+            "GF3258_RTSEC_APP_10061",
+            "GF3258_RTSEC_APP_10064",
+            "unknown",
+            "",
+        ):
+            with self.subTest(firmware=firmware):
+                self.assertEqual(
+                    classify_firmware(firmware, "MILAN_RTSEC_IAP_10027"),
+                    FirmwareSupport.UNKNOWN,
+                )
 
     def test_wrong_iap(self):
-        self.assertEqual(
-            classify_firmware(
-                "GF3258_RTSEC_APP_10062",
-                "MILAN_RTSEC_IAP_10026",
-            ),
-            FirmwareSupport.UNKNOWN,
-        )
+        for firmware in (
+            "GF3258_RTSEC_APP_10063",
+            "GF3258_RTSEC_APP_10062",
+            "unknown",
+        ):
+            with self.subTest(firmware=firmware):
+                self.assertEqual(
+                    classify_firmware(firmware, "MILAN_RTSEC_IAP_10026"),
+                    FirmwareSupport.UNKNOWN,
+                )
 
 
 if __name__ == "__main__":
