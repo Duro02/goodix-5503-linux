@@ -116,6 +116,13 @@ USB 枚举、接口认领、传输或释放都会立即令测试失败。它包�
 fake endpoint 的协议测试；未安装可选 Unicorn 时，白盒测试会跳过。该命令
 不会运行 probe CLI，也不会打开物理设备。
 
+C 驱动的固件 gate 也由该运行器进行源码级检查；它验证拒绝顺序，而不是执行
+C callback 或单独的 Python IAP 分类。本 checkout 仅包含 Goodix
+overlay，不包含 pinned libfprint 构建树和私有头文件，因而不能构建隔离的
+compiled-driver 测试。所需的隔离 Meson/GUsb 环境见
+[compiled-test feasibility note](docs/firmware-guard-compiled-test-feasibility.md)；
+不得以合成 harness 或硬件 probe 代替。
+
 匹配参数与模板格式是版本化的：任何改动特征提取、匹配语义或判定阈值的修改都必须同步 bump 模板格式版本，否则旧模板会被拒绝加载。具体约束见 `docs/libfprint-driver-plan.md`。
 
 ## 上游参考与许可

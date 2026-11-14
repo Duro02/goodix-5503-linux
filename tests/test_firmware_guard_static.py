@@ -20,8 +20,14 @@ class FirmwareGuardStaticTests(unittest.TestCase):
         expected = re.search(
             r'static const char expected_firmware\[\] = "([^"]+)";', source
         )
+        post_reset = re.search(
+            r'static const char expected_post_reset_firmware\[\] = "([^"]+)";',
+            source,
+        )
         self.assertIsNotNone(expected)
+        self.assertIsNotNone(post_reset)
         self.assertEqual(expected.group(1), "GF3258_RTSEC_APP_10063")
+        self.assertEqual(post_reset.group(1), "GF3208_RTSEC_APP_10063")
         self.assertNotIn("GF3258_RTSEC_APP_10062", source)
 
     def test_unknown_firmware_fails_before_any_follow_up_device_command(self):

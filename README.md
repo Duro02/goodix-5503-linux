@@ -116,6 +116,15 @@ protocol tests with fake endpoints; optional Unicorn-based white-box tests are
 skipped when Unicorn is absent. It never runs the command-line probe or opens a
 physical device.
 
+The C driver's firmware gate is also checked by that runner at source level.
+It validates rejection ordering, not an executed C callback or the separate
+Python IAP classification.
+This checkout cannot build an isolated compiled-driver test because it contains
+only the Goodix overlay, not the pinned libfprint build tree and private
+headers. See [the compiled-test feasibility note](docs/firmware-guard-compiled-test-feasibility.md)
+for the required isolated Meson/GUsb test environment; do not substitute a
+synthetic harness or a hardware probe.
+
 Matcher parameters and the template format are versioned: any change to feature extraction, match semantics or the decision threshold must bump the template format version, or old templates will be rejected. Details in `docs/libfprint-driver-plan.md`.
 
 ## Upstream references and license
