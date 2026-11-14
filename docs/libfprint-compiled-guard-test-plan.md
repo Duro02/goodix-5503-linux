@@ -94,6 +94,31 @@ The repository's full developer build script also requires OpenCV because of
 SIGFM.  A narrowly scoped driver test may avoid that only if the pinned Meson
 dependency graph demonstrably permits it; do not relax or guess that condition.
 
+### Container/runtime assessment
+
+The appropriate future base image is a maintained distribution image with the
+dependencies above, for example an Ubuntu 24.04 LTS image pinned by digest.
+Its package set must provide Meson at least 0.62, GLib at least 2.68, GUsb at
+least 0.3 for driver tests, OpenSSL at least 3.0 for `goodix5503`, and
+`umockdev-run` at least 0.16.3 for pcapng replay.  It must also provide Ninja,
+a C/C++ compiler, `pkg-config`, GObject Introspection, Python GI,
+Python-Cairo, Cairo and the OpenCV development packages required by the
+existing overlay script.  Record the resolved package versions and image digest
+in a future reviewed container configuration; do not substitute a host build.
+
+This checkout cannot currently prepare or validate that configuration.  The
+host has a Docker 29.9.3 client, but its default context points at
+`/var/run/docker.sock` and the current user is denied access.  There is no
+rootless Docker socket at `/run/user/1000/docker.sock`, and Podman, Buildah,
+Nerdctl and Docker's rootless setup helper are absent.  Although Bubblewrap and
+`unshare` exist, they cannot provide the missing build dependencies or the
+upstream `umockdev-run` transport emulator.  No container was created or run.
+
+Do not add an untested Dockerfile merely because a Docker client binary exists:
+without a runnable rootless engine, it cannot establish the required absence
+of host USB mounts or validate the build.  A future build may proceed only
+after a rootless runtime is provided and its image isolation is verified.
+
 The harness must run in a disposable container or mount namespace with no host
 `/dev/bus/usb` or host USB sysfs exposed.  `umockdev-run` must be the only
 device provider.  The test environment must set the same in-tree library and
