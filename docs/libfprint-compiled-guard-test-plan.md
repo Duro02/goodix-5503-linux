@@ -126,6 +126,51 @@ emulation variables as existing upstream driver tests, including
 `FP_DEVICE_EMULATION=1`.  A test setup failure that exposes no fake device must
 be a failure or explicit skip, never a fallback to normal host discovery.
 
+## GitHub Actions build-only compilation
+
+`.github/workflows/build-goodix5503-driver.yml` provides a separate build-only
+gate on GitHub-hosted `ubuntu-24.04`.  It has `contents: read` permission,
+checks out this repository through the pinned `actions/checkout` v4.2.2 commit,
+then initializes a separate upstream directory, fetches exactly
+`80a4b5ec612892c5c056c48dddaa561452cf37ec`, checks out detached `FETCH_HEAD`,
+and verifies both the revision and a clean source tree.
+
+The runner installs only build dependencies on its disposable VM:
+
+```text
+build-essential ca-certificates git libglib2.0-dev libgusb-dev
+libopencv-dev libssl-dev meson ninja-build pkg-config
+```
+
+It records the resolved Debian package versions in the workflow log.  This is
+not a host requirement and is intentionally separate from the future
+`umockdev` driver-test environment.
+
+The workflow invokes:
+
+```sh
+LIBFPRINT_SOURCE="$RUNNER_TEMP/libfprint-source" \
+bash scripts/build-libfprint-driver.sh --build-only
+```
+
+`--build-only` uses the existing overlay copy, SIGFM patch, driver-map edits
+and `-Ddrivers=goodix5503` Meson configuration, with introspection disabled.
+Its overlay work directory remains the script's fixed
+`.tools/libfprint-goodix5503` path inside the disposable CI checkout; it is
+not controlled by an environment-provided destination.
+It runs only:
+
+```sh
+ninja -C "$work_dir/build" libfprint/libfprint-2.so.2.0.0
+```
+
+and exits before `meson test`, the example targets, smoke binary, SIGFM tests,
+ASan test or any other binary execution.  It neither configures USB pass-through
+nor invokes a libfprint API, fprintd, probe, enrollment, PSK, reset,
+configuration or firmware-update operation.  Compilation alone does not prove
+physical-device compatibility or execute the firmware guard; those remain
+separate future synthetic-fixture work.
+
 ## Test design
 
 ### Test location and registration
