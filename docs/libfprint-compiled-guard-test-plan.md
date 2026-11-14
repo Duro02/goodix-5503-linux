@@ -2,9 +2,10 @@
 
 ## Status and safety boundary
 
-This is an implementation plan, not a test harness.  No pinned upstream source
-or build environment is present in this checkout, and no USB device was opened,
-enumerated, or contacted while preparing it.
+This is an implementation plan, not a test harness.  No overlay-prepared
+upstream source or runnable native build environment is present in this
+checkout, and no USB device was opened, enumerated, or contacted while
+preparing it.
 
 The intended test must compile the production
 `libfprint/drivers/goodix5503.c` into libfprint and drive it through the normal
@@ -50,10 +51,30 @@ existing driver-test wrapper to instantiate a synthetic USB device with VID:PID
 `27c6:5503`, load the compiled `goodix5503` driver, and exercise normal
 activation.
 
-The precise Python helper APIs, Meson variable names, and replay syntax must be
-verified after obtaining the exact pinned source.  They are deliberately not
-guessed in this plan because the local checkout has no upstream `tests/`
-directory.
+### Pinned-source inspection result
+
+The exact source was obtained separately at
+`/tmp/libfprint-goodix5503-80a4b5ec` and verified clean at
+`80a4b5ec612892c5c056c48dddaa561452cf37ec`.  No overlay was applied and no
+native build or test was run.  Its actual test code establishes the following
+integration details:
+
+- `tests/meson.build` sets `FP_DEVICE_EMULATION=1`, creates the
+  `fprint-test-emulation` helper, and registers hardware-driver fixtures from
+  the `drivers_tests` map.
+- For each fixture it sets `FP_DRIVERS_ALLOWLIST` to the fixture driver name,
+  then executes `tests/umockdev-test.py <fixture> --test <type>`.
+- `tests/umockdev-test.py` creates a temporary directory and invokes
+  `umockdev-run -d <fixture/device> -p <fake-syspath>=<fixture/*.pcapng> --`
+  before the fixture's Python test process.  A pcap transcript is therefore
+  the concrete mechanism that rejects unrecorded USB traffic.
+- Existing `tests/goodixmoc/` fixtures demonstrate the required layout:
+  `device`, plus `custom.py` and/or `*.pcapng`.  The generated test process
+  uses an `FPrint.Context` and normal `FPrint.Device` operations, rather than
+  calling driver-static callbacks.
+
+The exact test seam is now known.  What remains unavailable is a runnable,
+hardware-isolated native environment; see **Current execution blocker** below.
 
 ## Required isolated environment
 
@@ -160,17 +181,34 @@ be a compiled test case for this callback.  Keep it in the existing pure-Python
    the compiled test has separate native dependencies and must fail closed when
    its isolated environment is unavailable.
 
-## Current blockers
+## Current execution blocker
 
-1. This checkout has no pinned upstream libfprint tree, internal headers, or
-   upstream test sources to validate exact Meson/test-helper APIs.
-2. The current environment lacks Meson and GLib development metadata, so the
-   native target cannot be configured here without installing dependencies.
-3. The accepted path uses a hard-coded host PSK path; an isolated filesystem
+The pinned source is now available only for inspection in `/tmp`, but the
+current environment still cannot satisfy Phase 2.  It has a C compiler, Ninja,
+Bubblewrap and `unshare`, but lacks all of the following:
+
+- `meson` and `umockdev-run`;
+- GLib/GObject/GIO and GUsb development metadata (`pkg-config` cannot find
+  them);
+- the remaining native/GI dependencies needed to configure the pinned Meson
+  test suite.
+
+Because `umockdev-run` is absent, this environment cannot demonstrate that
+`FPrint.Context.enumerate()` sees only the synthetic fixture and never falls
+back to host USB.  Building a partial substitute, stubbing GUsb, or executing
+the driver outside that wrapper would invalidate the hardware-isolation
+requirement.  No native test fixture or build-script integration is therefore
+added in this checkout.
+
+The remaining implementation blockers, for a separately prepared native
+environment, are:
+
+1. The accepted path uses a hard-coded host PSK path; an isolated filesystem
    strategy is required before that case is safe to run.
-4. The exact pinned umockdev replay capabilities and response framing must be
-   checked from the acquired source before committing a fixture.
-5. No compiled test can establish sensor acceptance, persistent state,
+2. The exact Goodix response frames and pcap transcript must be constructed
+   and reviewed before committing a fixture; an omitted transfer must stay a
+   fatal mismatch.
+3. No compiled test can establish sensor acceptance, persistent state,
    Windows Hello enrollment preservation, or firmware-10062 compatibility.
 
 Until those blockers are resolved, run the hardware-isolated Python suite:
